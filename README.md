@@ -1,0 +1,113 @@
+# Guitar Trainer
+
+A free, open-source guitar trainer in the spirit of Yousician and Rocksmith, built for the
+browser. Load a song you own, pick a difficulty, play along on your real guitar and get
+scored in real time. Comes with a chromatic tuner and a metronome. No account, no
+subscription, no servers: your audio and progress never leave your device.
+
+> Status: early but playable (v0.1). See [docs/ROADMAP.md](docs/ROADMAP.md) for what's next.
+
+## Features
+
+- **Play along with difficulty levels** – every song gets six auto-generated levels, from a
+  sparse "one note per bar" skeleton up to the full transcription. Low levels keep the
+  structurally important notes (downbeats, long notes, phrase starts) and simplify chords
+  (root → power chord → triad → full voicing). Yousician-style progression, Rocksmith-style
+  note thinning.
+- **Scrolling note highway** – strings as colour-coded lanes, fret numbers (or note names),
+  sustain tails, chord names, technique marks (hammer-on, slide, bend…), count-in, streaks and
+  multipliers, results with per-level best scores.
+- **Real-time pitch scoring** – McLeod pitch detection running in an AudioWorklet on the audio
+  thread; timing windows, octave tolerance for chords, repeated-note attack gating, a latency
+  calibration wizard for Bluetooth headphones and USB interfaces.
+- **Slow-down practice** – 50–100 % speed without changing pitch.
+- **Three ways to get a chart**
+  - Guitar Pro (`.gp`, `.gp3`–`.gp5`, `.gpx`) and MusicXML via [alphaTab] – repeats, tempo
+    changes, capo and techniques are preserved.
+  - MIDI – pick the track; string/fret positions are assigned automatically.
+  - Nothing at all – the app listens to the audio with Spotify's [Basic Pitch] model, running
+    locally in a Web Worker, and estimates the tempo. Best with exposed guitar parts.
+- **Tuner** – chromatic with per-string targets for standard, drop, open, 7-string, bass and
+  ukulele tunings; adjustable reference pitch.
+- **Metronome** – 30–300 bpm, time signatures, subdivisions, accents, tap tempo, keyboard
+  control, sample-accurate clicks.
+- **Demo song** – a synthesised riff so you can try everything without any files.
+
+## Quick start
+
+```bash
+npm install
+npm run dev        # http://localhost:5173
+```
+
+Other scripts:
+
+```bash
+npm test           # unit tests (Vitest)
+npm run build      # production build in dist/
+npm run preview    # serve the production build
+npm run test:e2e   # Playwright smoke test against the build (uses a fake microphone)
+npm run typecheck
+```
+
+Deploying is a static upload of `dist/`. The included GitHub Actions workflow runs the tests and
+publishes to GitHub Pages on every push to `main` (enable it once in *Settings → Pages →
+Source: GitHub Actions*). For hosting under a sub-path, build with `BASE_PATH=/your-path/`.
+
+## How to use it
+
+1. **Settings** – choose your input (audio interface or microphone) and run *Calibrate* once
+   with the speakers/headphones you practise with.
+2. **Songs → Add song** – pick the recording, then the chart source. Fix the title/artist, pick
+   the track for Guitar Pro/MIDI files, set a chart offset if the recording has a count-in.
+3. **Play** – start at the suggested level. 90 %+ accuracy unlocks a "level up" suggestion;
+   under 60 % the game suggests an easier level or a slower speed.
+4. **Tuner / Metronome** – available any time from the sidebar.
+
+Plug the guitar in through an audio interface for the cleanest detection; a laptop microphone
+works for acoustic and clean tones. Distorted tones: lower *Detection sensitivity* in Settings.
+
+## Built on open source
+
+All dependencies are permissively licensed (MIT / Apache-2.0 / MPL-2.0). The research behind
+the choices, including projects we deliberately do not depend on, is in
+[docs/OPEN_SOURCE_LANDSCAPE.md](docs/OPEN_SOURCE_LANDSCAPE.md).
+
+| Piece | Library |
+|---|---|
+| Guitar Pro / MusicXML parsing, tab model | [alphaTab] (MPL-2.0) |
+| Audio → notes | [Basic Pitch] (Apache-2.0) on TensorFlow.js |
+| MIDI parsing | [@tonejs/midi] (MIT) |
+| Music theory | [tonal] (MIT) |
+| Local storage | [Dexie] (Apache-2.0) |
+| Pitch detection, metronome, difficulty, highway, scoring | our own code (MIT) |
+
+[alphaTab]: https://github.com/coderline/alphaTab
+[Basic Pitch]: https://github.com/spotify/basic-pitch-ts
+[@tonejs/midi]: https://github.com/Tonejs/Midi
+[tonal]: https://github.com/tonaljs/tonal
+[Dexie]: https://dexie.org
+
+## Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Short version: Vite + React + TypeScript
+PWA; one `AudioContext`; an AudioWorklet posts pitch frames; every chart source converts
+into one `Chart` model; difficulty levels are derived deterministically; IndexedDB holds
+songs, charts and scores.
+
+## Browser support
+
+Chrome/Edge, Firefox and Safari 16.4+ on desktop; Chrome on Android; Safari on iOS 16.4+
+(iOS needs headphones or an interface to avoid feedback from the speaker). AudioWorklet,
+`OfflineAudioContext`, Web Workers and IndexedDB are required.
+
+## Contributing
+
+Issues and pull requests are welcome. Good first areas: section looping, tab view, beat-grid
+editing, chord detection, translations. Please keep new dependencies permissively licensed and
+never commit copyrighted audio or tabs.
+
+## License
+
+MIT – see [LICENSE](LICENSE). Bundled model weights for Basic Pitch are Apache-2.0
+(`public/models/basic-pitch/LICENSE`).
