@@ -81,7 +81,15 @@ src/
 
 - `npm test` – Vitest unit tests for the DSP (pitch detector on synthetic tones),
   fretboard assignment, difficulty generation, timing maps, scoring, tempo
-  estimation and the importers (alphaTex → chart, MIDI → chart).
+  estimation, the importers (alphaTex → chart, MIDI → chart) and a model
+  integration test that runs the real Basic Pitch weights on a synthetic signal
+  with the TensorFlow.js CPU backend (~10 s).
 - `npm run test:e2e` – Playwright smoke test against the production build using
   Chromium's fake microphone: navigation, metronome, tuner, demo song play-through
-  to the results screen, and an end-to-end AI transcription of a synthetic WAV.
+  to the results screen, persistence, and an end-to-end AI transcription of a
+  synthetic WAV. `BASE_URL=http://localhost:5173 SKIP_TRANSCRIBE=1` runs the fast
+  subset against a dev server.
+
+Note on TensorFlow.js: Basic Pitch declares `@tensorflow/tfjs ^3`, but 3.21 crashes
+inside Web Workers (`window is not defined` in `setTimeoutCustom`). `package.json`
+pins 4.22 through an npm `override` so a single, worker-safe copy is bundled.

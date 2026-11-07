@@ -16,7 +16,7 @@
   "dependencies": {
     "@coderline/alphatab": "^1.9.0",
     "@spotify/basic-pitch": "^1.0.1",
-    "@tensorflow/tfjs": "^3.21.0",
+    "@tensorflow/tfjs": "^4.22.0",
     "@tonejs/midi": "^2.0.28",
     "dexie": "^4.4.7",
     "dexie-react-hooks": "^4.4.0",
@@ -43,5 +43,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/jacobrrough/Guitar-Trainer.git"
+  },
+  "overrides": {
+    "@tensorflow/tfjs": "$@tensorflow/tfjs"
   }
 }

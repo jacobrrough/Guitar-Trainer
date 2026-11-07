@@ -23,7 +23,9 @@ function log(...args) {
 
 async function startPreview() {
   if (process.env.BASE_URL) return { url: process.env.BASE_URL, stop: () => {} }
-  const child = spawn('npx', ['vite', 'preview', '--port', '4173', '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'] })
+  // Random port so a lingering server from an earlier run cannot block us; detached so we can kill the whole group.
+  const port = 4200 + Math.floor(Math.random() * 700)
+  const child = spawn('npx', ['vite', 'preview', '--port', String(port), '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
   const url = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('preview did not start')), 30000)
     child.stdout.on('data', (d) => {
@@ -36,7 +38,14 @@ async function startPreview() {
     child.stderr.on('data', (d) => process.stderr.write(d))
     child.on('exit', (code) => reject(new Error(`preview exited with ${code}`)))
   })
-  return { url, stop: () => child.kill() }
+  const stop = () => {
+    try {
+      process.kill(-child.pid, 'SIGTERM')
+    } catch {
+      child.kill()
+    }
+  }
+  return { url, stop }
 }
 
 /** Four plucked notes (E2 A2 D3 G3), 1.5 s each, as a 16-bit mono WAV. */
@@ -71,6 +80,8 @@ function synthWav() {
   for (let i = 0; i < total; i++) buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767))), 44 + i * 2)
   return { buffer: buf, expectedMidi: [40, 45, 50, 55] }
 }
+
+class SkipRest extends Error {}
 
 const failures = []
 function check(cond, message) {
@@ -145,6 +156,16 @@ try {
     return el && !el.paused && el.currentTime > 1
   })
   check(playing, 'song audio is playing')
+  const painted = await page.evaluate(() => {
+    const canvas = document.querySelector('[data-testid="highway"]')
+    if (!canvas || canvas.width === 0 || canvas.height === 0) return { width: canvas?.width ?? 0, colors: 0 }
+    const ctx = canvas.getContext('2d')
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const colors = new Set()
+    for (let i = 0; i < data.length; i += 4 * 97) colors.add((data[i] << 16) | (data[i + 1] << 8) | data[i + 2])
+    return { width: canvas.width, colors: colors.size }
+  })
+  check(painted.width > 0 && painted.colors > 20, `highway canvas is painted (${painted.width}px wide, ${painted.colors} sampled colours)`)
   await page.screenshot({ path: path.join(OUT, 'highway.png') })
   // Jump near the end by letting it run; the demo is ~22 s.
   await page.waitForSelector('[data-testid="results"]', { timeout: 40000 })
@@ -157,7 +178,8 @@ try {
   await page.waitForSelector('text=Demo riff in E minor', { timeout: 10000 })
   check((await page.locator('text=/1 plays/').count()) === 1, 'play count persisted to IndexedDB')
 
-  // Import with AI transcription of a synthetic 4-note WAV
+  // Import with AI transcription of a synthetic 4-note WAV (slow on CPU; SKIP_TRANSCRIBE=1 to skip)
+  if (process.env.SKIP_TRANSCRIBE) throw new SkipRest()
   const wav = synthWav()
   writeFileSync(path.join(OUT, 'synth.wav'), wav.buffer)
   await page.getByTestId('add-song').click()
@@ -190,9 +212,13 @@ try {
   }
   await page.screenshot({ path: path.join(OUT, 'transcribed.png') })
 } catch (err) {
-  failures.push(`exception: ${err.message}`)
-  log('  FAIL', err.stack)
-  await page.screenshot({ path: path.join(OUT, 'failure.png') }).catch(() => {})
+  if (err instanceof SkipRest) {
+    log('  skip ', 'transcription import (SKIP_TRANSCRIBE set)')
+  } else {
+    failures.push(`exception: ${err.message}`)
+    log('  FAIL', err.stack)
+    await page.screenshot({ path: path.join(OUT, 'failure.png') }).catch(() => {})
+  }
 }
 
 const realErrors = consoleErrors.filter((e) => !/favicon|manifest|ERR_FAILED/.test(e))

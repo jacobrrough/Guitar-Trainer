@@ -148,16 +148,23 @@ export function PlayPage() {
     trackerRef.current = tracker
   }, [levels, levelIdx, speed])
 
-  // Canvas renderer.
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
+  // Canvas renderer. The canvas mounts only once the song has loaded, so a
+  // callback ref (not a mount effect) attaches the renderer to it.
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
+  const attachCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
+    resizeObserverRef.current?.disconnect()
+    resizeObserverRef.current = null
+    canvasRef.current = canvas
+    if (!canvas) {
+      rendererRef.current = null
+      return
+    }
     const renderer = new HighwayRenderer(canvas)
     rendererRef.current = renderer
     renderer.resize()
     const ro = new ResizeObserver(() => renderer.resize())
     ro.observe(canvas)
-    return () => ro.disconnect()
+    resizeObserverRef.current = ro
   }, [])
 
   const finish = useCallback(async () => {
@@ -433,7 +440,7 @@ export function PlayPage() {
       </header>
       {micError && <div className="bg-bad/15 px-4 py-1 text-xs text-red-200">Microphone: {micError}. You can still play along without scoring.</div>}
       <div className="relative min-h-0 flex-1">
-        <canvas ref={canvasRef} className="block h-full w-full" data-testid="highway" />
+        <canvas ref={attachCanvas} className="block h-full w-full" data-testid="highway" />
         {phase === 'ready' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-bg/60">
             <button

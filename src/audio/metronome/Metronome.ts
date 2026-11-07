@@ -69,11 +69,12 @@ export class Metronome {
     if (this.master) this.master.gain.value = v
   }
 
-  /** Changing settings while running restarts the bar from the next click. */
+  /** Tempo/accent changes apply on the next click; a new meter or subdivision restarts the bar. */
   update(partial: Partial<MetronomeSettings>): void {
-    const wasRunning = this.running
-    this.settings = { ...this.settings, ...partial }
-    if (wasRunning && (partial.beatsPerBar !== undefined || partial.subdivision !== undefined)) {
+    const prev = this.settings
+    this.settings = { ...prev, ...partial }
+    const meterChanged = this.settings.beatsPerBar !== prev.beatsPerBar || this.settings.subdivision !== prev.subdivision
+    if (this.running && meterChanged) {
       this.stop()
       void this.start()
     }
