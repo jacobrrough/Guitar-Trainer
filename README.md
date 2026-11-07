@@ -98,6 +98,13 @@ the choices, including projects we deliberately do not depend on, is in
 [tonal]: https://github.com/tonaljs/tonal
 [Dexie]: https://dexie.org
 
+## Where it's going
+
+An adaptive daily training system (recommended sessions, periodic skill checks,
+progress-driven recommendations) is designed in
+[docs/ADAPTIVE_TRAINING.md](docs/ADAPTIVE_TRAINING.md); the wider list is in
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Short version: Vite + React + TypeScript

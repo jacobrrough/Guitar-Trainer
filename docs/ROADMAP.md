@@ -16,6 +16,9 @@
 
 ## Next
 
+0. **Adaptive training ("Coach")** – daily recommended sessions, periodic skill
+   checks, and recommendations driven by measured progress. Full design in
+   [ADAPTIVE_TRAINING.md](ADAPTIVE_TRAINING.md); its Phase 0 covers items 1 and 5 below.
 1. **Section practice** – loop a bar range, auto-slowdown until clean, then speed up.
 2. **Tab view** – render the real tablature with alphaTab under/instead of the
    highway, with a synced cursor; print/export.
