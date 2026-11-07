@@ -37,7 +37,7 @@ export function AppLayout() {
         </nav>
         <p className="mt-auto px-2 text-xs text-muted">Free &amp; open source. Everything runs in your browser.</p>
       </aside>
-      <main className="flex-1 overflow-y-auto px-4 pb-24 pt-6 md:px-8 md:pb-8">
+      <main className="flex-1 overflow-y-auto px-4 pb-24 pt-6 short-landscape:pb-16 short-landscape:pt-3 md:px-8 md:pb-8">
         <div className="mx-auto w-full max-w-5xl">
           <Outlet />
         </div>
@@ -49,11 +49,11 @@ export function AppLayout() {
             to={to}
             end={end}
             className={({ isActive }) =>
-              cx('flex flex-1 flex-col items-center gap-1 py-2 text-[11px] font-medium', isActive ? 'text-amber-200' : 'text-slate-400')
+              cx('flex flex-1 flex-col items-center gap-1 py-2 text-[11px] font-medium short-landscape:py-1.5', isActive ? 'text-amber-200' : 'text-slate-400')
             }
           >
             <Icon className="h-5 w-5" />
-            {label}
+            <span className="short-landscape:hidden">{label}</span>
           </NavLink>
         ))}
       </nav>

@@ -63,6 +63,19 @@ src/
    The latency setting shifts the scoring clock to compensate for audio I/O delay;
    the Settings page measures it with a click-and-strum calibration.
 
+## iOS / PWA layer
+
+- `vite-plugin-pwa` generates the manifest and a Workbox service worker that precaches
+  the app shell, alphaTab, the TensorFlow.js worker and the Basic Pitch model, so the
+  installed app works offline.
+- `app/platform.ts` detects iOS, Safari, standalone mode and the Capacitor wrapper and
+  wraps the Audio Session API; `app/InstallBanner.tsx` explains Share → Add to Home
+  Screen on iOS and uses `beforeinstallprompt` elsewhere.
+- `AudioEngine.unlock()` is called synchronously in tap handlers to create/resume the
+  context before any `await`; the play page also primes the `<audio>` element inside the
+  gesture so the post-count-in `play()` is allowed.
+- `app/useWakeLock.ts` keeps the screen on; songs are stored as `ArrayBuffer`s.
+
 ## Key decisions
 
 - **Browser-first.** Zero install, works on phones and laptops, trivial to host.

@@ -1,4 +1,5 @@
 import { audioEngine } from '../../audio/AudioEngine'
+import { resampleLinear } from '../../audio/resample'
 import { midiToFreq } from '../../music/pitch'
 import { constantBeatGrid } from '../timing'
 import type { Chart } from '../types'
@@ -24,16 +25,29 @@ export async function decodeAudio(blob: Blob): Promise<AudioBuffer> {
   return audioEngine.context.decodeAudioData(data)
 }
 
-/** Mixes down to mono and resamples to the model's 22050 Hz with the native OfflineAudioContext. */
-export async function resampleForModel(buffer: AudioBuffer): Promise<Float32Array> {
-  const length = Math.ceil(buffer.duration * MODEL_SAMPLE_RATE)
-  const offline = new OfflineAudioContext(1, length, MODEL_SAMPLE_RATE)
+async function renderMono(buffer: AudioBuffer, sampleRate: number): Promise<Float32Array> {
+  const length = Math.ceil(buffer.duration * sampleRate)
+  const offline = new OfflineAudioContext(1, length, sampleRate)
   const src = offline.createBufferSource()
   src.buffer = buffer
   src.connect(offline.destination)
   src.start(0)
   const rendered = await offline.startRendering()
   return rendered.getChannelData(0).slice()
+}
+
+/**
+ * Mixes down to mono and resamples to the model's 22050 Hz. Uses the native
+ * OfflineAudioContext; Safari versions that only render at 44.1–96 kHz fall
+ * back to a mono render at the source rate plus a JS resample.
+ */
+export async function resampleForModel(buffer: AudioBuffer): Promise<Float32Array> {
+  try {
+    return await renderMono(buffer, MODEL_SAMPLE_RATE)
+  } catch {
+    const mono = await renderMono(buffer, buffer.sampleRate)
+    return resampleLinear(mono, buffer.sampleRate, MODEL_SAMPLE_RATE)
+  }
 }
 
 export function modelUrl(): string {

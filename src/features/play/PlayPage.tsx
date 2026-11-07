@@ -1,13 +1,14 @@
 import { ArrowLeft, Mic, MicOff, Pause, Play, RotateCcw } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { updateSettings, useSettings } from '../../app/settings'
+import { useWakeLock } from '../../app/useWakeLock'
 import { audioEngine } from '../../audio/AudioEngine'
 import { playClick } from '../../audio/metronome/Metronome'
 import { LEVELS, generateLevels, suggestedLevel } from '../../chart/difficulty'
 import { chartBpm } from '../../chart/types'
 import { Button, Select, cx, formatTime } from '../../components/ui'
-import { recordResult, type SongRecord } from '../../db/db'
+import { recordResult, songAudioBlob, type SongRecord } from '../../db/db'
 import { useSong } from '../../db/useSongs'
 import { tuningLabel } from '../../music/tunings'
 import { HighwayRenderer } from './Highway'
@@ -20,6 +21,78 @@ const SPEEDS = [0.5, 0.6, 0.7, 0.8, 0.9, 1]
 
 function stars(accuracy: number): number {
   return accuracy >= 0.95 ? 3 : accuracy >= 0.8 ? 2 : accuracy >= 0.6 ? 1 : 0
+}
+
+/**
+ * iOS Safari only lets a media element start from a user gesture, and our
+ * count-in defers the real play() by a few seconds. Playing muted for an
+ * instant inside the tap marks the element as user-activated so the later
+ * programmatic play() is allowed.
+ */
+function primeMediaElement(el: HTMLMediaElement, primed: RefObject<boolean>, playbackStarted: RefObject<boolean>): void {
+  if (primed.current) return
+  const wasMuted = el.muted
+  el.muted = true
+  const finish = () => {
+    primed.current = true
+    if (playbackStarted.current) return
+    el.pause()
+    try {
+      if (el.currentTime > 0 && el.currentTime < 0.5) el.currentTime = 0
+    } catch {
+      /* not seekable yet */
+    }
+    el.muted = wasMuted
+  }
+  let promise: Promise<void> | undefined
+  try {
+    promise = el.play()
+  } catch {
+    el.muted = wasMuted
+    return
+  }
+  if (promise && typeof promise.then === 'function') {
+    promise.then(finish).catch(() => {
+      if (!playbackStarted.current) el.muted = wasMuted
+    })
+  } else {
+    finish()
+  }
+}
+
+function LevelPicker({
+  levelIdx,
+  counts,
+  disabled,
+  onPick,
+  compact,
+}: {
+  levelIdx: number | null
+  counts: number[] | null
+  disabled: boolean
+  onPick: (idx: number) => void
+  compact?: boolean
+}) {
+  return (
+    <div className={cx('flex items-center gap-1', compact && 'flex-1 justify-between')} role="group" aria-label="Difficulty level">
+      {LEVELS.map((l, i) => (
+        <button
+          key={l.level}
+          type="button"
+          disabled={disabled}
+          onClick={() => onPick(i)}
+          title={counts ? `${counts[i]} notes` : ''}
+          className={cx(
+            'h-9 min-w-9 rounded-md px-2 text-sm font-semibold transition-colors disabled:opacity-50',
+            levelIdx === i ? 'bg-accent text-slate-950' : 'bg-panel-2 text-slate-200 hover:bg-line',
+          )}
+          data-testid={`level-${l.level}`}
+        >
+          {l.level === 6 ? 'Full' : l.level}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 function ResultsOverlay({
@@ -38,14 +111,16 @@ function ResultsOverlay({
   const canDown = levelIndex > 0
   const suggestion = summary.accuracy >= 0.9 && canUp ? 'up' : summary.accuracy < 0.6 && canDown ? 'down' : null
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-bg/85 p-4" data-testid="results">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-panel p-6 text-center shadow-xl">
+    <div className="absolute inset-0 flex items-center justify-center overflow-y-auto bg-bg/85 p-4" data-testid="results">
+      <div className="w-full max-w-md rounded-2xl border border-line bg-panel p-5 text-center shadow-xl sm:p-6">
         <div className="mb-2 text-4xl tracking-widest text-accent" aria-label={`${s} of 3 stars`}>
           {'★'.repeat(s)}
           <span className="text-line">{'★'.repeat(3 - s)}</span>
         </div>
         <div className="text-5xl font-bold tabular-nums">{summary.score.toLocaleString()}</div>
-        <div className="mt-1 text-sm text-muted">{LEVELS[levelIndex].label} · {Math.round(summary.accuracy * 100)}% accuracy</div>
+        <div className="mt-1 text-sm text-muted">
+          {LEVELS[levelIndex].label} · {Math.round(summary.accuracy * 100)}% accuracy
+        </div>
         <dl className="mt-5 grid grid-cols-4 gap-2 text-sm">
           {[
             ['Perfect', summary.perfects, 'text-green-300'],
@@ -96,10 +171,12 @@ export function PlayPage() {
   const [phase, setPhase] = useState<Phase>('ready')
   const [micStatus, setMicStatus] = useState<'off' | 'on' | 'error'>(audioEngine.micActive ? 'on' : 'off')
   const [micError, setMicError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [results, setResults] = useState<ScoreSummary | null>(null)
   const [countdown, setCountdown] = useState<number | null>(null)
   const [progress, setProgress] = useState(0)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [portraitPhone, setPortraitPhone] = useState(false)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -109,6 +186,9 @@ export function PlayPage() {
   const smootherRef = useRef(new PitchSmoother())
   const detectedRef = useRef<{ midi: number | null; matches: boolean }>({ midi: null, matches: false })
   const judgementRef = useRef<{ text: string; at: number } | null>(null)
+  const mediaPrimedRef = useRef(false)
+  const playbackStartedRef = useRef(false)
+  const skipCountInRef = useRef(false)
   const phaseRef = useRef<Phase>('ready')
   const settingsRef = useRef(settings)
   const speedRef = useRef(speed)
@@ -119,6 +199,8 @@ export function PlayPage() {
   speedRef.current = speed
   levelsRef.current = levels
   levelIdxRef.current = levelIdx
+
+  useWakeLock(phase === 'playing' || phase === 'countin')
 
   // Initial level & speed from the song's history.
   useEffect(() => {
@@ -133,12 +215,15 @@ export function PlayPage() {
   useEffect(() => {
     const s = songRef.current
     if (!s) return
-    const url = URL.createObjectURL(s.audio)
+    const blob = songAudioBlob(s)
+    if (!blob) return
+    const url = URL.createObjectURL(blob)
     setAudioUrl(url)
+    mediaPrimedRef.current = false
     return () => URL.revokeObjectURL(url)
   }, [songKey])
 
-  // Score tracker follows the level, speed and tolerance settings.
+  // Score tracker follows the level and speed.
   useEffect(() => {
     if (!levels || levelIdx === null) return
     const tracker = new ScoreTracker(levels[levelIdx].notes, { octaveTolerance: settingsRef.current.octaveTolerance })
@@ -165,6 +250,14 @@ export function PlayPage() {
     const ro = new ResizeObserver(() => renderer.resize())
     ro.observe(canvas)
     resizeObserverRef.current = ro
+  }, [])
+
+  // Orientation hint for phones.
+  useEffect(() => {
+    const update = () => setPortraitPhone(window.innerWidth < 640 && window.innerHeight > window.innerWidth)
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
   }, [])
 
   const finish = useCallback(async () => {
@@ -215,6 +308,8 @@ export function PlayPage() {
         const missed = tracker.advance(t - st.latencyMs / 1000)
         if (missed.length) judgementRef.current = { text: 'Miss', at: t }
       }
+      // Narrow screens show less look-ahead so notes stay readable.
+      const widthFactor = Math.min(1, Math.max(0.45, renderer.width / 900))
       renderer.draw({
         songTime: t,
         duration: Math.max(s.chart.duration, s.duration),
@@ -227,7 +322,7 @@ export function PlayPage() {
         detectedMatches: detectedRef.current.matches,
         hud: tracker.summary(),
         lastJudgement: judgementRef.current,
-        visibleSeconds: st.visibleSeconds * speedRef.current,
+        visibleSeconds: st.visibleSeconds * speedRef.current * widthFactor,
         showNoteNames: st.showNoteNames,
         paused: phaseRef.current === 'paused',
       })
@@ -277,7 +372,8 @@ export function PlayPage() {
 
   const startMic = useCallback(async () => {
     try {
-      await audioEngine.startMic({ deviceId: settingsRef.current.inputDeviceId || undefined, threshold: 0.9 })
+      const st = settingsRef.current
+      await audioEngine.startMic({ deviceId: st.inputDeviceId || undefined, threshold: 0.9, echoCancellation: st.echoCancellation })
       setMicStatus('on')
       setMicError(null)
     } catch (err) {
@@ -290,11 +386,15 @@ export function PlayPage() {
     const el = audioRef.current
     const s = songRef.current
     if (!el || !s || phaseRef.current === 'countin' || phaseRef.current === 'playing') return
+    // Spend the user gesture synchronously on unlocking audio (required on iOS).
+    audioEngine.unlock()
+    primeMediaElement(el, mediaPrimedRef, playbackStartedRef)
+    setNotice(null)
     if (!audioEngine.micActive && micStatus !== 'error') await startMic()
     await audioEngine.resume()
     el.playbackRate = speedRef.current
     el.preservesPitch = true
-    if (el.currentTime < 0.05) {
+    if (el.currentTime < 0.05 && !skipCountInRef.current) {
       setPhase('countin')
       const ctx = audioEngine.context
       const interval = 60 / chartBpm(s.chart) / speedRef.current
@@ -308,12 +408,18 @@ export function PlayPage() {
       setCountdown(null)
     }
     try {
+      el.muted = false
+      playbackStartedRef.current = true
       await el.play()
     } catch (err) {
-      setMicError(`Playback failed: ${err instanceof Error ? err.message : String(err)}`)
+      playbackStartedRef.current = false
+      // Safari refuses play() once the gesture has expired: the next tap plays immediately.
+      skipCountInRef.current = true
+      setNotice(err instanceof DOMException && err.name === 'NotAllowedError' ? 'Tap play once more to start.' : `Playback failed: ${err instanceof Error ? err.message : String(err)}`)
       setPhase('ready')
       return
     }
+    skipCountInRef.current = false
     clockRef.current?.reset()
     smootherRef.current.reset()
     setPhase('playing')
@@ -321,6 +427,7 @@ export function PlayPage() {
 
   const pause = useCallback(() => {
     audioRef.current?.pause()
+    playbackStartedRef.current = false
     setPhase('paused')
   }, [])
 
@@ -330,6 +437,7 @@ export function PlayPage() {
       el.pause()
       el.currentTime = 0
     }
+    playbackStartedRef.current = false
     trackerRef.current?.reset()
     judgementRef.current = null
     clockRef.current?.reset()
@@ -350,20 +458,24 @@ export function PlayPage() {
     }
   }
 
+  const togglePlayPause = useCallback(() => {
+    if (phaseRef.current === 'playing') pause()
+    else if (phaseRef.current === 'paused' || phaseRef.current === 'ready') void start()
+  }, [pause, start])
+
   // Keyboard shortcuts.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
       if (e.code === 'Space') {
         e.preventDefault()
-        if (phaseRef.current === 'playing') pause()
-        else if (phaseRef.current !== 'finished') void start()
+        togglePlayPause()
       } else if (e.key === 'r' || e.key === 'R') restart()
       else if (e.key === 'Escape') navigate('/')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [pause, start, restart, navigate])
+  }, [togglePlayPause, restart, navigate])
 
   if (songQuery === 'loading') return <div className="flex h-full items-center justify-center text-muted">Loading…</div>
   if (!song) {
@@ -380,49 +492,39 @@ export function PlayPage() {
   const chart = song.chart
   const duration = Math.max(chart.duration, song.duration)
   const busy = phase === 'playing' || phase === 'countin'
+  const counts = levels ? levels.map((l) => l.notes.length) : null
   const currentLevelNotes = levels && levelIdx !== null ? levels[levelIdx].notes.length : 0
+  const pickLevel = (idx: number) => {
+    setLevelIdx(idx)
+    if (phase === 'finished') restart()
+  }
 
   return (
-    <div className="flex h-full flex-col bg-bg">
-      <header className="flex flex-wrap items-center gap-2 border-b border-line bg-panel px-3 py-2">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/')} aria-label="Back to songs">
-          <ArrowLeft className="h-4 w-4" /> Songs
+    <div
+      className="no-select flex h-dvh flex-col bg-bg"
+      style={{ paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)' }}
+    >
+      <header className="flex items-center gap-2 border-b border-line bg-panel px-2 pb-2 sm:px-3" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.5rem)' }}>
+        <Button variant="ghost" size="sm" onClick={() => navigate('/')} aria-label="Back to songs" className="px-2">
+          <ArrowLeft className="h-4 w-4" /> <span className="hidden sm:inline">Songs</span>
         </Button>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-semibold">{song.title}</div>
+          <div className="truncate text-sm font-semibold sm:text-base">{song.title}</div>
           <div className="truncate text-xs text-muted">
             {song.artist || 'Unknown artist'} · {tuningLabel(chart.tuning)}
             {chart.capo ? ` · capo ${chart.capo}` : ''} · {Math.round(chartBpm(chart))} bpm
           </div>
         </div>
-        <div className="flex items-center gap-1" role="group" aria-label="Difficulty level">
-          {LEVELS.map((l, i) => (
-            <button
-              key={l.level}
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setLevelIdx(i)
-                if (phase === 'finished') restart()
-              }}
-              title={levels ? `${levels[i].notes.length} notes` : ''}
-              className={cx(
-                'h-8 min-w-8 rounded-md px-2 text-sm font-semibold transition-colors disabled:opacity-50',
-                levelIdx === i ? 'bg-accent text-slate-950' : 'bg-panel-2 text-slate-200 hover:bg-line',
-              )}
-              data-testid={`level-${l.level}`}
-            >
-              {l.level === 6 ? 'Full' : l.level}
-            </button>
-          ))}
+        <div className="hidden items-center gap-2 sm:flex" data-testid="controls-desktop">
+          <LevelPicker levelIdx={levelIdx} counts={counts} disabled={busy} onPick={pickLevel} />
+          <Select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={busy} aria-label="Playback speed" className="h-9 py-0">
+            {SPEEDS.map((s) => (
+              <option key={s} value={s}>
+                {Math.round(s * 100)}%
+              </option>
+            ))}
+          </Select>
         </div>
-        <Select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={busy} aria-label="Playback speed" className="h-8 py-0">
-          {SPEEDS.map((s) => (
-            <option key={s} value={s}>
-              {Math.round(s * 100)}%
-            </option>
-          ))}
-        </Select>
         <Button
           size="sm"
           variant={micStatus === 'on' ? 'secondary' : 'primary'}
@@ -430,7 +532,10 @@ export function PlayPage() {
             if (micStatus === 'on') {
               audioEngine.stopMic()
               setMicStatus('off')
-            } else void startMic()
+            } else {
+              audioEngine.unlock()
+              void startMic()
+            }
           }}
           title={micStatus === 'on' ? 'Microphone on' : 'Turn on microphone to get scored'}
           aria-label="Toggle microphone"
@@ -438,11 +543,28 @@ export function PlayPage() {
           {micStatus === 'on' ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
         </Button>
       </header>
+      <div className="flex items-center gap-2 border-b border-line bg-panel px-2 py-1.5 sm:hidden" data-testid="controls-mobile">
+        <LevelPicker levelIdx={levelIdx} counts={counts} disabled={busy} onPick={pickLevel} compact />
+        <Select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={busy} aria-label="Playback speed" className="h-9 py-0 pr-7 text-xs">
+          {SPEEDS.map((s) => (
+            <option key={s} value={s}>
+              {Math.round(s * 100)}%
+            </option>
+          ))}
+        </Select>
+      </div>
       {micError && <div className="bg-bad/15 px-4 py-1 text-xs text-red-200">Microphone: {micError}. You can still play along without scoring.</div>}
-      <div className="relative min-h-0 flex-1">
+      {notice && <div className="bg-accent/15 px-4 py-1 text-xs text-amber-100">{notice}</div>}
+      <div
+        className="relative min-h-0 flex-1"
+        onPointerUp={(e) => {
+          // Tap the highway to pause / resume (phones have no space bar).
+          if (e.target === canvasRef.current && (phase === 'playing' || phase === 'paused')) togglePlayPause()
+        }}
+      >
         <canvas ref={attachCanvas} className="block h-full w-full" data-testid="highway" />
         {phase === 'ready' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-bg/60">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-bg/60 px-6 text-center">
             <button
               type="button"
               onClick={start}
@@ -453,8 +575,13 @@ export function PlayPage() {
               <Play className="h-12 w-12" />
             </button>
             <p className="text-sm text-muted">
-              {levelIdx !== null ? LEVELS[levelIdx].label : ''} · {currentLevelNotes} notes · {Math.round(speed * 100)}% speed · press Space
+              {levelIdx !== null ? LEVELS[levelIdx].label : ''} · {currentLevelNotes} notes · {Math.round(speed * 100)}% speed
             </p>
+            {portraitPhone ? (
+              <p className="text-xs text-muted">Tip: rotate your phone for a wider highway. Tap the highway to pause.</p>
+            ) : (
+              <p className="text-xs text-muted">Space or tap the highway to pause · R to restart</p>
+            )}
           </div>
         )}
         {countdown !== null && (
@@ -477,11 +604,11 @@ export function PlayPage() {
           />
         )}
       </div>
-      <footer className="flex items-center gap-3 border-t border-line bg-panel px-3 py-2">
-        <Button variant="primary" size="sm" onClick={phase === 'playing' ? pause : () => void start()} disabled={phase === 'countin' || phase === 'finished'} aria-label={phase === 'playing' ? 'Pause' : 'Play'}>
+      <footer className="flex items-center gap-2 border-t border-line bg-panel px-2 pt-2 sm:gap-3 sm:px-3" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.5rem)' }}>
+        <Button variant="primary" size="sm" onClick={togglePlayPause} disabled={phase === 'countin' || phase === 'finished'} aria-label={phase === 'playing' ? 'Pause' : 'Play'} className="h-10 w-10 px-0">
           {phase === 'playing' ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </Button>
-        <Button variant="ghost" size="sm" onClick={restart} aria-label="Restart">
+        <Button variant="ghost" size="sm" onClick={restart} aria-label="Restart" className="h-10 w-10 px-0">
           <RotateCcw className="h-4 w-4" />
         </Button>
         <span className="w-10 text-right text-xs tabular-nums text-muted">{formatTime(progress)}</span>
@@ -493,11 +620,11 @@ export function PlayPage() {
           value={Math.min(progress, duration)}
           onChange={(e) => seek(Number(e.target.value))}
           disabled={busy}
-          className="flex-1"
+          className="min-w-0 flex-1"
           aria-label="Position"
         />
         <span className="w-10 text-xs tabular-nums text-muted">{formatTime(duration)}</span>
-        <label className="hidden items-center gap-1 text-xs text-muted sm:flex">
+        <label className="hidden items-center gap-1 text-xs text-muted md:flex">
           Latency
           <input
             type="number"
@@ -511,7 +638,7 @@ export function PlayPage() {
           ms
         </label>
       </footer>
-      <audio ref={audioRef} src={audioUrl ?? undefined} preload="auto" onEnded={() => void finishRef.current()} />
+      <audio ref={audioRef} src={audioUrl ?? undefined} preload="auto" playsInline onEnded={() => void finishRef.current()} />
     </div>
   )
 }

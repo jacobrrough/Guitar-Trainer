@@ -11,6 +11,8 @@
   count-in, results and per-level best scores
 - Latency calibration wizard
 - Synthesised demo song for instant onboarding
+- iPhone-ready PWA: install banner, offline service worker, iOS audio unlock and
+  audio session handling, wake lock, phone layout; Capacitor config for a native build
 
 ## Next
 
@@ -29,8 +31,8 @@
    use the same highway and scorer.
 8. **Offline PWA** – service worker precache so the app and models work offline.
 9. **Open chart interchange** – import/export the CC0 `feedpak` format and plain JSON.
-10. **Desktop/mobile builds** – Tauri (desktop, ASIO/low-latency) and Capacitor
-    (Android/iOS) wrappers.
+10. **Native builds** – finish the Capacitor iOS wrapper (background audio session,
+    Files integration, TestFlight); Tauri for desktop with ASIO/low-latency drivers.
 
 ## Known limitations
 

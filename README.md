@@ -32,6 +32,16 @@ subscription, no servers: your audio and progress never leave your device.
 - **Metronome** – 30–300 bpm, time signatures, subdivisions, accents, tap tempo, keyboard
   control, sample-accurate clicks.
 - **Demo song** – a synthesised riff so you can try everything without any files.
+- **Installable PWA** – offline-capable service worker, home-screen icons, iOS audio
+  session handling, wake lock, phone layout with tap-to-pause.
+
+## On your iPhone
+
+Guitar Trainer is built iPhone-first as an installable web app: open it in Safari, tap
+**Share → Add to Home Screen**, and it runs full screen, offline, with your songs saved on
+the device. Plug a guitar in through a class-compliant interface or use wired headphones
+with the built-in mic; calibrate once in Settings. Details, limitations and the optional
+native build with Capacitor are in [docs/IOS.md](docs/IOS.md).
 
 ## Quick start
 
@@ -97,9 +107,9 @@ songs, charts and scores.
 
 ## Browser support
 
-Chrome/Edge, Firefox and Safari 16.4+ on desktop; Chrome on Android; Safari on iOS 16.4+
-(iOS needs headphones or an interface to avoid feedback from the speaker). AudioWorklet,
-`OfflineAudioContext`, Web Workers and IndexedDB are required.
+Safari on iOS 16.4+ (17+ recommended for mic + speaker handling), Chrome on Android, and
+Chrome/Edge, Firefox, Safari 16.4+ on desktop. AudioWorklet, `OfflineAudioContext`, Web
+Workers and IndexedDB are required. See [docs/IOS.md](docs/IOS.md) for phone specifics.
 
 ## Contributing
 

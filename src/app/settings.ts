@@ -23,6 +23,8 @@ export interface AppSettings {
   /** Seconds of upcoming notes visible on the highway. */
   visibleSeconds: number
   showNoteNames: boolean
+  /** Speaker mode: let the OS cancel the song bleeding from the speaker into the mic. */
+  echoCancellation: boolean
   metronome: MetronomePrefs
 }
 
@@ -36,6 +38,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   clarityThreshold: 0.85,
   visibleSeconds: 3,
   showNoteNames: false,
+  echoCancellation: false,
   metronome: { bpm: 100, beatsPerBar: 4, subdivision: 1, accentFirst: true, volume: 0.8 },
 }
 

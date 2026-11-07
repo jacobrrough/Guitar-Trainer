@@ -67,6 +67,10 @@ export function SettingsPage() {
             </div>
           </Field>
           {permission === 'denied' && <p className="mt-2 text-xs text-red-300">Microphone access was denied. Allow it in your browser's site settings.</p>}
+          <div className="mt-4">
+            <Toggle checked={settings.echoCancellation} onChange={(v) => updateSettings({ echoCancellation: v })} label="Speaker mode: cancel the song's echo from the mic" />
+            <p className="mt-1 text-xs text-muted">Turn on when playing without headphones (phone speaker). Headphones or an audio interface still score best.</p>
+          </div>
           <Field label="Detection sensitivity" hint="Lower strictness tolerates distortion and noise, at the cost of occasional false notes." className="mt-4">
             <Select value={settings.clarityThreshold} onChange={(e) => updateSettings({ clarityThreshold: Number(e.target.value) })}>
               {SENSITIVITY.map((s) => (

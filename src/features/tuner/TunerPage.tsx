@@ -2,6 +2,7 @@ import { Mic, MicOff } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { updateSettings, useSettings } from '../../app/settings'
+import { useWakeLock } from '../../app/useWakeLock'
 import { audioEngine } from '../../audio/AudioEngine'
 import { Button, Card, Field, PageHeader, Select, cx } from '../../components/ui'
 import { centsOff, midiToFreq, midiToName } from '../../music/pitch'
@@ -58,13 +59,15 @@ export function TunerPage() {
   const [error, setError] = useState<string | null>(null)
   const [target, setTarget] = useState<Target>('auto')
   const { reading, level } = useTuner(listening, settings.a4, settings.clarityThreshold)
+  useWakeLock(listening)
 
   useEffect(() => () => audioEngine.stopMic(), [])
 
   const start = async () => {
     setError(null)
+    audioEngine.unlock()
     try {
-      await audioEngine.startMic({ deviceId: settings.inputDeviceId || undefined, threshold: 0.93 })
+      await audioEngine.startMic({ deviceId: settings.inputDeviceId || undefined, threshold: 0.93, echoCancellation: settings.echoCancellation })
       setListening(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not access the microphone')
@@ -88,12 +91,14 @@ export function TunerPage() {
       }
       stringIndex = best
     }
-    if (stringIndex === null) {
-      return { label: reading.name, octave: reading.octave, cents: reading.cents, stringIndex: null, targetFreq: midiToFreq(reading.midi, settings.a4) }
-    }
+    const chromatic = { label: reading.name, octave: reading.octave, cents: reading.cents, stringIndex: null as number | null, targetFreq: midiToFreq(reading.midi, settings.a4), offString: null as string | null }
+    if (stringIndex === null) return chromatic
     const midi = tuning.strings[stringIndex]
     const cents = centsOff(reading.freq, midi, settings.a4)
-    return { label: midiToName(midi, false), octave: Math.floor(midi / 12) - 1, cents, stringIndex, targetFreq: midiToFreq(midi, settings.a4) }
+    // In auto mode a pitch more than a semitone from every string is some other note
+    // (a fretted note, another instrument): show it chromatically and name the nearest string.
+    if (target === 'auto' && Math.abs(cents) > 100) return { ...chromatic, offString: midiToName(midi) }
+    return { label: midiToName(midi, false), octave: Math.floor(midi / 12) - 1, cents, stringIndex, targetFreq: midiToFreq(midi, settings.a4), offString: null }
   }, [reading, target, tuning, settings.a4])
 
   const active = !!reading && !reading.stale
@@ -150,6 +155,12 @@ export function TunerPage() {
           {farOff && active && view?.stringIndex !== null && (
             <div className="text-xs text-amber-300">
               Far from {view?.label}: you may be on a different string. Tune {view!.cents > 0 ? 'down' : 'up'} or pick the string manually.
+            </div>
+          )}
+          {active && view?.offString && (
+            <div className="text-xs text-muted">
+              Hearing {view.label}
+              {view.octave}; the nearest open string is {view.offString}. Play an open string, or pick one below.
             </div>
           )}
           <div className="mt-4 h-1.5 w-48 overflow-hidden rounded-full bg-line">

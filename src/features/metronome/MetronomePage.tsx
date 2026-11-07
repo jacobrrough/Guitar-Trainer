@@ -1,6 +1,8 @@
 import { Minus, Pause, Play, Plus } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { updateSettings, useSettings } from '../../app/settings'
+import { useWakeLock } from '../../app/useWakeLock'
+import { audioEngine } from '../../audio/AudioEngine'
 import { metronome } from '../../audio/metronome/Metronome'
 import { tapTempo } from '../../audio/metronome/scheduler-core'
 import { Button, Card, Field, PageHeader, Toggle, cx } from '../../components/ui'
@@ -26,6 +28,7 @@ export function MetronomePage() {
   const [running, setRunning] = useState(metronome.running)
   const [beat, setBeat] = useState<{ beat: number; sub: number } | null>(null)
   const taps = useRef<number[]>([])
+  useWakeLock(running)
 
   // Keep the engine in sync with persisted preferences.
   useEffect(() => {
@@ -49,6 +52,7 @@ export function MetronomePage() {
       setRunning(false)
       setBeat(null)
     } else {
+      audioEngine.unlock()
       await metronome.start()
       setRunning(true)
     }

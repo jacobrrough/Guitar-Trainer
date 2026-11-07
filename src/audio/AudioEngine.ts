@@ -1,3 +1,4 @@
+import { setAudioSessionType } from '../app/platform'
 import pitchWorkletUrl from './pitch/pitch-processor.ts?worker&url'
 
 export interface PitchFrame {
@@ -16,6 +17,11 @@ export interface MicOptions {
   minFreq?: number
   maxFreq?: number
   threshold?: number
+  /**
+   * Let the OS cancel the song bleeding from the speaker into the mic.
+   * Off by default (it colours the guitar signal); useful on a phone without headphones.
+   */
+  echoCancellation?: boolean
 }
 
 /**
@@ -32,6 +38,7 @@ class AudioEngine {
   private readonly listeners = new Set<PitchListener>()
   private _micActive = false
   private _micDeviceId: string | undefined
+  private unlocked = false
 
   get context(): AudioContext {
     if (!this.ctx) {
@@ -60,6 +67,28 @@ class AudioEngine {
     if (ctx.state !== 'running') await ctx.resume()
   }
 
+  /**
+   * Call synchronously inside a tap/click handler. iOS Safari only starts audio
+   * from a user gesture, and the gesture is spent once we await anything
+   * (permissions, count-in timers), so the context is created, resumed and
+   * primed with a silent buffer right here.
+   */
+  unlock(): void {
+    const ctx = this.context
+    if (ctx.state !== 'running') void ctx.resume()
+    if (this.unlocked) return
+    try {
+      const buffer = ctx.createBuffer(1, 1, ctx.sampleRate)
+      const source = ctx.createBufferSource()
+      source.buffer = buffer
+      source.connect(ctx.destination)
+      source.start(0)
+      this.unlocked = true
+    } catch {
+      /* ignore */
+    }
+  }
+
   private ensureWorklet(): Promise<void> {
     if (!this.workletLoaded) {
       this.workletLoaded = this.context.audioWorklet.addModule(pitchWorkletUrl).catch((err) => {
@@ -74,10 +103,12 @@ class AudioEngine {
     await this.resume()
     this.stopMic()
     const ctx = this.context
+    // iOS: ask for a session that records and plays through the speaker at full volume.
+    setAudioSessionType('play-and-record')
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: options.deviceId ? { exact: options.deviceId } : undefined,
-        echoCancellation: false,
+        echoCancellation: options.echoCancellation ?? false,
         noiseSuppression: false,
         autoGainControl: false,
         channelCount: 1,
@@ -130,6 +161,7 @@ class AudioEngine {
     this.source = null
     this.sink = null
     this.stream = null
+    if (this._micActive) setAudioSessionType('playback')
     this._micActive = false
   }
 

@@ -26,6 +26,7 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
   useEffect(() => () => cleanup.current?.(), [])
 
   const run = async () => {
+    audioEngine.unlock()
     try {
       setPhase('running')
       await audioEngine.startMic({ deviceId })

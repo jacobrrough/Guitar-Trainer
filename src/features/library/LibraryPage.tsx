@@ -1,6 +1,7 @@
 import { Play, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
+import { InstallBanner } from '../../app/InstallBanner'
 import { LEVELS } from '../../chart/difficulty'
 import type { ChartSource } from '../../chart/types'
 import { Badge, Button, Card, PageHeader, cx, formatTime } from '../../components/ui'
@@ -98,6 +99,7 @@ export function LibraryPage() {
           </>
         }
       />
+      <InstallBanner />
       {songs === undefined ? (
         <p className="text-muted">Loading…</p>
       ) : songs.length === 0 ? (

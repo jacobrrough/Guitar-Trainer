@@ -64,8 +64,17 @@ function firstIndexAtOrAfter(notes: ChartNote[], time: number): number {
 export class HighwayRenderer {
   private readonly canvas: HTMLCanvasElement
   private readonly ctx: CanvasRenderingContext2D
-  private width = 0
-  private height = 0
+  private cssWidth = 0
+  private cssHeight = 0
+
+  /** CSS pixel width of the last layout. */
+  get width(): number {
+    return this.cssWidth
+  }
+
+  get height(): number {
+    return this.cssHeight
+  }
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas
@@ -75,8 +84,8 @@ export class HighwayRenderer {
   resize(): void {
     const rect = this.canvas.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
-    this.width = rect.width
-    this.height = rect.height
+    this.cssWidth = rect.width
+    this.cssHeight = rect.height
     this.canvas.width = Math.max(1, Math.round(rect.width * dpr))
     this.canvas.height = Math.max(1, Math.round(rect.height * dpr))
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -84,12 +93,14 @@ export class HighwayRenderer {
 
   draw(s: HighwayState): void {
     const { ctx } = this
-    const W = this.width
-    const H = this.height
+    const W = this.cssWidth
+    const H = this.cssHeight
     if (W <= 0 || H <= 0) return
     const S = s.tuning.length
-    const top = 70
-    const bottom = 34
+    const short = H < 420 // phone in landscape
+    const narrow = W < 520 // phone in portrait
+    const top = short ? 52 : 70
+    const bottom = short ? 24 : 34
     const laneH = (H - top - bottom) / S
     const yOf = (str: number) => top + (S - 1 - str + 0.5) * laneH
     const hitX = Math.round(Math.min(W * 0.2, 180))
@@ -289,24 +300,25 @@ export class HighwayRenderer {
     ctx.fillStyle = 'rgba(139,150,173,0.9)'
     ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif'
     ctx.fillText('SCORE', 12, 24)
+    const hudSize = narrow || short ? 20 : 26
     ctx.fillStyle = '#f8fafc'
-    ctx.font = '800 26px ui-sans-serif, system-ui, sans-serif'
-    ctx.fillText(s.hud.score.toLocaleString(), 12, 50)
+    ctx.font = `800 ${hudSize}px ui-sans-serif, system-ui, sans-serif`
+    ctx.fillText(s.hud.score.toLocaleString(), 12, short ? 44 : 50)
 
     ctx.textAlign = 'center'
     ctx.fillStyle = s.hud.streak >= 10 ? '#fbbf24' : '#f8fafc'
-    ctx.font = '800 24px ui-sans-serif, system-ui, sans-serif'
-    ctx.fillText(`×${s.hud.multiplier}`, W / 2, 42)
+    ctx.font = `800 ${hudSize - 2}px ui-sans-serif, system-ui, sans-serif`
+    ctx.fillText(`×${s.hud.multiplier}`, W / 2, short ? 36 : 42)
     ctx.fillStyle = 'rgba(139,150,173,0.9)'
     ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif'
-    ctx.fillText(`${s.hud.streak} streak`, W / 2, 58)
+    ctx.fillText(`${s.hud.streak} streak`, W / 2, short ? 50 : 58)
 
     ctx.textAlign = 'right'
     ctx.fillStyle = 'rgba(139,150,173,0.9)'
     ctx.fillText('ACCURACY', W - 12, 24)
     ctx.fillStyle = '#f8fafc'
-    ctx.font = '800 26px ui-sans-serif, system-ui, sans-serif'
-    ctx.fillText(s.hud.judged > 0 ? `${Math.round(s.hud.accuracy * 100)}%` : '–', W - 12, 50)
+    ctx.font = `800 ${hudSize}px ui-sans-serif, system-ui, sans-serif`
+    ctx.fillText(s.hud.judged > 0 ? `${Math.round(s.hud.accuracy * 100)}%` : '–', W - 12, short ? 44 : 50)
 
     // Judgement popup
     if (s.lastJudgement) {

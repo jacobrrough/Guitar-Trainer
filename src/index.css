@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Phones held sideways: very little height, so navigation gets compact. */
+@custom-variant short-landscape (@media (orientation: landscape) and (max-height: 500px));
+
 @theme {
   --color-bg: #0b0f17;
   --color-panel: #121826;
@@ -53,4 +56,27 @@ input[type="range"] {
 
 .beat-pulse {
   animation: beat-pulse 120ms ease-out;
+}
+
+/* Mobile / iOS */
+@supports (height: 100dvh) {
+  html,
+  body,
+  #root {
+    height: 100dvh;
+  }
+}
+
+button,
+a,
+input[type="range"],
+canvas {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }

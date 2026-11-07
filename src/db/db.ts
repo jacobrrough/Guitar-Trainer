@@ -21,7 +21,13 @@ export interface SongRecord {
   artist: string
   createdAt: number
   updatedAt: number
-  audio: Blob
+  /**
+   * Raw audio bytes. Stored as an ArrayBuffer rather than a Blob because Blob
+   * records in IndexedDB have a history of corruption on iOS Safari.
+   */
+  audioData?: ArrayBuffer
+  /** Legacy records (first dev builds) kept the Blob itself. */
+  audio?: Blob
   audioType: string
   audioName: string
   /** Audio length in seconds. */
@@ -36,7 +42,13 @@ export interface SongRecord {
   playCount: number
 }
 
-export type NewSong = Pick<SongRecord, 'title' | 'artist' | 'audio' | 'audioType' | 'audioName' | 'duration' | 'chart' | 'source' | 'bpm'>
+export type NewSong = Pick<SongRecord, 'title' | 'artist' | 'audioType' | 'audioName' | 'duration' | 'chart' | 'source' | 'bpm'> & { audio: Blob }
+
+/** The song's audio as a Blob, whichever way it was stored. */
+export function songAudioBlob(song: SongRecord): Blob | null {
+  if (song.audioData) return new Blob([song.audioData], { type: song.audioType || 'audio/mpeg' })
+  return song.audio ?? null
+}
 
 export const db = new Dexie('guitar-trainer') as Dexie & {
   songs: EntityTable<SongRecord, 'id'>
@@ -48,8 +60,11 @@ db.version(1).stores({
 
 export async function addSong(input: NewSong): Promise<number> {
   const now = Date.now()
+  const { audio, ...rest } = input
+  const audioData = await audio.arrayBuffer()
   const id = await db.songs.add({
-    ...input,
+    ...rest,
+    audioData,
     createdAt: now,
     updatedAt: now,
     bestScores: {},

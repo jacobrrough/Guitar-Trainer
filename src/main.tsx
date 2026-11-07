@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createHashRouter, RouterProvider } from 'react-router'
+import { registerSW } from 'virtual:pwa-register'
 import './index.css'
 import { AppLayout } from './app/AppLayout'
 import { LibraryPage } from './features/library/LibraryPage'
@@ -22,6 +23,9 @@ const router = createHashRouter([
   },
   { path: '/play/:songId', element: <PlayPage /> },
 ])
+
+// Offline support + installability; updates apply on the next launch.
+registerSW({ immediate: true })
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

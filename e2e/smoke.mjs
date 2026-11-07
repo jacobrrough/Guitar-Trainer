@@ -12,7 +12,12 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
-const { chromium } = require('playwright')
+const { chromium, devices } = require('playwright')
+
+// DEVICE="iPhone 15" (or "iPhone 15 landscape") emulates a phone: viewport, touch, Safari UA.
+const DEVICE = process.env.DEVICE ? devices[process.env.DEVICE] : null
+if (process.env.DEVICE && !DEVICE) throw new Error(`Unknown device ${process.env.DEVICE}`)
+const SUFFIX = process.env.DEVICE ? `-${process.env.DEVICE.replace(/\s+/g, '_')}` : ''
 
 const OUT = path.resolve('e2e/output')
 mkdirSync(OUT, { recursive: true })
@@ -98,7 +103,7 @@ log('preview at', base)
 const browser = await chromium.launch({
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--enable-unsafe-swiftshader'],
 })
-const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ['microphone'] })
+const context = await browser.newContext({ ...(DEVICE ?? { viewport: { width: 1280, height: 800 } }), permissions: ['microphone'] })
 const page = await context.newPage()
 const consoleErrors = []
 page.on('console', (msg) => {
@@ -111,6 +116,16 @@ try {
   await page.goto(`${base}/#/`)
   await page.waitForSelector('text=Add your first song', { timeout: 15000 })
   check(true, 'library renders the empty state')
+  const bannerCount = await page.getByTestId('install-banner').count()
+  if (DEVICE && /iPhone|iPad/.test(DEVICE.userAgent)) {
+    check(bannerCount === 1, 'iOS install banner shown')
+    if (bannerCount === 1) {
+      await page.getByRole('button', { name: 'Dismiss' }).click()
+      check((await page.getByTestId('install-banner').count()) === 0, 'install banner can be dismissed')
+    }
+  } else {
+    check(bannerCount === 0, 'no install banner on desktop without a prompt')
+  }
 
   // Metronome
   await page.goto(`${base}/#/metronome`)
@@ -129,7 +144,7 @@ try {
   check(tunerError === 0, 'tuner started without a microphone error')
   const tunerText = await page.locator('main').innerText()
   check(/Hz/.test(tunerText) || /Play a string/.test(tunerText), 'tuner is listening (reading or prompt shown)')
-  await page.screenshot({ path: path.join(OUT, 'tuner.png') })
+  await page.screenshot({ path: path.join(OUT, `tuner${SUFFIX}.png`) })
 
   // Demo song → play page
   await page.goto(`${base}/#/`)
@@ -139,13 +154,19 @@ try {
   check(true, 'demo song created and play page opened')
   const levelCounts = []
   for (const lvl of [1, 3, 6]) {
-    await page.getByTestId(`level-${lvl}`).click()
+    await page.getByTestId(`level-${lvl}`).filter({ visible: true }).click()
     await page.waitForTimeout(200)
     const text = await page.locator('text=/notes ·/').first().innerText()
     levelCounts.push(Number(text.match(/(\d+) notes/)[1]))
   }
   check(levelCounts[0] < levelCounts[1] && levelCounts[1] <= levelCounts[2], `difficulty levels thin the chart (${levelCounts.join(' < ')})`)
-  await page.getByTestId('level-3').click()
+  if (DEVICE && DEVICE.viewport.width < 640) {
+    check(await page.getByTestId('controls-mobile').isVisible(), 'phone layout shows the compact level row')
+    check(!(await page.getByTestId('controls-desktop').isVisible()), 'phone layout hides the desktop controls')
+  } else {
+    check(await page.getByTestId('controls-desktop').isVisible(), 'desktop controls visible')
+  }
+  await page.getByTestId('level-3').filter({ visible: true }).click()
   await page.getByTestId('start').click()
   await page.waitForSelector('[data-testid="countdown"]', { timeout: 5000 })
   check(true, 'count-in shown')
@@ -166,12 +187,22 @@ try {
     return { width: canvas.width, colors: colors.size }
   })
   check(painted.width > 0 && painted.colors > 20, `highway canvas is painted (${painted.width}px wide, ${painted.colors} sampled colours)`)
-  await page.screenshot({ path: path.join(OUT, 'highway.png') })
+  await page.screenshot({ path: path.join(OUT, `highway${SUFFIX}.png`) })
+  // Tap/click the highway: pause, then resume.
+  const highway = page.getByTestId('highway')
+  if (DEVICE?.hasTouch) await highway.tap()
+  else await highway.click()
+  await page.waitForTimeout(400)
+  check(await page.evaluate(() => document.querySelector('audio').paused), 'tapping the highway pauses')
+  if (DEVICE?.hasTouch) await highway.tap()
+  else await highway.click()
+  await page.waitForTimeout(600)
+  check(await page.evaluate(() => !document.querySelector('audio').paused), 'tapping again resumes')
   // Jump near the end by letting it run; the demo is ~22 s.
   await page.waitForSelector('[data-testid="results"]', { timeout: 40000 })
   const results = await page.getByTestId('results').innerText()
   check(/accuracy/.test(results), `results screen shown: ${results.split('\n').slice(0, 3).join(' | ')}`)
-  await page.screenshot({ path: path.join(OUT, 'results.png') })
+  await page.screenshot({ path: path.join(OUT, `results${SUFFIX}.png`) })
 
   // Back to the library: best-score indicator and play count persisted
   await page.goto(`${base}/#/`)
@@ -210,14 +241,14 @@ try {
     const found = wav.expectedMidi.filter((m) => transcribed.midis.includes(m))
     check(found.length >= 3, `transcription found ${found.length}/4 expected pitches (got ${transcribed.midis.join(',')}; ${transcribed.count} notes)`)
   }
-  await page.screenshot({ path: path.join(OUT, 'transcribed.png') })
+  await page.screenshot({ path: path.join(OUT, `transcribed${SUFFIX}.png`) })
 } catch (err) {
   if (err instanceof SkipRest) {
     log('  skip ', 'transcription import (SKIP_TRANSCRIBE set)')
   } else {
     failures.push(`exception: ${err.message}`)
     log('  FAIL', err.stack)
-    await page.screenshot({ path: path.join(OUT, 'failure.png') }).catch(() => {})
+    await page.screenshot({ path: path.join(OUT, `failure${SUFFIX}.png`) }).catch(() => {})
   }
 }
 
