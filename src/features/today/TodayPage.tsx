@@ -14,26 +14,29 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link, Navigate, useNavigate } from 'react-router'
 import { getSettings, useSettings } from '../../app/settings'
 import { useAppBadge } from '../../app/useAppBadge'
 import { Badge, Button, Card, PageHeader, cx } from '../../components/ui'
 import { db } from '../../db/db'
-import { coachRecommendations, getOrCreateTodaySession, skipSessionBlock, updatePrefs } from '../../training/coach'
+import { coachRecommendations, completeFirstSteps, getOrCreateTodaySession, skipSessionBlock, updatePrefs } from '../../training/coach'
 import { localDateString } from '../../training/store'
-import type { Block, Recommendation, SessionRecord } from '../../training/types'
+import type { Attempt, Block, Recommendation, SessionRecord } from '../../training/types'
 import { useMilestonesSince, useProfile, useRecentAttempts, useTodaySession } from '../../training/useTraining'
+import { FirstStepsCard } from '../lessons/FirstStepsCard'
 import { MilestoneList } from '../progress/MilestoneList'
 import { GoalChips, MinutesPicker, SetupCard } from './SetupCard'
 import {
   BLOCK_META,
   allFinished,
   attemptForBlock,
+  blockPaceText,
   blockStatusLabel,
   blockTitle,
   formatLongDate,
   minutesThisWeek,
   noneDone,
+  notesHitText,
   pct,
   streakText,
   type BlockIconName,
@@ -49,19 +52,22 @@ function StatusPill({ status }: { status: Block['status'] }) {
 function PlanRow({
   block,
   songTitle,
-  resultPct,
+  attempt,
   busy,
   onStart,
   onSkip,
 }: {
   block: Block
   songTitle?: string
-  resultPct: number | null
+  attempt: Attempt | undefined
   busy: boolean
   onStart: () => void
   onSkip: () => void
 }) {
   const [why, setWhy] = useState(false)
+  const simple = useSettings().simpleFeedback
+  const pace = simple ? blockPaceText(block) : null
+  const resultPct = attempt ? pct(attempt.accuracy) : null
   const Icon = ICONS[BLOCK_META[block.kind].icon]
   const finished = block.status === 'done' || block.status === 'skipped'
   return (
@@ -73,12 +79,15 @@ function PlanRow({
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-xs uppercase tracking-wide text-muted">{BLOCK_META[block.kind].label}</div>
-            <div className="font-semibold">{blockTitle(block, songTitle)}</div>
+            <div className="font-semibold">{blockTitle(block, songTitle, simple)}</div>
+            {pace && <div className="text-xs text-muted">{pace}</div>}
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
               <span>{block.minutes} min</span>
               <StatusPill status={block.status} />
               {block.status === 'done' && resultPct !== null && (
-                <Badge tone={resultPct >= 80 ? 'ok' : resultPct >= 50 ? 'warn' : 'default'}>{resultPct}% accuracy</Badge>
+                <Badge tone={resultPct >= 80 ? 'ok' : resultPct >= 50 ? 'warn' : 'default'}>
+                  {simple && attempt && attempt.total > 0 ? notesHitText(attempt) : `${resultPct}% accuracy`}
+                </Badge>
               )}
             </div>
           </div>
@@ -167,6 +176,9 @@ function RecommendationCard({ rec, action }: { rec: Recommendation; action: { la
 export function TodayPage() {
   const profile = useProfile()
   if (!profile) return <div className="py-16 text-center text-muted">Loading…</div>
+  // A brand-new profile goes through the Start Here wizard first.
+  if (!profile.placementDoneAt && !profile.firstStepsStartedAt && !profile.experience) return <Navigate to="/start" replace />
+  if (profile.firstStepsStartedAt && !profile.firstStepsDoneAt) return <FirstStepsHome />
   if (!profile.placementDoneAt) {
     return (
       <div data-testid="today-page">
@@ -176,6 +188,43 @@ export function TodayPage() {
     )
   }
   return <TodayPlan placementDoneAt={profile.placementDoneAt} />
+}
+
+/** Today while the First steps course is running: the next lesson, the tools, and a way out. */
+function FirstStepsHome() {
+  const [skipping, setSkipping] = useState(false)
+  const skipCourse = async () => {
+    setSkipping(true)
+    try {
+      await completeFirstSteps()
+    } finally {
+      setSkipping(false)
+    }
+  }
+  return (
+    <div data-testid="today-page" className="flex flex-col gap-4">
+      <PageHeader title="Today" subtitle={formatLongDate(localDateString(new Date()))} />
+      <FirstStepsCard />
+      <Card className="flex flex-wrap items-center gap-2 text-sm text-muted">
+        <span>Any time:</span>
+        <Link to="/tune" className="underline hover:text-slate-200">
+          Tune up
+        </Link>
+        <Link to="/metronome" className="underline hover:text-slate-200">
+          Metronome
+        </Link>
+        <Link to="/lessons" className="underline hover:text-slate-200">
+          All lessons and songs
+        </Link>
+      </Card>
+      <p className="text-xs text-muted">
+        Played before?{' '}
+        <button type="button" className="underline hover:text-slate-200" disabled={skipping} onClick={() => void skipCourse()} data-testid="skip-course">
+          Skip the course and go to daily sessions
+        </button>
+      </p>
+    </div>
+  )
 }
 
 function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
@@ -320,10 +369,10 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
             </span>
             <div className="ml-auto flex flex-wrap gap-2">
               <Button size="sm" disabled={!canReplan} title={replanTip} onClick={() => void replan(true)} data-testid="quick-5">
-                <Zap className="h-4 w-4" /> Quick 5
+                <Zap className="h-4 w-4" /> Quick 5 minutes
               </Button>
               <Button size="sm" disabled={!canReplan} title={replanTip} onClick={() => void replan(false)}>
-                <RotateCcw className="h-4 w-4" /> Re-plan
+                <RotateCcw className="h-4 w-4" /> New plan
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setShowPrefs((v) => !v)} aria-expanded={showPrefs}>
                 <Settings2 className="h-4 w-4" /> Preferences
@@ -343,7 +392,7 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
               <p className="text-xs text-muted">Changes apply to the next plan.</p>
               <div>
                 <Button size="sm" variant="primary" disabled={!canReplan} title={replanTip} onClick={() => void replan(false)}>
-                  Re-plan now
+                  New plan now
                 </Button>
               </div>
             </Card>
@@ -356,7 +405,7 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
                   key={block.id}
                   block={block}
                   songTitle={block.kind === 'song' ? songTitles?.[block.songId] : undefined}
-                  resultPct={attempt ? pct(attempt.accuracy) : null}
+                  attempt={attempt}
                   busy={busy}
                   onStart={() => startBlock(block)}
                   onSkip={() => void skip(block.id)}

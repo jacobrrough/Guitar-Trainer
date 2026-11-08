@@ -15,10 +15,10 @@ export type BlockIconName = 'Flame' | 'Target' | 'Repeat' | 'Music' | 'RotateCcw
 
 export const BLOCK_META: Record<BlockKind, { label: string; icon: BlockIconName }> = {
   warmup: { label: 'Warm-up', icon: 'Flame' },
-  focus: { label: 'Focus', icon: 'Target' },
-  second: { label: 'Second skill', icon: 'Repeat' },
+  focus: { label: 'Main exercise', icon: 'Target' },
+  second: { label: 'Another exercise', icon: 'Repeat' },
   song: { label: 'Song', icon: 'Music' },
-  review: { label: 'Review', icon: 'RotateCcw' },
+  review: { label: 'Recap', icon: 'RotateCcw' },
   test: { label: 'Skill check', icon: 'ClipboardCheck' },
   ear: { label: 'Ear training', icon: 'Ear' },
 }
@@ -44,7 +44,7 @@ export function formatLongDate(date: string): string {
 }
 
 /** Title of a block; `songTitle` is looked up by the caller for song blocks. */
-export function blockTitle(block: Block, songTitle?: string): string {
+export function blockTitle(block: Block, songTitle?: string, simple = false): string {
   switch (block.kind) {
     case 'test':
       return `Skill check: ${block.test}`
@@ -54,9 +54,42 @@ export function blockTitle(block: Block, songTitle?: string): string {
     }
     default: {
       const name = SKILLS_BY_ID[block.skillId]?.name ?? block.skillId
-      return `${name} · ${Math.round(block.tempo)} bpm`
+      return simple ? name : `${name} · ${Math.round(block.tempo)} bpm`
     }
   }
+}
+
+/** Plain-words pace line for an exercise block (the bpm lives in the block runner's Details). */
+export function blockPaceText(block: Block): string | null {
+  if (block.kind === 'song' || block.kind === 'test' || block.kind === 'ear') return null
+  return block.tempo < 70 ? 'Play it slowly, with the clicks' : block.tempo < 100 ? 'At a steady pace, with the clicks' : 'At a lively pace, with the clicks'
+}
+
+/** "5 of 8 notes" from attempt counts (perfects + goods of total). */
+export function notesHitText(r: Pick<AttemptResult, 'perfects' | 'goods' | 'total'>): string {
+  return `${r.perfects + r.goods} of ${r.total} notes`
+}
+
+/** Timing in words, for beginners. */
+export function timingWords(ms: number | null): string {
+  if (ms === null) return 'Not enough notes to judge your timing'
+  if (Math.abs(ms) < 25) return 'right with the click'
+  return ms > 0 ? 'a little behind the click' : 'a little ahead of the click'
+}
+
+const SIMPLE_BANDS: Record<string, string> = { new: 'New', learning: 'Learning', developing: 'Solid', solid: 'Strong', mastered: 'Mastered' }
+export function simpleBandLabel(band: string): string {
+  return SIMPLE_BANDS[band] ?? bandLabel(band)
+}
+
+const REASON_WORDS: Record<string, string> = {
+  'low coverage': 'we could not hear you clearly for much of it',
+  'speaker bleed': 'the microphone was hearing the speaker',
+  'calibration stale': 'sound sync is out of date',
+  'timing bias': 'your timing drifted',
+}
+export function reasonText(reason: string): string {
+  return REASON_WORDS[reason] ?? reason
 }
 
 export function blockStatusLabel(status: Block['status']): string {

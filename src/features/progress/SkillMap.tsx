@@ -1,9 +1,11 @@
 import { ChevronDown, ChevronRight, Lock, Pin } from 'lucide-react'
 import { useState } from 'react'
+import { useSettings } from '../../app/settings'
 import { Badge, Card, cx } from '../../components/ui'
 import { effectiveRating, masteryBand } from '../../training/learner'
 import { CATEGORY_LABELS, SKILLS_BY_ID, isUnlocked, skillsForCategory } from '../../training/skills'
 import type { LearnerModel, MasteryBand, SkillCategory } from '../../training/types'
+import { simpleBandLabel } from '../today/todayUtils'
 import { RatingChart } from './RatingChart'
 
 interface SkillMapProps {
@@ -26,6 +28,7 @@ const BAND_BAR: Record<MasteryBand, string> = {
 
 export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor }: SkillMapProps) {
   const [open, setOpen] = useState<string | null>(null)
+  const simple = useSettings().simpleFeedback
   const ratings: Record<string, number> = {}
   for (const [id, st] of Object.entries(model.skills)) ratings[id] = effectiveRating(st, now)
 
@@ -63,8 +66,8 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor }: SkillM
                       <span className="min-w-0 flex-1">
                         <span className="flex flex-wrap items-center gap-1.5">
                           <span className={cx('text-sm font-medium', !unlocked && 'text-muted')}>{skill.name}</span>
-                          <Badge>T{skill.tier}</Badge>
-                          {skill.provisional && <Badge tone="warn">provisional</Badge>}
+                          {!simple && <Badge>T{skill.tier}</Badge>}
+                          {!simple && skill.provisional && <Badge tone="warn">provisional</Badge>}
                           {pinned && <Badge tone="accent">pinned</Badge>}
                         </span>
                         <span className="mt-1.5 flex items-center gap-2">
@@ -74,7 +77,7 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor }: SkillM
                             aria-valuemin={0}
                             aria-valuemax={100}
                             aria-valuenow={Math.round(eff)}
-                            aria-label={`${skill.name} rating`}
+                            aria-label={`${skill.name} ${simple ? 'skill score' : 'rating'}`}
                           >
                             <span
                               className={cx('block h-full rounded-full', BAND_BAR[band])}
@@ -86,9 +89,9 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor }: SkillM
                           <span className="w-8 text-right text-xs tabular-nums text-slate-300">{Math.round(eff)}</span>
                         </span>
                         <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
-                          <span>{band}</span>
-                          {state && state.tempoCeiling > 0 && <span>ceiling {Math.round(state.tempoCeiling)} bpm</span>}
-                          {rust > 0 && <span className="text-amber-300">rusty −{rust}</span>}
+                          <span>{simple ? simpleBandLabel(band) : band}</span>
+                          {!simple && state && state.tempoCeiling > 0 && <span>ceiling {Math.round(state.tempoCeiling)} bpm</span>}
+                          {rust > 0 && <span className="text-amber-300">{simple ? 'a bit rusty' : `rusty −${rust}`}</span>}
                           {!unlocked && (
                             <span className="inline-flex items-center gap-1">
                               <Lock size={12} aria-hidden /> needs {missing.join(', ')}

@@ -23,10 +23,11 @@ import { localDateString } from '../../training/store'
 import type { AttemptResult, Block, ExerciseBlock, SessionRecord, SongBlock } from '../../training/types'
 import { useTodaySession } from '../../training/useTraining'
 import { renderDemoBacking } from '../library/demoSong'
+import { builtInBacking } from '../../songs'
 import { Player, type PlayerHandle } from '../play/Player'
 import { EarTrainer } from './EarTrainer'
 import type { ScoreSummary } from '../play/scoring'
-import { bandLabel, pct, repSummaryText, timingText } from './todayUtils'
+import { bandLabel, notesHitText, pct, reasonText, repSummaryText, simpleBandLabel, timingText, timingWords } from './todayUtils'
 
 function Overlay({ testId, children }: { testId: string; children: ReactNode }) {
   return (
@@ -93,6 +94,7 @@ function ErrorCard({ message, onRetry }: { message: string; onRetry?: () => void
 function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: SessionRecord }) {
   const navigate = useNavigate()
   const settings = useSettings()
+  const simple = settings.simpleFeedback
   const skill = SKILLS_BY_ID[block.skillId]
   const playerRef = useRef<PlayerHandle>(null)
   const sessionRef = useRef(session)
@@ -220,19 +222,54 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
     overlay = <NoScoreCard onRetry={retry} />
   } else if (blockOutcome) {
     const after = blockOutcome.state?.rating ?? ratingBefore
+    const res = blockOutcome.attempt
+    const acc = blockOutcome.performance.acc
+    const tip = acc < 0.5 ? 'Buzzing or muted notes? Press each string firmly just behind the metal bar (fret), close to it.' : (skill.tips[0] ?? '')
+    const reasons = blockOutcome.performance.reasons
+    const details = (
+      <>
+        <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
+          <Stat label={simple ? 'Skill score' : 'Rating'} value={`${Math.round(ratingBefore)} → ${Math.round(after)}`} />
+          <Stat
+            label={simple ? 'Level' : 'Level band'}
+            value={
+              simple
+                ? `${simpleBandLabel(masteryBand(ratingBefore))} → ${simpleBandLabel(masteryBand(after))}`
+                : `${bandLabel(masteryBand(ratingBefore))} → ${bandLabel(masteryBand(after))}`
+            }
+          />
+        </dl>
+        {simple && (
+          <p className="mt-2 text-xs text-muted">
+            {pct(acc)}% accuracy · reached {Math.round(tempo)} bpm
+          </p>
+        )}
+        {!blockOutcome.performance.reliable && (
+          <p className="mt-3 text-xs text-amber-200">
+            {simple ? 'This result may be off: ' : 'Low-confidence result: '}
+            {(simple ? reasons.map(reasonText) : reasons).join(', ') || 'limited evidence'}.
+          </p>
+        )}
+      </>
+    )
     overlay = (
       <Overlay testId="block-result">
         <h2 className="text-lg font-semibold">{skill.name} done</h2>
-        <div className="mt-1 text-5xl font-bold tabular-nums">{pct(blockOutcome.performance.acc)}%</div>
-        <div className="text-sm text-muted">accuracy · reached {Math.round(tempo)} bpm</div>
-        <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
-          <Stat label="Rating" value={`${Math.round(ratingBefore)} → ${Math.round(after)}`} />
-          <Stat label="Level" value={`${bandLabel(masteryBand(ratingBefore))} → ${bandLabel(masteryBand(after))}`} />
-        </dl>
-        {!blockOutcome.performance.reliable && (
-          <p className="mt-3 text-xs text-amber-200">
-            Low-confidence result: {blockOutcome.performance.reasons.join(', ') || 'limited evidence'}.
-          </p>
+        {simple ? (
+          <>
+            <div className="mt-1 text-3xl font-bold">You hit {notesHitText(res)}</div>
+            {tip && <p className="mt-3 text-sm text-slate-200">Tip: {tip}</p>}
+            <details className="mt-4 text-left text-sm">
+              <summary className="cursor-pointer text-center text-muted">Details</summary>
+              {details}
+            </details>
+          </>
+        ) : (
+          <>
+            <div className="mt-1 text-5xl font-bold tabular-nums">{pct(acc)}%</div>
+            <div className="text-sm text-muted">accuracy · reached {Math.round(tempo)} bpm</div>
+            {details}
+          </>
         )}
         <NavButtons session={blockOutcome.session} blockId={block.id} />
       </Overlay>
@@ -241,15 +278,31 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
     overlay = (
       <Overlay testId="rep-card">
         <h2 className="text-lg font-semibold">
-          Rep {rep} of {block.reps}
+          {simple ? 'Round' : 'Rep'} {rep} of {block.reps}
         </h2>
-        <div className="mt-1 text-5xl font-bold tabular-nums">{pct(repOutcome.performance.acc)}%</div>
-        <div className="mt-1 text-sm text-muted">{repSummaryText(repResult)}</div>
-        <div className="text-sm text-muted">{timingText(repResult.timingMedianMs)}</div>
-        <p className="mt-3 text-sm text-slate-200">Next rep at {Math.round(repOutcome.nextTempo)} bpm</p>
+        {simple ? (
+          <>
+            <div className="mt-1 text-3xl font-bold">You hit {notesHitText(repResult)}</div>
+            <div className="mt-1 text-sm text-muted">Timing: {timingWords(repResult.timingMedianMs)}</div>
+            <p className="mt-3 text-sm text-slate-200">Next round a bit faster</p>
+            <details className="mt-2 text-sm text-muted">
+              <summary className="cursor-pointer">Details</summary>
+              <div className="mt-1">{pct(repOutcome.performance.acc)}% accuracy · {repSummaryText(repResult)}</div>
+              <div>{timingText(repResult.timingMedianMs)}</div>
+              <div>Next rep at {Math.round(repOutcome.nextTempo)} bpm</div>
+            </details>
+          </>
+        ) : (
+          <>
+            <div className="mt-1 text-5xl font-bold tabular-nums">{pct(repOutcome.performance.acc)}%</div>
+            <div className="mt-1 text-sm text-muted">{repSummaryText(repResult)}</div>
+            <div className="text-sm text-muted">{timingText(repResult.timingMedianMs)}</div>
+            <p className="mt-3 text-sm text-slate-200">Next rep at {Math.round(repOutcome.nextTempo)} bpm</p>
+          </>
+        )}
         <div className="mt-4 flex flex-wrap justify-center gap-2">
           <Button variant="primary" onClick={nextRep} data-testid="next-rep">
-            Next rep
+            {simple ? 'Next round' : 'Next rep'}
           </Button>
           <Button
             variant="secondary"
@@ -295,7 +348,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
         ref={playerRef}
         mode="exercise"
         title={skill.name}
-        subtitle={`${exercise.title} · rep ${rep}/${block.reps}`}
+        subtitle={`${exercise.title} · ${simple ? 'round' : 'rep'} ${rep}/${block.reps}`}
         chart={exercise.chart}
         notes={exercise.chart.notes}
         audio={audio}
@@ -304,7 +357,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
         targetTempo={block.tempo}
         readyHint={exercise.instructions}
         resetKey={`${rep}-${tempo}`}
-        headerControls={<Badge tone="accent">{`Rep ${rep}/${block.reps} · ${Math.round(tempo)} bpm`}</Badge>}
+        headerControls={<Badge tone="accent">{simple ? `Round ${rep} of ${block.reps}` : `Rep ${rep}/${block.reps} · ${Math.round(tempo)} bpm`}</Badge>}
         onExit={() => navigate('/')}
         onFinished={onFinished}
         resultsOverlay={overlay}
@@ -339,6 +392,7 @@ function SongRunner({ block, session }: { block: SongBlock; session: SessionReco
  */
 function SongPlayer({ block, session, song }: { block: SongBlock; session: SessionRecord; song: SongRecord }) {
   const navigate = useNavigate()
+  const simple = useSettings().simpleFeedback
   const sessionRef = useRef(session)
   sessionRef.current = session
   const [phase, setPhase] = useState<'loop' | 'full'>(block.loopBars ? 'loop' : 'full')
@@ -350,7 +404,14 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
   const levels = useMemo(() => generateLevels(song.chart), [song])
   const level = Math.max(0, Math.min(levels.length - 1, block.level))
   const audio = useMemo(() => songAudioBlob(song), [song])
-  const demoBacking = useMemo(() => (song.source === 'demo' ? encodeWav(renderDemoBacking()) : null), [song])
+  const demoBacking = useMemo(() => {
+    if (song.source === 'demo') return encodeWav(renderDemoBacking())
+    if (song.source === 'builtin' && song.builtinId) {
+      const pcm = builtInBacking(song.builtinId)
+      return pcm ? encodeWav(pcm) : null
+    }
+    return null
+  }, [song])
   const chart = useMemo(() => ({ ...song.chart, duration: Math.max(song.chart.duration, song.duration) }), [song])
 
   const onFinished = (summary: ScoreSummary, result: AttemptResult) => {
@@ -405,11 +466,20 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
         <h2 className="text-lg font-semibold">
           {song.title} · Level {level + 1}
         </h2>
-        <div className="mt-1 text-5xl font-bold tabular-nums">{pct(outcome.performance.acc)}%</div>
-        <div className="text-sm text-muted">accuracy</div>
+        {simple ? (
+          <>
+            <div className="mt-1 text-3xl font-bold">You hit {notesHitText(outcome.attempt)}</div>
+            <div className="text-sm text-muted">{pct(outcome.performance.acc)}% accuracy</div>
+          </>
+        ) : (
+          <>
+            <div className="mt-1 text-5xl font-bold tabular-nums">{pct(outcome.performance.acc)}%</div>
+            <div className="text-sm text-muted">accuracy</div>
+          </>
+        )}
         <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
           <Stat label="Best" value={best === null ? '—' : `${pct(best)}%`} />
-          <Stat label="Weak bars" value={weak.length ? weak.map((b) => b + 1).join(', ') : 'none'} />
+          <Stat label={simple ? "Bars to practise" : "Weak bars"} value={weak.length ? weak.map((b) => b + 1).join(', ') : 'none'} />
         </dl>
         <NavButtons session={outcome.session} blockId={block.id} />
       </Overlay>

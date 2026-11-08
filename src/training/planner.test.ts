@@ -118,7 +118,7 @@ describe('planSession', () => {
     const focus = plan.blocks.find((b) => b.kind === 'focus') as ExerciseBlock
     expect(focus.skillId).toBe('power-chords')
     expect(focus.generatorId).toBe('power-chords-gen')
-    expect(focus.reason).toMatch(/Rated 30/)
+    expect(focus.reason).toMatch(/main exercise/)
     const ids = plan.blocks.filter((b) => 'skillId' in b).map((b) => (b as ExerciseBlock).skillId)
     expect(ids).not.toContain('pent-lick')
   })
@@ -359,7 +359,7 @@ describe('beginner mode (first steps)', () => {
     skill('power-chords', 'chords', 2, ['single']),
     skill('string-skip', 'picking', 2, ['basics.open-strings']),
   ]
-  const FIRST_STEPS = 'First steps: open strings and first frets before anything faster.'
+  const FIRST_STEPS = 'First steps: open strings and the first frets before anything faster.'
   const tiered = (states: SkillState[] = [], over: Partial<PlannerInput> = {}, prefs: Partial<Prefs> = {}) =>
     input({ model: model(states), skills: TIERED, daysSinceLastSession: undefined, ...over }, prefs)
   const tierOf = (id: string) => TIERED.find((s) => s.id === id)?.tier ?? -1
@@ -427,7 +427,7 @@ describe('beginner mode (first steps)', () => {
 
   it('pickSongBlock only starts gently for beginners who have played nothing', () => {
     expect(pickSongBlock(LIBRARY, {}, 7, 0, { beginner: true })).toMatchObject({ level: 0, speed: BEGINNER_SONG_SPEED })
-    expect(pickSongBlock(LIBRARY, {}, 7, 0, { beginner: true })?.reason).toMatch(/first song: the sparse level, slowed down/)
+    expect(pickSongBlock(LIBRARY, {}, 7, 0, { beginner: true })?.reason).toMatch(/an easy level, played slowly/i)
     expect(pickSongBlock(LIBRARY, {}, 7)).toMatchObject({ level: 2, speed: 1 })
   })
 })

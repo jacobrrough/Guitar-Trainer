@@ -2,6 +2,7 @@ import type { Beat, ChartNote } from '../../chart/types'
 import { simplestPosition } from '../../music/fretboard'
 import { midiToName } from '../../music/pitch'
 import { stringColor } from '../../music/strings'
+import { getSettings } from '../../app/settings'
 import type { GroupState, ScoreSummary } from './scoring'
 
 export interface HighwayState {
@@ -21,6 +22,46 @@ export interface HighwayState {
   visibleSeconds: number
   showNoteNames: boolean
   paused: boolean
+}
+
+export type Handedness = 'right' | 'left'
+
+/**
+ * Row of a string's lane counted from the top of the highway. Right-handed (today's order):
+ * thickest string at the bottom. Left-handed: mirrored, thickest string at the top.
+ */
+export function laneIndex(string: number, stringCount: number, handedness: Handedness): number {
+  return handedness === 'left' ? string : stringCount - 1 - string
+}
+
+/** Text on the pill: X for dead notes, the note name when requested, otherwise the fret number. */
+export function pillLabel(note: Pick<ChartNote, 'fret' | 'midi' | 'tech'>, opts: { showNoteNames: boolean }): string {
+  if (note.tech?.dead) return 'X'
+  return opts.showNoteNames ? midiToName(note.midi, false) : String(note.fret)
+}
+
+/** Lane label such as "6 E" (thickest) … "1 E" (thinnest); string 0 is number `tuning.length`. */
+export function laneLabel(string: number, tuning: number[], capo = 0): string {
+  return `${tuning.length - string} ${midiToName(tuning[string] + capo, false)}`
+}
+
+const onsetScratch: number[] = []
+
+/**
+ * True when no beat-long window within [fromTime, toTime] holds more than 2 distinct onsets
+ * (chords count once). `secondsPerBeat` defaults to 0.5 (120 bpm).
+ */
+export function isSparse(notes: ChartNote[], fromTime: number, toTime: number, secondsPerBeat = 0.5): boolean {
+  onsetScratch.length = 0
+  for (const n of notes) {
+    if (n.time < fromTime) continue
+    if (n.time > toTime) break
+    const last = onsetScratch.length - 1
+    if (last < 0 || n.time - onsetScratch[last] > 1e-4) onsetScratch.push(n.time)
+  }
+  const w = secondsPerBeat * 1.001
+  for (let i = 2; i < onsetScratch.length; i++) if (onsetScratch[i] - onsetScratch[i - 2] < w) return false
+  return true
 }
 
 const TECH_GLYPH: Array<[keyof NonNullable<ChartNote['tech']>, string]> = [
@@ -102,7 +143,8 @@ export class HighwayRenderer {
     const top = short ? 52 : 70
     const bottom = short ? 24 : 34
     const laneH = (H - top - bottom) / S
-    const yOf = (str: number) => top + (S - 1 - str + 0.5) * laneH
+    const { handedness, showFingerNumbers } = getSettings()
+    const yOf = (str: number) => top + (laneIndex(str, S, handedness) + 0.5) * laneH
     const hitX = Math.round(Math.min(W * 0.2, 180))
     const pps = (W - hitX - 12) / Math.max(0.5, s.visibleSeconds)
     const xOf = (t: number) => hitX + (t - s.songTime) * pps
@@ -116,6 +158,9 @@ export class HighwayRenderer {
     ctx.fillStyle = bg
     ctx.fillRect(0, 0, W, H)
 
+    const spb = s.beats.length > 1 ? Math.max(0.1, s.beats[1].time - s.beats[0].time) : 0.5
+    const sparse = isSparse(s.notes, leftTime, rightTime, spb)
+
     // Lanes
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif'
     ctx.textBaseline = 'middle'
@@ -123,15 +168,15 @@ export class HighwayRenderer {
       const y = yOf(str)
       ctx.strokeStyle = stringColor(str)
       ctx.globalAlpha = 0.45
-      ctx.lineWidth = 1 + (S - 1 - str) * 0.3
+      ctx.lineWidth = (sparse ? 2 : 1) + (S - 1 - str) * 0.3
       ctx.beginPath()
       ctx.moveTo(0, y)
       ctx.lineTo(W, y)
       ctx.stroke()
-      ctx.globalAlpha = 0.9
+      ctx.globalAlpha = 0.6
       ctx.fillStyle = stringColor(str)
       ctx.textAlign = 'left'
-      ctx.fillText(midiToName(s.tuning[str] + s.capo, false), 8, y - 10)
+      ctx.fillText(laneLabel(str, s.tuning, s.capo), 8, y - 10)
     }
     ctx.globalAlpha = 1
 
@@ -153,6 +198,8 @@ export class HighwayRenderer {
         ctx.fillText(String(b.bar + 1), x + 12, H - bottom / 2)
       }
     }
+
+    const maxPill = sparse ? 52 : 44
 
     // Visible notes
     const start = firstIndexAtOrAfter(s.notes, leftTime - 8)
@@ -191,12 +238,12 @@ export class HighwayRenderer {
       if (name) {
         const topY = Math.min(...group.map((n) => yOf(n.string)))
         ctx.fillStyle = `rgba(248,250,252,${0.9 * alpha})`
-        ctx.fillText(name, x, topY - Math.min(44, laneH * 0.74) / 2 - 12)
+        ctx.fillText(name, x, topY - Math.min(maxPill, laneH * 0.74) / 2 - 12)
       }
     }
 
     // Notes
-    const pillH = Math.min(44, laneH * 0.74)
+    const pillH = Math.min(maxPill, laneH * 0.74)
     for (const n of visible) {
       const x = xOf(n.time)
       const y = yOf(n.string)
@@ -224,8 +271,11 @@ export class HighwayRenderer {
       }
 
       // Pill
-      const label = n.tech?.dead ? 'X' : s.showNoteNames ? midiToName(n.midi, false) : String(n.fret)
-      const pillW = label.length > 1 ? 44 : 36
+      const label = pillLabel(n, s)
+      const wantFinger = showFingerNumbers && n.finger !== undefined && n.fret > 0 && !n.tech?.dead
+      const tiny = pillH < 28
+      const inside = wantFinger && tiny ? String(n.finger) : label
+      const pillW = (label.length > 1 ? 44 : 36) * (sparse ? 1.15 : 1)
       roundRect(ctx, x - pillW / 2, y - pillH / 2, pillW, pillH, pillH / 2)
       ctx.fillStyle = status === 'miss' ? '#475569' : color
       ctx.fill()
@@ -245,7 +295,28 @@ export class HighwayRenderer {
       ctx.fillStyle = '#0b0f17'
       ctx.font = `800 ${Math.round(pillH * 0.5)}px ui-sans-serif, system-ui, sans-serif`
       ctx.textAlign = 'center'
-      ctx.fillText(label, x, y + 1)
+      ctx.fillText(inside, x, y + 1)
+
+      if (wantFinger) {
+        if (tiny) {
+          ctx.font = '700 11px ui-sans-serif, system-ui, sans-serif'
+          ctx.fillStyle = 'rgba(248,250,252,0.9)'
+          ctx.fillText(label, x, y - pillH / 2 - 7)
+        } else {
+          const r = Math.max(8, pillH * 0.26)
+          const bx = x - pillW / 2
+          ctx.beginPath()
+          ctx.arc(bx, y, r, 0, Math.PI * 2)
+          ctx.fillStyle = '#0b0f17'
+          ctx.fill()
+          ctx.strokeStyle = '#f8fafc'
+          ctx.lineWidth = 1.5
+          ctx.stroke()
+          ctx.fillStyle = '#f8fafc'
+          ctx.font = `800 ${Math.round(r * 1.2)}px ui-sans-serif, system-ui, sans-serif`
+          ctx.fillText(String(n.finger), bx, y + 1)
+        }
+      }
 
       if (n.tech) {
         const glyph = TECH_GLYPH.find(([k]) => n.tech?.[k])?.[1]

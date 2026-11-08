@@ -4,6 +4,7 @@ import { createHashRouter, RouterProvider } from 'react-router'
 import { CoursePage } from './features/lessons/CoursePage'
 import { LessonPage } from './features/lessons/LessonPage'
 import { StartHere } from './features/onboarding/StartHere'
+import { GuidedTunerPage } from './features/tuner/GuidedTuner'
 import { registerSW } from 'virtual:pwa-register'
 import './index.css'
 import { AppLayout } from './app/AppLayout'
@@ -30,6 +31,7 @@ const router = createHashRouter([
       { path: 'settings', element: <SettingsPage /> },
       { path: 'test/:type', element: <TestFlow /> },
       { path: 'lessons', element: <CoursePage /> },
+      { path: 'tune', element: <GuidedTunerPage /> },
     ],
   },
   { path: '/play/:songId', element: <PlayPage /> },

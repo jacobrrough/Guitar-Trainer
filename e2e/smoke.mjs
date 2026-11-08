@@ -112,10 +112,11 @@ page.on('console', (msg) => {
 page.on('pageerror', (err) => consoleErrors.push(`pageerror: ${err.message}`))
 
 try {
-  // Today (Coach) — first run shows the setup card
+  // First run: Today sends a brand-new profile to the Start Here wizard
   await page.goto(`${base}/#/`)
-  await page.waitForSelector('[data-testid="setup-card"]', { timeout: 15000 })
-  check(true, 'today page shows the setup card on first run')
+  await page.waitForSelector('[data-testid="start-here"]', { timeout: 15000 })
+  check(true, 'first run opens the Start Here wizard')
+  await page.screenshot({ path: path.join(OUT, `start-here${SUFFIX}.png`) })
 
   // Library (empty state)
   await page.goto(`${base}/#/songs`)
@@ -208,7 +209,7 @@ try {
   // Jump near the end by letting it run; the demo is ~22 s.
   await page.waitForSelector('[data-testid="results"]', { timeout: 40000 })
   const results = await page.getByTestId('results').innerText()
-  check(/accuracy/.test(results), `results screen shown: ${results.split('\n').slice(0, 3).join(' | ')}`)
+  check(/accuracy|of \d+ notes/.test(results), `results screen shown: ${results.split('\n').slice(0, 3).join(' | ')}`)
   await page.screenshot({ path: path.join(OUT, `results${SUFFIX}.png`) })
 
   // Section practice: loop bars 1–2 and expect the loop overlay instead of a recorded play
@@ -230,9 +231,20 @@ try {
   await page.waitForSelector('text=Demo riff in E minor', { timeout: 10000 })
   check((await page.locator('text=/1 plays/').count()) === 1, 'play count persisted to IndexedDB')
 
-  // Coach: skip placement, get a plan, run the first (warm-up) block to its result
-  await page.goto(`${base}/#/`)
+  // Coach: through the wizard as someone who has played, then skip placement, get a plan, run the first block
+  await page.goto(`${base}/#/start`)
+  await page.waitForSelector('[data-testid="start-here"]', { timeout: 15000 })
+  await page.getByTestId('start-experience-played').click()
+  await page.getByTestId('start-next').click() // guitar
+  await page.getByTestId('start-hand-right').click()
+  await page.getByTestId('start-next').click() // time
+  await page.getByTestId('start-next').click() // phone
+  await page.getByText('Continue without the microphone').click()
+  await page.getByRole('button', { name: /skip tuning/i }).click()
+  await page.waitForSelector('[data-testid="start-finish"]', { timeout: 10000 })
+  await page.getByTestId('start-finish').click()
   await page.waitForSelector('[data-testid="setup-card"]', { timeout: 15000 })
+  check(true, 'wizard "played before" path lands on the setup card')
   // 45 minutes a day: the only template with an ear-training block
   await page.getByRole('button', { name: '45 min' }).click()
   await page.getByTestId('setup-skip').click()
@@ -302,6 +314,57 @@ try {
   await page.waitForFunction(() => (document.querySelector('[data-testid="data-status"]')?.textContent || '').length > 0, null, { timeout: 10000 })
   const exportStatus = await page.getByTestId('data-status').innerText()
   check(/^Export/.test(exportStatus), `training data export: ${exportStatus}`)
+
+  // First steps: a brand-new learner in a fresh profile goes through the wizard and starts lesson 1
+  {
+    const ctx2 = await browser.newContext({ ...(DEVICE ?? { viewport: { width: 1280, height: 800 } }), permissions: ['microphone'] })
+    const p2 = await ctx2.newPage()
+    p2.on('pageerror', (err) => consoleErrors.push(`pageerror(first steps): ${err.message}`))
+    await p2.goto(`${base}/#/start`)
+    await p2.waitForSelector('[data-testid="start-here"]', { timeout: 15000 })
+    await p2.getByTestId('start-experience-new').click()
+    // Walk guitar → time → (goal song) → phone, whatever the exact step set is
+    for (let i = 0; i < 6 && !(await p2.getByTestId('start-mic-allow').count()); i++) {
+      const song = p2.locator('[data-testid^="start-song-"]').first()
+      if (await song.count()) await song.click()
+      if (await p2.getByTestId('start-mic-allow').count()) break
+      await p2.getByTestId('start-next').click()
+      await p2.waitForTimeout(150)
+    }
+    await p2.getByTestId('start-mic-allow').click()
+    await p2.getByTestId('start-mic-ok').waitFor({ timeout: 10000 }).catch(() => {})
+    check((await p2.getByTestId('start-mic-ok').count()) === 1, 'mic check hears the (fake) microphone')
+    await p2.getByTestId('start-next').click() // to tuning
+    await p2.getByRole('button', { name: /skip tuning/i }).click()
+    await p2.waitForSelector('[data-testid="start-finish"]', { timeout: 10000 })
+    await p2.getByTestId('start-finish').click()
+    await p2.waitForSelector('[data-testid="first-steps-card"]', { timeout: 30000 })
+    check(true, 'new learner lands on Today with the First steps card')
+    await p2.screenshot({ path: path.join(OUT, `first-steps-today${SUFFIX}.png`) })
+    await p2.getByTestId('first-steps-start').click()
+    await p2.waitForSelector('[data-testid="lesson-learn"]', { timeout: 15000 })
+    await p2.screenshot({ path: path.join(OUT, `lesson-learn${SUFFIX}.png`) })
+    for (let i = 0; i < 8 && !(await p2.getByTestId('lesson-try').count()); i++) await p2.getByTestId('lesson-next').click()
+    await p2.waitForSelector('[data-testid="lesson-try"]', { timeout: 10000 })
+    check((await p2.getByTestId('listen').count()) === 1 && (await p2.getByTestId('start').count()) === 1, 'lesson 1 try step shows Listen first and Start')
+    await p2.screenshot({ path: path.join(OUT, `lesson-try${SUFFIX}.png`) })
+    await p2.getByTestId('start').click()
+    await p2.waitForSelector('[data-testid="lesson-feedback"]', { timeout: 90000 })
+    const feedback = await p2.getByTestId('lesson-feedback').innerText()
+    check(/notes/i.test(feedback), `lesson drill feedback in plain words: ${feedback.split('\n')[0]}`)
+    await p2.screenshot({ path: path.join(OUT, `lesson-feedback${SUFFIX}.png`) })
+    await p2.getByTestId('lesson-continue').click()
+    await p2.waitForSelector('[data-testid="lesson-play"]', { timeout: 30000 })
+    check((await p2.getByTestId('start').count()) === 1, 'lesson 1 play step is ready with the bundled song')
+    await p2.goto(`${base}/#/lessons`)
+    await p2.waitForSelector('[data-testid="lesson-row"]', { timeout: 15000 })
+    check((await p2.getByTestId('lesson-row').count()) === 10, 'course page lists ten lessons')
+    await p2.screenshot({ path: path.join(OUT, `course${SUFFIX}.png`) })
+    await p2.goto(`${base}/#/songs`)
+    await p2.waitForSelector('text=Ode to Joy', { timeout: 15000 })
+    check(true, 'starter songs are in the library')
+    await ctx2.close()
+  }
 
   // Import with AI transcription of a synthetic 4-note WAV (slow on CPU; SKIP_TRANSCRIBE=1 to skip)
   if (process.env.SKIP_TRANSCRIBE) throw new SkipRest()

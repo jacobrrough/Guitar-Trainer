@@ -49,7 +49,19 @@ export function SettingsPage() {
       <PageHeader title="Settings" subtitle="Stored in this browser." />
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <h2 className="mb-3 font-semibold">Input</h2>
+          <h2 className="mb-3 font-semibold">Sound</h2>
+          <Toggle
+            checked={settings.echoCancellation}
+            onChange={(v) => updateSettings({ echoCancellation: v })}
+            label="Playing through the phone speaker (no headphones)"
+          />
+          <p className="mt-1 text-xs text-muted">
+            Turn this on if the sound comes out of your phone or computer speaker. It stops the microphone from mistaking the song for your playing.
+            Headphones still score best.
+          </p>
+        </Card>
+        <Card>
+          <h2 className="mb-3 font-semibold">Microphone</h2>
           <Field label="Input device" hint="Audio interface or microphone. Grant access once to see device names.">
             <div className="flex gap-2">
               <Select value={settings.inputDeviceId} onChange={(e) => updateSettings({ inputDeviceId: e.target.value })} className="flex-1">
@@ -68,62 +80,73 @@ export function SettingsPage() {
             </div>
           </Field>
           {permission === 'denied' && <p className="mt-2 text-xs text-red-300">Microphone access was denied. Allow it in your browser's site settings.</p>}
-          <div className="mt-4">
-            <Toggle checked={settings.echoCancellation} onChange={(v) => updateSettings({ echoCancellation: v })} label="Speaker mode: cancel the song's echo from the mic" />
-            <p className="mt-1 text-xs text-muted">Turn on when playing without headphones (phone speaker). Headphones or an audio interface still score best.</p>
-          </div>
-          <Field label="Detection sensitivity" hint="Lower strictness tolerates distortion and noise, at the cost of occasional false notes." className="mt-4">
-            <Select value={settings.clarityThreshold} onChange={(e) => updateSettings({ clarityThreshold: Number(e.target.value) })}>
-              {SENSITIVITY.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Octave tolerance" hint="Pitch detectors often hear chords an octave off. Accepting octaves on chords keeps scoring fair." className="mt-4">
-            <Select value={settings.octaveTolerance} onChange={(e) => updateSettings({ octaveTolerance: e.target.value as typeof settings.octaveTolerance })}>
-              <option value="chords">Chords only (recommended)</option>
-              <option value="all">All notes</option>
-              <option value="none">Never</option>
-            </Select>
-          </Field>
         </Card>
         <Card>
-          <h2 className="mb-3 font-semibold">Timing</h2>
-          <Field label={`Latency compensation: ${settings.latencyMs} ms`} hint="Bluetooth headphones and USB interfaces add delay. Calibrate for the best scoring accuracy.">
-            <input type="range" min={0} max={400} step={5} value={settings.latencyMs} onChange={(e) => updateSettings({ latencyMs: Number(e.target.value) })} />
-          </Field>
-          <div className="mt-3 flex gap-2">
-            <Button variant="primary" onClick={() => setCalibrating(true)}>
-              Calibrate…
-            </Button>
-            <Button variant="ghost" onClick={() => updateSettings({ latencyMs: DEFAULT_SETTINGS.latencyMs, calibratedAt: undefined })}>
-              Reset
-            </Button>
+          <h2 className="mb-3 font-semibold">Display</h2>
+          <div className="flex flex-col gap-3">
+            <Toggle
+              checked={settings.handedness === 'left'}
+              onChange={(v) => updateSettings({ handedness: v ? 'left' : 'right' })}
+              label="Left-handed"
+            />
+            <Toggle checked={settings.showFingerNumbers} onChange={(v) => updateSettings({ showFingerNumbers: v })} label="Show finger numbers" />
+            <Toggle checked={settings.showNoteNames} onChange={(v) => updateSettings({ showNoteNames: v })} label="Show note names instead of fret numbers" />
+            <Toggle
+              checked={settings.simpleFeedback}
+              onChange={(v) => updateSettings({ simpleFeedback: v })}
+              label="Simple feedback (hide scores and technical numbers)"
+            />
           </div>
-          {settings.calibratedAt && <p className="mt-2 text-xs text-muted">Last calibrated {new Date(settings.calibratedAt).toLocaleDateString()}.</p>}
-          <Field label={`Highway look-ahead: ${settings.visibleSeconds.toFixed(1)} s`} hint="How far ahead notes are visible. Shorter = faster scrolling." className="mt-6">
+          <Field label={`Note lane look-ahead: ${settings.visibleSeconds.toFixed(1)} s`} hint="How far ahead notes are visible. Shorter = faster scrolling." className="mt-4">
             <input type="range" min={1.5} max={6} step={0.5} value={settings.visibleSeconds} onChange={(e) => updateSettings({ visibleSeconds: Number(e.target.value) })} />
           </Field>
-          <div className="mt-4">
-            <Toggle checked={settings.showNoteNames} onChange={(v) => updateSettings({ showNoteNames: v })} label="Show note names instead of fret numbers" />
-          </div>
         </Card>
         <Card>
-          <h2 className="mb-3 font-semibold">Tuning</h2>
-          <Field label={`Reference pitch: A4 = ${settings.a4} Hz`}>
-            <input type="range" min={430} max={450} step={1} value={settings.a4} onChange={(e) => updateSettings({ a4: Number(e.target.value) })} />
-          </Field>
-          <Field label="Default tuning for imports" hint="Used when a MIDI file or transcription needs fret positions." className="mt-4">
-            <Select value={settings.defaultTuningId} onChange={(e) => updateSettings({ defaultTuningId: e.target.value })}>
-              {TUNINGS.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          <details data-testid="advanced-settings">
+            <summary className="cursor-pointer font-semibold">Advanced</summary>
+            <div className="mt-3">
+              <Field label={`Sync your sound (latency): ${settings.latencyMs} ms`} hint="Bluetooth headphones and USB interfaces add delay. Calibrate for the best scoring accuracy.">
+                <input type="range" min={0} max={400} step={5} value={settings.latencyMs} onChange={(e) => updateSettings({ latencyMs: Number(e.target.value) })} />
+              </Field>
+              <div className="mt-3 flex gap-2">
+                <Button variant="primary" onClick={() => setCalibrating(true)}>
+                  Calibrate…
+                </Button>
+                <Button variant="ghost" onClick={() => updateSettings({ latencyMs: DEFAULT_SETTINGS.latencyMs, calibratedAt: undefined })}>
+                  Reset
+                </Button>
+              </div>
+              {settings.calibratedAt && <p className="mt-2 text-xs text-muted">Last calibrated {new Date(settings.calibratedAt).toLocaleDateString()}.</p>}
+              <Field label="Mic strictness" hint="Lower strictness tolerates distortion and noise, at the cost of occasional false notes." className="mt-4">
+                <Select value={settings.clarityThreshold} onChange={(e) => updateSettings({ clarityThreshold: Number(e.target.value) })}>
+                  {SENSITIVITY.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Octave tolerance" hint="Pitch detectors often hear chords an octave off. Accepting octaves on chords keeps scoring fair." className="mt-4">
+                <Select value={settings.octaveTolerance} onChange={(e) => updateSettings({ octaveTolerance: e.target.value as typeof settings.octaveTolerance })}>
+                  <option value="chords">Chords only (recommended)</option>
+                  <option value="all">All notes</option>
+                  <option value="none">Never</option>
+                </Select>
+              </Field>
+              <Field label={`Reference pitch: A4 = ${settings.a4} Hz`} hint="The pitch the tuner and scoring treat as the A above middle C. Leave at 440 unless you know you need otherwise." className="mt-4">
+                <input type="range" min={430} max={450} step={1} value={settings.a4} onChange={(e) => updateSettings({ a4: Number(e.target.value) })} />
+              </Field>
+              <Field label="Default tuning for imports" hint="Used when a MIDI file or transcription needs fret positions." className="mt-4">
+                <Select value={settings.defaultTuningId} onChange={(e) => updateSettings({ defaultTuningId: e.target.value })}>
+                  {TUNINGS.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+          </details>
         </Card>
         <DataSection />
         <Card className="text-sm text-muted">

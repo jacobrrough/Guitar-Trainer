@@ -164,6 +164,11 @@ check/second skill/focus/review as block names. Replacements are in §3.
 
 ## 3. The proposal: "First steps", zero to first song
 
+Status: §3.2 (Start Here wizard with mic check and guided tuning), §3.3 (the ten
+lessons with bundled songs) and the §3.4 engine and UI changes are implemented; see
+`src/features/onboarding`, `src/lessons`, `src/features/lessons`, `src/songs`,
+`src/components/diagrams` and the tuner's guided mode. Hardware testing is still open.
+
 ### 3.1 Principles
 
 - **Songs are the goal and the reward.** Every lesson ends in something that sounds like

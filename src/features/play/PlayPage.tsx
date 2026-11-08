@@ -7,9 +7,10 @@ import { Button, Select, cx } from '../../components/ui'
 import { recordResult, songAudioBlob, type SongRecord } from '../../db/db'
 import { useSong } from '../../db/useSongs'
 import { tuningLabel } from '../../music/tunings'
-import { getSettings } from '../../app/settings'
+import { getSettings, useSettings } from '../../app/settings'
 import { encodeWav } from '../../audio/synth'
 import { renderDemoBacking } from '../library/demoSong'
+import { builtInBacking } from '../../songs'
 import { recordSongPlay } from '../../training/coach'
 import type { AttemptResult } from '../../training/types'
 import { Player, type PlayerHandle } from './Player'
@@ -75,6 +76,8 @@ export function ResultsOverlay({
   const s = stars(summary.accuracy)
   const canUp = levelIndex < LEVELS.length - 1
   const canDown = levelIndex > 0
+  const simple = useSettings().simpleFeedback
+  const hit = summary.perfects + summary.goods
   const suggestion = summary.accuracy >= 0.9 && canUp ? 'up' : summary.accuracy < 0.6 && canDown ? 'down' : null
   return (
     <div className="absolute inset-0 flex items-center justify-center overflow-y-auto bg-bg/85 p-4" data-testid="results">
@@ -85,8 +88,16 @@ export function ResultsOverlay({
         </div>
         <div className="text-5xl font-bold tabular-nums">{summary.score.toLocaleString()}</div>
         <div className="mt-1 text-sm text-muted">
-          {LEVELS[levelIndex].label} · {Math.round(summary.accuracy * 100)}% accuracy
+          {simple && summary.judged > 0
+            ? `${LEVELS[levelIndex].label} · ${hit} of ${summary.judged} notes`
+            : `${LEVELS[levelIndex].label} · ${Math.round(summary.accuracy * 100)}% accuracy`}
         </div>
+        {simple && (
+          <details className="mt-1 text-xs text-muted">
+            <summary className="cursor-pointer">Details</summary>
+            <span>{Math.round(summary.accuracy * 100)}% accuracy</span>
+          </details>
+        )}
         <dl className="mt-5 grid grid-cols-4 gap-2 text-sm">
           {[
             ['Perfect', summary.perfects, 'text-green-300'],
@@ -138,7 +149,14 @@ export function PlayPage() {
   const levels = useMemo(() => (song ? generateLevels(song.chart) : null), [song])
   const audio = useMemo(() => (song ? songAudioBlob(song) : null), [song])
   // The demo's stored WAV plays the riff itself; while the microphone scores we play drums only, so a phone speaker cannot score itself.
-  const demoBacking = useMemo(() => (song?.source === 'demo' ? encodeWav(renderDemoBacking()) : null), [song])
+  const demoBacking = useMemo(() => {
+    if (song?.source === 'demo') return encodeWav(renderDemoBacking())
+    if (song?.source === 'builtin' && song.builtinId) {
+      const pcm = builtInBacking(song.builtinId)
+      return pcm ? encodeWav(pcm) : null
+    }
+    return null
+  }, [song])
   const chart = useMemo(() => (song ? { ...song.chart, duration: Math.max(song.chart.duration, song.duration) } : null), [song])
   const [levelIdx, setLevelIdx] = useState<number | null>(null)
   const [speed, setSpeed] = useState(1)

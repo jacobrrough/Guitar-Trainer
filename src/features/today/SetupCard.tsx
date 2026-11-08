@@ -1,9 +1,7 @@
-import { AlertTriangle } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
-import { useSettings } from '../../app/settings'
-import { Badge, Button, Card, cx } from '../../components/ui'
-import { calibrationAgeDays, skipPlacement, updatePrefs } from '../../training/coach'
+import { Button, Card, cx } from '../../components/ui'
+import { skipPlacement, updatePrefs } from '../../training/coach'
 import type { Goal, Profile } from '../../training/types'
 import { GOAL_OPTIONS, MINUTE_OPTIONS } from './todayUtils'
 
@@ -62,13 +60,10 @@ export function MinutesPicker({ minutes, onChange }: { minutes: Minutes; onChang
 /** First-run card: goals, daily time, then take the placement test or start as a beginner. */
 export function SetupCard({ initialGoals, initialMinutes }: { initialGoals?: Goal[]; initialMinutes?: Minutes }) {
   const navigate = useNavigate()
-  const settings = useSettings()
   const [goals, setGoals] = useState<Goal[]>(initialGoals?.length ? initialGoals : ['all-round'])
   const [minutes, setMinutes] = useState<Minutes>(initialMinutes ?? 20)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const age = calibrationAgeDays(settings)
-  const stale = age === null || age > 30
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true)
@@ -100,26 +95,13 @@ export function SetupCard({ initialGoals, initialMinutes }: { initialGoals?: Goa
           <h3 className="text-sm font-semibold text-slate-200">Minutes per day</h3>
           <MinutesPicker minutes={minutes} onChange={setMinutes} />
         </section>
-        <section className="rounded-lg bg-panel-2 p-3 text-sm text-muted">
-          <div className="mb-1 flex items-center gap-2">
-            {stale && (
-              <Badge tone="warn">
-                <AlertTriangle className="mr-1 h-3 w-3" /> {age === null ? 'Not calibrated' : 'Calibration is old'}
-              </Badge>
-            )}
-          </div>
-          Calibrating your latency first (Settings) makes test results reliable.{' '}
-          <button type="button" onClick={() => navigate('/settings')} className="text-accent underline">
-            Open Settings
-          </button>
-        </section>
         {error && <p className="text-sm text-red-300">{error}</p>}
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button variant="primary" size="lg" disabled={busy} onClick={() => void run(async () => navigate('/test/placement'))}>
-            Take the placement test (~6 min)
+            Quick check of what you can already do (6 min)
           </Button>
           <Button size="lg" disabled={busy} onClick={() => void run(async () => void (await skipPlacement()))} data-testid="setup-skip">
-            Skip — start as a beginner
+            Skip, start from the basics
           </Button>
         </div>
       </div>

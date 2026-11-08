@@ -214,7 +214,7 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
         <Card className="w-full max-w-md">
           <h2 className="text-xl font-semibold">{exercise.title}</h2>
           <p className="mt-2 text-sm text-muted">{exercise.instructions}</p>
-          <p className="mt-2 text-sm text-muted">{total} prompts</p>
+          <p className="mt-2 text-sm text-muted">{total} notes to find</p>
           {phase === 'error' && <p className="mt-2 text-sm text-red-300">{errorText}</p>}
           <Button className="mt-4" variant="primary" size="lg" onClick={start} disabled={phase === 'starting'} data-testid="ear-start">
             {phase === 'error' ? 'Try again' : 'Start'}
@@ -223,10 +223,10 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
       ) : (
         <>
           <div className="text-sm text-muted" data-testid="ear-prompt">
-            Prompt {index + 1} of {total}
+            Note {index + 1} of {total}
           </div>
           <div className="text-3xl font-bold">
-            {phase === 'listen' ? 'Listen…' : phase === 'turn' ? 'Your turn' : judgement === 'miss' ? 'Miss' : judgement === 'good' ? 'Good' : 'Perfect'}
+            {phase === 'listen' ? 'Listen…' : phase === 'turn' ? 'Your turn' : judgement === 'miss' ? 'Not quite' : judgement === 'good' ? 'Good' : 'Perfect'}
           </div>
           <div className="h-2 w-full max-w-md overflow-hidden rounded-full bg-panel-2" aria-hidden>
             <div

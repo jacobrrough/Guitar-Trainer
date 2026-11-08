@@ -3,7 +3,12 @@ import type { Attempt, Block, SessionRecord } from '../../training/types'
 import {
   allFinished,
   attemptForBlock,
+  blockPaceText,
   blockTitle,
+  notesHitText,
+  reasonText,
+  simpleBandLabel,
+  timingWords,
   minutesThisWeek,
   noneDone,
   pct,
@@ -40,6 +45,7 @@ describe('todayUtils', () => {
 
   it('titles blocks', () => {
     expect(blockTitle(exBlock)).toBe('nope · 80 bpm')
+    expect(blockTitle(exBlock, undefined, true)).toBe('nope')
     const song = { id: 's', kind: 'song', status: 'pending', minutes: 5, songId: 2, level: 2, speed: 0.8, reason: '' } as Block
     expect(blockTitle(song, 'Demo')).toBe('Demo · Level 3 · 80% speed')
     expect(blockTitle({ ...song, speed: 1 } as Block, 'Demo')).toBe('Demo · Level 3')
@@ -53,6 +59,16 @@ describe('todayUtils', () => {
     expect(timingText(24.4)).toBe('timing: +24 ms (late)')
     expect(timingText(-18)).toBe('timing: -18 ms (early)')
     expect(repSummaryText({ perfects: 5, goods: 2, misses: 1 })).toBe('5 perfect · 2 good · 1 missed')
+  })
+
+  it('uses plain words', () => {
+    expect(notesHitText({ perfects: 4, goods: 2, total: 8 })).toBe('6 of 8 notes')
+    expect(timingWords(60)).toBe('a little behind the click')
+    expect(timingWords(-60)).toBe('a little ahead of the click')
+    expect(timingWords(3)).toBe('right with the click')
+    expect(simpleBandLabel('developing')).toBe('Solid')
+    expect(reasonText('timing bias')).toBe('your timing drifted')
+    expect(blockPaceText(exBlock)).toContain('steady')
   })
 
   it('tracks session completion', () => {

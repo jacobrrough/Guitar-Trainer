@@ -91,7 +91,7 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
       {phase === 'intro' && (
         <div className="flex flex-col gap-4 text-sm">
           <p>
-            You will hear {CLICKS} clicks. Strum a <strong>muted</strong> string exactly on each click. The app measures how long your sound
+            You will hear {CLICKS} clicks. Rest your fingers lightly across the strings so they do not ring, then <strong>strum on each click</strong>. The app measures how long your sound
             takes to arrive and compensates for it when scoring.
           </p>
           <p className="text-muted">Use the speakers or headphones you normally play with.</p>

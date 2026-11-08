@@ -20,10 +20,10 @@ export const SKILLS: SkillDef[] = [
     refTempo: 60,
     startTempo: 50,
     targetTempo: 80,
-    description: 'Pick single open strings in time: your first notes, with no fretting hand needed.',
+    description: 'Pick single open strings in time: your first notes, with nothing pressed down by your other hand.',
     tips: [
       'Hold the pick between the thumb and the side of the index finger, with only a few millimetres showing.',
-      'Rest the heel of the picking hand lightly near the bridge so it always knows where the strings are.',
+      'Rest the side of your strumming hand (the hand holding the pick) lightly near the bridge (the bar where the strings end on the body) so it always knows where the strings are.',
       'Pick down through the string with a small wrist movement and let the note ring until the next one.',
     ],
     generators: ['openStrings'],
@@ -39,7 +39,7 @@ export const SKILLS: SkillDef[] = [
     targetTempo: 80,
     description: 'Press frets 1, 2 and 3 on one string with the index, middle and ring finger, back to the open string in between.',
     tips: [
-      'Press with the fingertip just behind the fret wire, not on top of it, with the thumb resting behind the neck.',
+      'Press with the fingertip just behind the metal bar (the fret), not on top of it, with the thumb resting behind the neck.',
       'Press only as hard as a clean note needs; a buzz means move closer to the fret or press a little more.',
       'Keep the other fingers hovering over their own frets so they are ready.',
     ],
@@ -55,7 +55,7 @@ export const SKILLS: SkillDef[] = [
     targetTempo: 100,
     description: 'Fret clean single notes up and down one string, one finger per fret.',
     tips: [
-      'Press just behind the fret wire with the fingertip, not the pad, so the note rings without buzzing.',
+      'Press just behind the metal bar (the fret) with the fingertip, not the soft pad, so the note rings without buzzing.',
       'Keep your thumb roughly behind the neck and your fingers curved above the string.',
       'Lift each finger only as far as needed; hovering close to the string saves time and effort.',
     ],
@@ -71,9 +71,9 @@ export const SKILLS: SkillDef[] = [
     targetTempo: 100,
     description: 'Move melodies between neighbouring strings in open position while keeping every note clear.',
     tips: [
-      'Mute strings you are not playing with the side of the fretting finger or the picking-hand palm.',
+      'Mute strings you are not playing with the side of the finger pressing the string or the palm of your strumming hand.',
       'Look ahead to the next string before you leave the current note so the pick and finger arrive together.',
-      'Stay relaxed in the fretting hand; squeezing harder does not make notes cleaner.',
+      'Stay relaxed in the hand pressing the strings; squeezing harder does not make notes cleaner.',
     ],
     generators: ['melody', 'stringSkipping'],
   }),
@@ -101,7 +101,7 @@ export const SKILLS: SkillDef[] = [
     prerequisites: ['fret.cross-string'],
     refTempo: 70,
     targetTempo: 110,
-    description: 'Move the whole fretting hand along the neck and land accurately on the target fret.',
+    description: 'Move the whole hand that presses the strings along the neck and land accurately on the target fret.',
     tips: [
       'Lead the shift with the finger that is already playing and let the thumb glide along behind the neck.',
       'Ease the finger pressure while moving but keep light contact, then re-press on arrival.',
@@ -135,7 +135,7 @@ export const SKILLS: SkillDef[] = [
     targetTempo: 140,
     description: 'Alternate down and up strokes on eighth notes, with downs on the beat and ups on the off-beat.',
     tips: [
-      'Keep the picking hand moving down-up continuously, even when skipping a string, so the beat stays in your hand.',
+      'Keep your strumming hand moving down-up continuously, even when skipping a string, so the beat stays in your hand.',
       'Use a small motion; the pick should only go slightly past the string on each stroke.',
       'Practise slowly with a click and favour evenness of volume between down and up strokes.',
     ],
@@ -167,7 +167,7 @@ export const SKILLS: SkillDef[] = [
     targetTempo: 110,
     description: 'Play accents and notes on the off-beats and hold notes tied across the beat.',
     tips: [
-      'Keep your picking hand moving down-up even on the beats where you do not strike the string.',
+      'Keep your strumming hand moving down-up even on the beats where you do not strike the string.',
       'Count the eighth notes out loud ("1 and 2 and") and tap your foot on the numbers.',
       'For ties, let the note ring through the beat without re-picking it.',
     ],
@@ -234,7 +234,7 @@ export const SKILLS: SkillDef[] = [
     description: 'Play two- and three-note power chords and tighten them with palm muting.',
     tips: [
       'Fret the root with the index finger and the fifth with the ring finger, and mute the unused strings.',
-      'For palm muting rest the edge of the picking-hand palm lightly on the strings right at the bridge.',
+      'For palm muting rest the edge of your strumming-hand palm lightly on the strings right next to the bridge (the bar where the strings end on the body).',
       'Move the shape up and down the neck as one block; the same shape works for any root.',
     ],
     generators: ['powerChordRiff'],
@@ -347,9 +347,9 @@ export const SKILLS: SkillDef[] = [
     prerequisites: ['fret.cross-string'],
     refTempo: 70,
     targetTempo: 120,
-    description: 'Sound notes with the fretting hand alone by hammering onto and pulling off the string.',
+    description: 'Sound notes with the hand that presses the strings alone by hammering onto and pulling off the string.',
     tips: [
-      'For a hammer-on bring the finger down firmly and quickly on the fret, with the tip just behind the fret wire.',
+      'For a hammer-on bring the finger down firmly and quickly on the fret, with the tip just behind the metal bar (the fret).',
       'For a pull-off flick the finger sideways slightly as it leaves so it plucks the string.',
       'Aim for the hammered or pulled note to be as loud as the picked one.',
     ],

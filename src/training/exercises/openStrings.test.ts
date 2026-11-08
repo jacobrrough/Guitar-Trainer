@@ -59,4 +59,9 @@ describe('openStrings', () => {
     expect(ex.chart.duration).toBeGreaterThan(0)
     expect(ex.chart.beats.length).toBeGreaterThan(0)
   })
+
+  it('sets no finger numbers', () => {
+    const ex = gen.generate(SKILLS_BY_ID['basics.open-strings'] ?? Object.values(SKILLS_BY_ID)[0], gen.defaults(Object.values(SKILLS_BY_ID)[0], 60), [38, 45, 50, 55, 59, 64])
+    for (const n of ex.chart.notes) expect(n.finger).toBeUndefined()
+  })
 })

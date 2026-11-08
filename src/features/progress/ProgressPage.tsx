@@ -1,6 +1,7 @@
 import { Award, Download, Trash2, TrendingUp, Upload } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { isIOS } from '../../app/platform'
+import { useSettings } from '../../app/settings'
 import { Badge, Button, Card, PageHeader } from '../../components/ui'
 import { masteryBand, effectiveRating } from '../../training/learner'
 import { SKILLS } from '../../training/skills'
@@ -60,6 +61,7 @@ function WeeklyChart({ data }: { data: { weekStart: string; minutes: number }[] 
 
 export function ProgressPage() {
   const model = useLearnerModel()
+  const simple = useSettings().simpleFeedback
   const attempts = useRecentAttempts(120)
   const tests = useTests(10)
   const milestones = useMilestones(12)
@@ -142,7 +144,7 @@ export function ProgressPage() {
 
   return (
     <div>
-      <PageHeader title="Progress" subtitle="Skills, practice time and test history." />
+      <PageHeader title="Progress" subtitle={simple ? 'Your skills, practice time and skill checks.' : 'Skills, practice time and test history.'} />
       {!model || !attempts || !stats ? (
         <p className="text-sm text-muted" role="status">
           Loading progress…
@@ -152,9 +154,9 @@ export function ProgressPage() {
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Tile label="Streak" value={`${stats.streak} day${stats.streak === 1 ? '' : 's'}`} />
             <Tile label="This week" value={`${Math.round(stats.thisWeek)} min`} />
-            <Tile label="Skills" value={`${stats.mastered} / ${stats.solid} / ${SKILLS.length}`} sub="mastered / solid / total" />
+            <Tile label="Skills" value={`${stats.mastered} / ${stats.solid} / ${SKILLS.length}`} sub={simple ? 'mastered / strong / total' : 'mastered / solid / total'} />
             <Tile
-              label="Last test"
+              label={simple ? 'Last skill check' : 'Last test'}
               value={lastTest ? new Date(lastTest.at).toLocaleDateString() : 'None yet'}
               sub={lastTest?.report.headline}
             />
@@ -169,12 +171,12 @@ export function ProgressPage() {
             </Card>
             <Card>
               <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
-                <Award size={16} aria-hidden /> Tests
+                <Award size={16} aria-hidden /> {simple ? 'Skill checks' : 'Tests'}
               </h2>
               {!tests ? (
                 <p className="text-sm text-muted">Loading…</p>
               ) : tests.length === 0 ? (
-                <p className="text-sm text-muted">No tests taken yet.</p>
+                <p className="text-sm text-muted">{simple ? 'No skill checks yet.' : 'No tests taken yet.'}</p>
               ) : (
                 <ul className="divide-y divide-line">
                   {tests.map((t) => {

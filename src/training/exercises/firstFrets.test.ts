@@ -62,4 +62,10 @@ describe('firstFrets', () => {
     expect(ex.chart.duration).toBeGreaterThan(0)
     expect(ex.chart.beats.length).toBeGreaterThan(0)
   })
+
+  it('sets finger = fret on fretted notes and none on open strings', () => {
+    const ex = gen.generate(tier1, gen.defaults(tier1, 60), DROP_D)
+    for (const n of ex.chart.notes) expect(n.finger).toBe(n.fret === 0 ? undefined : n.fret)
+    expect(ex.chart.notes.some((n) => n.finger === 4)).toBe(true)
+  })
 })

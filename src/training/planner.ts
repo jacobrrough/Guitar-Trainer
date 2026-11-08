@@ -21,7 +21,6 @@ import type {
   TestType,
 } from './types'
 import {
-  BAND_THRESHOLDS,
   BEGINNER_MAX_RATING,
   BEGINNER_SONG_SPEED,
   CHECKPOINT_MINUTES,
@@ -105,15 +104,11 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v))
 }
 
-function bandOf(rating: number): string {
-  return (BAND_THRESHOLDS.find((b) => rating >= b.min) ?? BAND_THRESHOLDS[BAND_THRESHOLDS.length - 1]).band
-}
-
 function daysAgoText(state: SkillState | undefined, nowMs: number): string {
-  if (!state?.lastPracticedAt) return 'not practised yet'
+  if (!state?.lastPracticedAt) return 'it is new for you'
   const d = Math.max(0, Math.floor((nowMs - state.lastPracticedAt) / DAY_MS))
-  if (d === 0) return 'last practised today'
-  return `last practised ${d} day${d === 1 ? '' : 's'} ago`
+  if (d === 0) return 'you practised it earlier today'
+  return `you last practised it ${d} day${d === 1 ? '' : 's'} ago`
 }
 
 function goalWeight(skill: SkillDef, prefs: Prefs): number {
@@ -189,21 +184,21 @@ export function pickSongBlock(
   let firstSong = false
   if (passed.length > 0) {
     level = passed[passed.length - 1]
-    why = `Level ${level + 1} is cleared`
+    why = `You cleared level ${level + 1}`
     if ((byLevel.get(level)?.bestAccuracy ?? 0) >= SONG_LEVEL_UP_ACCURACY) {
       level += 1
-      why = `Level ${level} scored over ${Math.round(SONG_LEVEL_UP_ACCURACY * 100)} %, so stepping up`
+      why = `You did well on level ${level}, so we are moving up a level`
     }
   } else if (played.length > 0) {
     level = played[0]
-    why = `Level ${level + 1} is not yet at ${Math.round(SONG_TARGET_ACCURACY * 100)} %`
+    why = `Level ${level + 1} still needs a bit more practice`
   } else if (options.beginner) {
     level = 0
-    why = 'first song: the sparse level, slowed down'
+    why = 'A song at an easy level, played slowly'
     firstSong = true
   } else {
     level = DEFAULT_SONG_LEVEL
-    why = 'Nothing played yet, starting at a medium level'
+    why = 'A song at a medium level'
   }
   level = clamp(level + levelOffset, 0, maxLevel)
   if (levelOffset < 0 && !firstSong) why += ' (one level easier today)'
@@ -219,11 +214,11 @@ export function pickSongBlock(
     songId: song.id,
     level,
     speed,
-    reason: `${song.title}: ${why}${speed < 1 && !firstSong ? `; slowed to ${Math.round(speed * 100)} % speed` : ''}.`,
+    reason: `${song.title}: ${why}${speed < 1 && !firstSong ? '; played a bit slower' : ''}.`,
   }
   if (item && item.weakBars.length > 0) {
     block.loopBars = [Math.min(...item.weakBars), Math.max(...item.weakBars)]
-    block.reason += ` Loops bars ${block.loopBars[0]}-${block.loopBars[1]} first.`
+    block.reason += ` We practise the tricky bars (${block.loopBars[0]}-${block.loopBars[1]}) first.`
   }
   return block
 }
@@ -314,17 +309,17 @@ export function planSession(input: PlannerInput): SessionPlan {
   }
 
   if (input.dueTest === 'placement' && !input.quick && !comeback) {
-    explanation.push('First session: a short placement test sets your starting levels.')
+    explanation.push('First session: a quick check of what you can already do sets your starting point.')
     const test: TestBlock = {
       id: '',
       kind: 'test',
       status: 'pending',
       minutes: PLACEMENT_MINUTES,
       test: 'placement',
-      reason: 'Placement test to find your starting level on each skill.',
+      reason: 'A quick check of what you can already do',
     }
-    explanation.push('Training sessions with warm-up, focus and songs start after it.')
-    explanation.push('You can stop the test at any time; skipped skills start from the beginning.')
+    explanation.push('Your daily practice, with a warm-up, exercises and songs, starts after it.')
+    explanation.push('You can stop the check at any time; anything you skip starts from the basics.')
     return finish([test], 1)
   }
 
@@ -347,7 +342,7 @@ export function planSession(input: PlannerInput): SessionPlan {
   if (candidates.length === 0) candidates = unlockedSkills
   const priority = (s: SkillDef) => focusPriority(s, stateOf(s.id), prefs, nowMs, ratings)
   const ranked = [...candidates].sort((a, b) => (beginner ? a.tier - b.tier : 0) || priority(b) - priority(a))
-  const firstSteps = 'First steps: open strings and first frets before anything faster.'
+  const firstSteps = 'First steps: open strings and the first frets before anything faster.'
 
   // Focus selection
   const recent = input.recentFocusSkillIds ?? []
@@ -362,31 +357,30 @@ export function planSession(input: PlannerInput): SessionPlan {
   let focusNote = ''
   if (pinned && unlocked(pinned)) {
     focus = pinned
-    focusNote = 'pinned by you'
+    focusNote = 'You pinned it'
   } else {
     focus = ranked.find((s) => notWarmup(s) && !repeated(s.id)) ?? ranked.find(notWarmup) ?? ranked[0]
-    focusNote = ranked[0] && focus && ranked[0].id !== focus.id ? 'next in line, to rotate focus' : 'top priority for your goals'
+    focusNote = ranked[0] && focus && ranked[0].id !== focus.id ? 'Next in line, so your practice stays varied' : 'It is the best fit for your goals'
   }
 
-  const focusReason = (skill: SkillDef, note: string): string => {
+  const focusReason = (kind: 'focus' | 'second', skill: SkillDef, note: string): string => {
     const st = stateOf(skill.id)
-    const r = Math.round(ratings[skill.id] ?? 0)
-    const ceil = st && st.tempoCeiling > 0 ? ` Tempo ceiling ${Math.round(st.tempoCeiling)} bpm.` : ''
-    return `Rated ${r} (${bandOf(r)}), ${note}; ${daysAgoText(st, nowMs)}.${ceil}`
+    const lead = kind === 'focus' ? 'Your main exercise today' : 'Another exercise, to use your hands in a new way'
+    return `${lead}; ${daysAgoText(st, nowMs)}. ${note}.`
   }
 
   const mkFocusLike = (kind: 'focus' | 'second', skill: SkillDef, minutes: number, note: string): ExerciseBlock => {
     const tempo = Math.max(MIN_TEMPO, Math.round(startTempoOf(skill, stateOf(skill.id)) * dayFactor))
-    return makeExercise(kind, skill, minutes, tempo, focusReason(skill, note))
+    return makeExercise(kind, skill, minutes, tempo, focusReason(kind, skill, note))
   }
 
   // Quick session
   if (input.quick) {
-    explanation.push('Quick session: one focused block.')
+    explanation.push('Quick session: just one exercise.')
     if (!focus) return finish([], dayFactor)
-    explanation.push(`Focus: ${focus.name} (${focusNote}).`)
+    explanation.push(`Main exercise: ${focus.name}. ${focusNote}.`)
     if (beginner) explanation.push(firstSteps)
-    if (comeback) explanation.push('Welcome back after a break: tempos are eased.')
+    if (comeback) explanation.push('Welcome back after a break: everything starts a little slower.')
     return finish([mkFocusLike('focus', focus, QUICK_MINUTES, focusNote)], dayFactor)
   }
 
@@ -396,7 +390,7 @@ export function planSession(input: PlannerInput): SessionPlan {
     const st = stateOf(warmSkill.id)
     const base = st && st.tempoCeiling > 0 ? st.tempoCeiling : warmSkill.startTempo
     const tempo = Math.max(WARMUP_MIN_TEMPO, Math.round(WARMUP_TEMPO_FACTOR * base))
-    return makeExercise('warmup', warmSkill, minutes, tempo, "Warm-up sets today's tempo")
+    return makeExercise('warmup', warmSkill, minutes, tempo, 'An easy first exercise to get your fingers used to the strings')
   }
 
   // Comeback session
@@ -415,23 +409,22 @@ export function planSession(input: PlannerInput): SessionPlan {
     strongest.forEach((s, i) => {
       const share = Math.floor(pool / strongest.length) + (i < pool % strongest.length ? 1 : 0)
       const st = stateOf(s.id)
-      const r = Math.round(ratings[s.id])
       drafts.push(
         makeExercise(
           'review',
           s,
           share,
           reviewTempo(s, st, dayFactor),
-          `Rated ${r} (${bandOf(r)}), one of your strongest skills; ${daysAgoText(st, nowMs)}.`,
+          `A recap of something you are good at; ${daysAgoText(st, nowMs)}.`,
         ),
       )
     })
     if (song) drafts.push(song)
-    explanation.push(`Welcome back after ${input.daysSinceLastSession} days away: an easy day to shake off the rust.`)
-    explanation.push(`Tempos are ${Math.round((1 - COMEBACK_TEMPO_FACTOR) * 100)} % lower and no tests today.`)
-    if (strongest.length > 0) explanation.push(`Reviewing your strongest skills: ${strongest.map((s) => s.name).join(', ')}.`)
+    explanation.push(`Welcome back after ${input.daysSinceLastSession} days away: an easy day to get back into it.`)
+    explanation.push(`Everything is ${Math.round((1 - COMEBACK_TEMPO_FACTOR) * 100)} % slower and there are no skill checks today.`)
+    if (strongest.length > 0) explanation.push(`Recapping what you are best at: ${strongest.map((s) => s.name).join(', ')}.`)
     if (beginner) explanation.push(firstSteps)
-    if (song) explanation.push(`Song one level easier than usual (level ${song.level + 1}).`)
+    if (song) explanation.push(`A song one level easier than usual (level ${song.level + 1}).`)
     return finish(drafts, dayFactor)
   }
 
@@ -470,7 +463,7 @@ export function planSession(input: PlannerInput): SessionPlan {
     status: 'pending',
     minutes,
     test: test as TestBlock['test'],
-    reason: test === 'monthly' ? 'Monthly assessment of your progress.' : 'Weekly checkpoint to confirm recent gains.',
+    reason: test === 'monthly' ? 'A check on how far you have come this month' : 'A quick check on what you learned this week',
   })
 
   if (warm) push('warmup', warm.minutes, warm)
@@ -480,7 +473,7 @@ export function planSession(input: PlannerInput): SessionPlan {
     if (focus) push('focus', tpl.focus + extra, mkFocusLike('focus', focus, tpl.focus + extra, focusNote))
     if (second) {
       if (checkpoint) push('test', CHECKPOINT_MINUTES, testBlock('checkpoint', CHECKPOINT_MINUTES))
-      else push('second', tpl.second, mkFocusLike('second', second, tpl.second, 'next best skill from a different area'))
+      else push('second', tpl.second, mkFocusLike('second', second, tpl.second, 'It works a different area from your main exercise'))
     }
   }
   if (song) push('song', tpl.song, song)
@@ -501,13 +494,12 @@ export function planSession(input: PlannerInput): SessionPlan {
     const pick = due ?? rusty ?? strong
     if (pick) {
       const st = stateOf(pick.id)
-      const r = Math.round(ratings[pick.id])
       const why = due
-        ? 'review is due'
+        ? 'Time for a recap of something you learned'
         : rusty
-          ? `rust has cost ${Math.round(rustOf(pick))} points`
-          : 'keeping a strong skill fresh'
-      const reason = `Rated ${r} (${bandOf(r)}), ${why}; ${daysAgoText(st, nowMs)}.`
+          ? 'A recap, because this one has got a bit rusty'
+          : 'A recap to keep a strong skill fresh'
+      const reason = `${why}; ${daysAgoText(st, nowMs)}.`
       push('review', reviewMinutes, makeExercise('review', pick, reviewMinutes, reviewTempo(pick, st, dayFactor), reason))
     } else {
       const sink = drafts.find((d) => d.kind === 'focus')
@@ -519,7 +511,7 @@ export function planSession(input: PlannerInput): SessionPlan {
   }
   if (ear) {
     const st = stateOf(ear.id)
-    const reason = `Ear training: ${ear.name}; ${daysAgoText(st, nowMs)}.`
+    const reason = `Ear training: ${ear.name}. Listen, then find the note on your guitar; ${daysAgoText(st, nowMs)}.`
     push('ear', tpl.ear, makeExercise('ear', ear, tpl.ear, reviewTempo(ear, st, dayFactor), reason))
   }
   if (checkpoint && !drafts.some((d) => d.kind === 'test')) {
@@ -530,13 +522,13 @@ export function planSession(input: PlannerInput): SessionPlan {
   rebalance(drafts, target)
   const blocks = drafts.map((d) => ({ ...(d.block as Block), minutes: d.minutes }) as Block)
 
-  if (monthly) explanation.push('Monthly assessment today: it replaces the focus and second blocks.')
-  else if (focus) explanation.push(`Focus: ${focus.name} (${focusNote}).`)
+  if (monthly) explanation.push('Monthly skill check today: it replaces the main and second exercises.')
+  else if (focus) explanation.push(`Main exercise: ${focus.name}. ${focusNote}.`)
   if (beginner) explanation.push(firstSteps)
-  if (second && !checkpoint && !monthly) explanation.push(`Second skill: ${second.name}, from a different area.`)
+  if (second && !checkpoint && !monthly) explanation.push(`Another exercise: ${second.name}, from a different area.`)
   if (song) explanation.push(song.reason)
-  else explanation.push('No songs in your library yet, so that time goes to practice.')
-  if (checkpoint) explanation.push('A weekly checkpoint is due and is part of today.')
+  else explanation.push('No songs in your library yet, so that time goes to exercises.')
+  if (checkpoint) explanation.push('A quick weekly skill check is part of today.')
   if (input.daysSinceLastSession === undefined) explanation.push('First session: starting gently.')
   return finish(blocks, dayFactor)
 }

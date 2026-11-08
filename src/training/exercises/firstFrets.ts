@@ -33,7 +33,7 @@ export const firstFretsGenerator: ExerciseGenerator = {
     const b = new ChartBuilder({ bpm: params.tempo, tuning, title })
     const len = NOTE_VALUE_BEATS[noteValue]
     const slots = Math.floor((bars * b.beatsPerBar) / len + 1e-9)
-    for (let i = 0; i < slots; i++) b.note(i * len, len, string, pattern[i % pattern.length], { velocity: 0.9 })
+    for (let i = 0; i < slots; i++) b.note(i * len, len, string, pattern[i % pattern.length], { velocity: 0.9, finger: pattern[i % pattern.length] > 0 ? ((pattern[i % pattern.length]) as 1 | 2 | 3 | 4) : undefined })
     return {
       id: `${ID}:${hashParams(params)}`,
       generatorId: ID,

@@ -424,7 +424,7 @@ export function Player({
   const enableSpeakerMode = useCallback(() => {
     updateSettings({ echoCancellation: true })
     setNoticeAction(null)
-    setNotice('Speaker mode is on. Restart the song to check the microphone again.')
+    setNotice('Speaker mode is on. Restart to let the microphone check again.')
     if (audioEngine.micActive) {
       audioEngine.stopMic()
       void startMic({ echoCancellation: true })
@@ -486,7 +486,7 @@ export function Player({
       setCountdown(null)
       if (audioEngine.micActive && detectBleed(clickTimesRef.current, countInAttacksRef.current)) {
         bleedRef.current = true
-        setNotice('Your microphone can hear the speaker, so this run will not count towards your ratings. Use headphones, or turn on Speaker mode.')
+        setNotice('The microphone is hearing the speaker, so this run will not count towards your progress. Use headphones, or turn on speaker mode.')
         setNoticeAction('speaker-mode')
       }
     }
@@ -498,7 +498,7 @@ export function Player({
     } catch (err) {
       playbackStartedRef.current = false
       skipCountInRef.current = true
-      setNotice(err instanceof DOMException && err.name === 'NotAllowedError' ? 'Tap play once more to start.' : `Playback failed: ${err instanceof Error ? err.message : String(err)}`)
+      setNotice(err instanceof DOMException && err.name === 'NotAllowedError' ? 'Tap the play button once more to start.' : `Playback failed: ${err instanceof Error ? err.message : String(err)}`)
       setPhase('ready')
       return
     }
@@ -512,7 +512,7 @@ export function Player({
     clockRef.current?.reset()
     smootherRef.current.reset()
     setPhase('playing')
-    if (opts.listen) setNotice('Listening: the part is played for you and nothing is scored.')
+    if (opts.listen) setNotice('Listen first: the part is played for you and nothing is scored.')
   }, [countIn, endListen, micStatus, restart, setPhase, startMic])
 
   /** Plays the guide track once without the microphone or scoring, then returns to ready. */
@@ -638,8 +638,8 @@ export function Player({
               void startMic()
             }
           }}
-          title={micStatus === 'on' ? 'Microphone on' : 'Turn on microphone to get scored'}
-          aria-label="Toggle microphone"
+          title={micStatus === 'on' ? 'Microphone on' : 'Microphone off: turn it on to get scored'}
+          aria-label={micStatus === 'on' ? 'Microphone on, tap to turn off' : 'Microphone off: turn it on to get scored'}
         >
           {micStatus === 'on' ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
         </Button>
@@ -686,7 +686,8 @@ export function Player({
             )}
             {mode !== 'test' && (
               <p className="text-xs text-muted">
-                {portraitPhone ? 'Tip: rotate your phone for a wider highway. Tap the highway to pause.' : 'Space or tap the highway to pause · R to restart'}
+                {portraitPhone ? 'Tip: rotate your phone for a wider lane. Tap the lane to pause.' : 'Tap the lane to pause'}
+                <span className="hidden md:inline"> · Space to pause · R to restart</span>
               </p>
             )}
             {mode === 'test' && <p className="text-xs text-amber-200">Test: one attempt, no pausing.</p>}
