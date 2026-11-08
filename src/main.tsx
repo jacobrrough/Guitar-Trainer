@@ -1,6 +1,9 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createHashRouter, RouterProvider } from 'react-router'
+import { CoursePage } from './features/lessons/CoursePage'
+import { LessonPage } from './features/lessons/LessonPage'
+import { StartHere } from './features/onboarding/StartHere'
 import { registerSW } from 'virtual:pwa-register'
 import './index.css'
 import { AppLayout } from './app/AppLayout'
@@ -26,9 +29,12 @@ const router = createHashRouter([
       { path: 'metronome', element: <MetronomePage /> },
       { path: 'settings', element: <SettingsPage /> },
       { path: 'test/:type', element: <TestFlow /> },
+      { path: 'lessons', element: <CoursePage /> },
     ],
   },
   { path: '/play/:songId', element: <PlayPage /> },
+  { path: '/start', element: <StartHere /> },
+  { path: '/lessons/:lessonId', element: <LessonPage /> },
   { path: '/today/block/:blockId', element: <BlockRunner /> },
 ])
 

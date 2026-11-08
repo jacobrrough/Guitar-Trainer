@@ -27,6 +27,13 @@ export interface AppSettings {
   showNoteNames: boolean
   /** Speaker mode: let the OS cancel the song bleeding from the speaker into the mic. */
   echoCancellation: boolean
+  /** Which hand strums. Left mirrors the note lanes and every diagram. */
+  handedness: 'right' | 'left'
+  guitarType: 'acoustic' | 'electric'
+  /** Show finger numbers (1–4) on notes that carry one. */
+  showFingerNumbers: boolean
+  /** Plain feedback ("6 of 8 notes") with technical details folded away. */
+  simpleFeedback: boolean
   metronome: MetronomePrefs
 }
 
@@ -41,6 +48,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   visibleSeconds: 3,
   showNoteNames: false,
   echoCancellation: false,
+  handedness: 'right',
+  guitarType: 'acoustic',
+  showFingerNumbers: true,
+  simpleFeedback: true,
   metronome: { bpm: 100, beatsPerBar: 4, subdivision: 1, accentFirst: true, volume: 0.8 },
 }
 

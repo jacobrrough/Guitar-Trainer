@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie'
 import type { Chart, ChartSource } from '../chart/types'
+import type { LessonProgress } from '../lessons/types'
 import type { Attempt, Profile, SessionRecord, SkillState, SongItemState, TestRecord, Milestone } from '../training/types'
 
 export interface ScoreRecord {
@@ -36,6 +37,8 @@ export interface SongRecord {
   chart: Chart
   source: ChartSource
   bpm: number
+  /** Id of the bundled song this record was created from (source 'builtin'). */
+  builtinId?: string
   /** Best result per level, keyed by level number. */
   bestScores: Record<string, ScoreRecord>
   lastLevel: number | null
@@ -43,7 +46,7 @@ export interface SongRecord {
   playCount: number
 }
 
-export type NewSong = Pick<SongRecord, 'title' | 'artist' | 'audioType' | 'audioName' | 'duration' | 'chart' | 'source' | 'bpm'> & { audio: Blob }
+export type NewSong = Pick<SongRecord, 'title' | 'artist' | 'audioType' | 'audioName' | 'duration' | 'chart' | 'source' | 'bpm'> & { audio: Blob; builtinId?: string }
 
 /** The song's audio as a Blob, whichever way it was stored. */
 export function songAudioBlob(song: SongRecord): Blob | null {
@@ -60,6 +63,7 @@ export const db = new Dexie('guitar-trainer') as Dexie & {
   songItems: EntityTable<SongItemState, 'key'>
   profile: EntityTable<Profile, 'id'>
   milestones: EntityTable<Milestone, 'id'>
+  lessons: EntityTable<LessonProgress, 'id'>
 }
 
 db.version(1).stores({
@@ -87,6 +91,19 @@ db.version(3).stores({
   songItems: 'key, songId, nextReviewAt',
   profile: 'id',
   milestones: '++id, &key, at, type, skillId',
+})
+
+// First steps: bundled songs and lesson progress.
+db.version(4).stores({
+  songs: '++id, title, artist, createdAt, updatedAt, builtinId',
+  skillStates: 'skillId, rating, nextReviewAt',
+  attempts: '++id, at, kind, skillId, songId, sessionId',
+  sessions: '++id, &date',
+  tests: '++id, at, type',
+  songItems: 'key, songId, nextReviewAt',
+  profile: 'id',
+  milestones: '++id, &key, at, type, skillId',
+  lessons: 'id, status',
 })
 
 export async function addSong(input: NewSong): Promise<number> {

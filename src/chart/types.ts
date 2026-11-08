@@ -28,6 +28,8 @@ export interface ChartNote {
   string: number
   /** Fret relative to the capo (0 = open). */
   fret: number
+  /** Suggested fretting finger (1 index … 4 little); absent for open strings or when unknown. */
+  finger?: 1 | 2 | 3 | 4
   /** 0..1 */
   velocity: number
   /** Notes struck together share a chordId. */
@@ -56,7 +58,7 @@ export interface Beat {
   isDownbeat: boolean
 }
 
-export type ChartSource = 'guitarpro' | 'musicxml' | 'midi' | 'transcription' | 'demo'
+export type ChartSource = 'guitarpro' | 'musicxml' | 'midi' | 'transcription' | 'demo' | 'builtin'
 
 export interface Chart {
   version: 1

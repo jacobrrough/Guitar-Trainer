@@ -25,6 +25,7 @@ export interface BuilderOptions {
 
 export interface NoteOptions {
   velocity?: number
+  finger?: 1 | 2 | 3 | 4
   tech?: NoteTechniques
   chordName?: string
 }
@@ -88,6 +89,7 @@ export class ChartBuilder {
       chordId,
       chordName: options.chordName,
       tech: options.tech,
+      finger: options.finger,
     })
     this.maxBeat = Math.max(this.maxBeat, beat + lengthBeats)
   }

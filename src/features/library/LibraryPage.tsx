@@ -17,6 +17,7 @@ const SOURCE_LABEL: Record<ChartSource, string> = {
   midi: 'MIDI',
   transcription: 'AI transcription',
   demo: 'Demo',
+  builtin: 'Built-in',
 }
 
 function SongCard({ song, onPlay, onDelete }: { song: SongRecord; onPlay: () => void; onDelete: () => void }) {

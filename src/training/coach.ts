@@ -11,6 +11,10 @@ import { exerciseParams, generateExercise, resolveGeneratorId } from './exercise
 import { renderExerciseBacking } from './exercises/backing'
 import { DEFAULT_TUNING } from './exercises/builder'
 import { applyAttempt, effectiveRating, newSkillState } from './learner'
+import { COURSE } from '../lessons/course'
+import { initialiseCourse } from '../lessons/store'
+import { installBuiltInSongs } from '../songs'
+import { updateSettings } from '../app/settings'
 import { recordMilestones } from './milestoneStore'
 import { skillMilestones, songMilestone, streakMilestone, testMilestone, unlockMilestones } from './milestones'
 import { attemptPerformance } from './performance'
@@ -436,3 +440,69 @@ export async function coachRecommendations(settings: Pick<AppSettings, 'calibrat
     lastSongPlayedAt: attempts.find((a) => a.kind === 'song')?.at,
   })
 }
+
+/** What the Start Here wizard collects. */
+export interface FirstStepsSetup {
+  experience: 'new' | 'some' | 'played'
+  handedness: 'right' | 'left'
+  guitarType: 'acoustic' | 'electric'
+  dailyMinutes: Profile['dailyMinutes']
+  goalSongId?: string
+}
+
+/**
+ * Applies the wizard's answers. New and "a little" players skip the placement
+ * test and start the First steps course; players who have played before go to
+ * the normal setup card (placement test) with their preferences filled in.
+ */
+export async function startFirstSteps(setup: FirstStepsSetup, now = Date.now()): Promise<Profile> {
+  updateSettings({ handedness: setup.handedness, guitarType: setup.guitarType })
+  const current = await loadProfile()
+  const course = setup.experience !== 'played'
+  const profile: Profile = {
+    ...current,
+    experience: setup.experience,
+    dailyMinutes: setup.dailyMinutes,
+    goalSongId: setup.goalSongId,
+    firstStepsStartedAt: course ? (current.firstStepsStartedAt ?? now) : current.firstStepsStartedAt,
+    placementDoneAt: course ? (current.placementDoneAt ?? now) : current.placementDoneAt,
+  }
+  await saveProfile(profile)
+  await installBuiltInSongs()
+  if (course) await initialiseCourse(COURSE.map((l) => l.id))
+  return profile
+}
+
+/** Marks the First steps course finished; Today shows the Coach's daily plan from here on. */
+export async function completeFirstSteps(now = Date.now()): Promise<Profile> {
+  const profile = { ...(await loadProfile()), firstStepsDoneAt: now }
+  await saveProfile(profile)
+  return profile
+}
+
+/**
+ * Records one round of a lesson drill outside a session: the attempt, the
+ * skill rating and milestones update exactly as for a Coach block.
+ */
+export function recordLessonDrill(
+  skillId: string,
+  exercise: GeneratedExercise,
+  result: AttemptResult,
+  settings: Pick<AppSettings, 'calibratedAt'>,
+  now = Date.now(),
+): Promise<RepOutcome> {
+  const block: ExerciseBlock = {
+    id: `lesson-${skillId}`,
+    kind: 'focus',
+    status: 'active',
+    minutes: 3,
+    skillId,
+    generatorId: exercise.generatorId,
+    params: exercise.params,
+    tempo: exercise.params.tempo,
+    reps: 1,
+    reason: 'First steps lesson',
+  }
+  return applyExerciseAttempt(block, exercise, result, settings, now, undefined, true)
+}
+

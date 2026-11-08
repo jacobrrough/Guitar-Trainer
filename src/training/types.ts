@@ -208,6 +208,12 @@ export interface Profile {
   lastMonthlyAt?: number
   sessionsSinceTest: number
   pinnedSkillId?: string
+  /** 'new' = never played (First steps course), 'some' = a little, 'played' = placement test path. */
+  experience?: 'new' | 'some' | 'played'
+  firstStepsStartedAt?: number
+  firstStepsDoneAt?: number
+  /** Built-in song the learner picked as a target during setup. */
+  goalSongId?: string
 }
 
 export interface LearnerModel {
