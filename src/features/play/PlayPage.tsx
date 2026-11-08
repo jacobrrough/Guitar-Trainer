@@ -43,7 +43,8 @@ function LevelPicker({
           onClick={() => onPick(i)}
           title={counts ? `${counts[i]} notes` : ''}
           className={cx(
-            'h-9 min-w-9 rounded-md px-2 text-sm font-semibold transition-colors disabled:opacity-50',
+            'h-9 rounded-md text-sm font-semibold transition-colors disabled:opacity-50',
+            compact ? 'min-w-8 px-1.5' : 'min-w-9 px-2',
             levelIdx === i ? 'bg-accent text-slate-950' : 'bg-panel-2 text-slate-200 hover:bg-line',
           )}
           data-testid={`level-${l.level}`}
@@ -237,17 +238,21 @@ export function PlayPage() {
       {i + 1}
     </option>
   ))
-  const loopToggle = (
+  // Phones get an icon-only toggle so the level row never grows wider than the screen.
+  const loopToggle = (compact = false) => (
     <Button
       size="sm"
       variant={loopOn ? 'primary' : 'secondary'}
       aria-pressed={loopOn}
+      aria-label="Loop"
       disabled={busy}
       onClick={() => setLoopOn((v) => !v)}
       data-testid="loop-toggle"
       title="Practice a section on repeat"
+      className="shrink-0"
     >
-      <Repeat className="h-4 w-4" /> Loop
+      <Repeat className="h-4 w-4" />
+      {!compact && <span>Loop</span>}
     </Button>
   )
   const loopOptions = loopOn && (
@@ -339,16 +344,16 @@ export function PlayPage() {
         <>
           <LevelPicker levelIdx={li} counts={counts} disabled={busy} onPick={pickLevel} />
           {speedSelect}
-          {loopToggle}
+          {loopToggle()}
           {loopOptions}
         </>
       }
       mobileControls={
-        <div className="flex w-full flex-col gap-1.5 short-landscape:gap-1">
-          <div className="flex items-center gap-2">
+        <div className="flex w-full min-w-0 flex-col gap-1.5 short-landscape:gap-1">
+          <div className="flex flex-wrap items-center gap-2">
             <LevelPicker levelIdx={li} counts={counts} disabled={busy} onPick={pickLevel} compact />
             {speedSelect}
-            {loopToggle}
+            {loopToggle(true)}
           </div>
           {loopOn && <div className="flex flex-wrap items-center gap-1.5">{loopOptions}</div>}
         </div>
