@@ -232,6 +232,7 @@ try {
   const repCards = await page.getByTestId('rep-card').count()
   if (repCards > 0) {
     check(true, 'rep card shown after the first rep')
+    await page.screenshot({ path: path.join(OUT, `rep-card${SUFFIX}.png`) })
     // Finish early so the smoke test stays short
     const finishEarly = page.getByRole('button', { name: /finish early/i })
     if (await finishEarly.count()) await finishEarly.click()
@@ -239,6 +240,7 @@ try {
     await page.waitForSelector('[data-testid="block-result"]', { timeout: 90000 })
   }
   check(true, 'block result shown')
+  await page.screenshot({ path: path.join(OUT, `block-result${SUFFIX}.png`) })
   await page.goto(`${base}/#/`)
   await page.waitForSelector('[data-testid="plan-block"]', { timeout: 15000 })
   const doneRows = await page.locator('[data-testid="plan-block"]:has-text("done")').count()
@@ -256,6 +258,8 @@ try {
   if (process.env.SKIP_TRANSCRIBE) throw new SkipRest()
   const wav = synthWav()
   writeFileSync(path.join(OUT, 'synth.wav'), wav.buffer)
+  await page.goto(`${base}/#/songs`)
+  await page.waitForSelector('[data-testid="add-song"]', { timeout: 10000 })
   await page.getByTestId('add-song').click()
   await page.getByText('Listen & transcribe (AI)').click()
   await page.locator('input[type=file]').first().setInputFiles({ name: 'Synth Artist - Four Notes.wav', mimeType: 'audio/wav', buffer: wav.buffer })

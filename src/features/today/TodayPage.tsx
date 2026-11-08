@@ -75,7 +75,9 @@ function PlanRow({
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
               <span>{block.minutes} min</span>
               <StatusPill status={block.status} />
-              {block.status === 'done' && resultPct !== null && <Badge tone="ok">{resultPct}% accuracy</Badge>}
+              {block.status === 'done' && resultPct !== null && (
+                <Badge tone={resultPct >= 80 ? 'ok' : resultPct >= 50 ? 'warn' : 'default'}>{resultPct}% accuracy</Badge>
+              )}
             </div>
           </div>
         </div>
