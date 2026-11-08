@@ -201,7 +201,7 @@ describe('checkpointTasks', () => {
     expect(tasks[0].skillIds).toEqual(['fret.single-string'])
     expect(tasks[0].params.tempo).toBe(90)
     expect(tasks[1].skillIds).toEqual(['chord.open'])
-    expect(tasks[2]).toMatchObject({ generatorId: 'song', difficulty: 50 + 8 * 3 })
+    expect(tasks[2]).toMatchObject({ generatorId: 'song', difficulty: 30 + 10 * 4 })
     expect(tasks[2].params).toMatchObject({ songId: 2, level: 4, bars: 0, tempo: 120 })
   })
   it('is deterministic and skips missing pieces', () => {

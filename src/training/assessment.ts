@@ -246,12 +246,12 @@ export function checkpointTasks(
   if (stretch) {
     tasks.push({
       id: 'checkpoint-03',
-      title: `Stretch: ${stretch.song.title} (level ${stretch.level})`,
-      instructions: `Play ${stretch.song.title} at level ${stretch.level}, full speed.`,
+      title: `Stretch: ${stretch.song.title} (Level ${stretch.level + 1})`,
+      instructions: `Play ${stretch.song.title} at Level ${stretch.level + 1}, full speed.`,
       skillIds: [],
       generatorId: 'song',
       params: { tempo: stretch.song.bpm, bars: 0, songId: stretch.song.id, level: stretch.level },
-      difficulty: 50 + 8 * (stretch.level - 1),
+      difficulty: 30 + 10 * stretch.level,
       passCriteria: { ...TEST_PASS },
     })
   }
@@ -262,18 +262,19 @@ function stretchSong(model: LearnerModel, library: SongSummary[]): { song: SongS
   let best: { song: SongSummary; level: number; at: number } | null = null
   for (const song of library) {
     const items = Object.values(model.songItems).filter((i) => i.songId === song.id)
-    let level = 0
+    let level = -1
     let at = -1
     for (const it of items) {
       if (it.lastAt !== null) at = Math.max(at, it.lastAt)
       if ((it.bestAccuracy ?? 0) >= 0.85) level = Math.max(level, it.level)
     }
-    if (level === 0) continue
+    if (level < 0) continue
     if (!best || at > best.at) best = { song, level, at }
   }
   if (!best) return null
-  const maxLevel = best.song.levelNoteCounts.length
-  const next = maxLevel > 0 ? Math.min(best.level + 1, maxLevel) : best.level + 1
+  // Levels are 0-based indexes into generateLevels(); the stretch is one above the best cleared level.
+  const maxIndex = best.song.levelNoteCounts.length > 0 ? best.song.levelNoteCounts.length - 1 : 5
+  const next = Math.min(best.level + 1, maxIndex)
   return { song: best.song, level: next }
 }
 
