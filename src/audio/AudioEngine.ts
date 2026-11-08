@@ -5,6 +5,8 @@ export interface PitchFrame {
   freq: number
   clarity: number
   rms: number
+  /** 12-bin pitch-class energy (C = 0), max-normalised; present only while chroma analysis is enabled. */
+  chroma?: Float32Array
   /** AudioContext time at which the frame was analysed. */
   time: number
 }
@@ -39,6 +41,7 @@ class AudioEngine {
   private _micActive = false
   private _micDeviceId: string | undefined
   private unlocked = false
+  private chromaEnabled = false
 
   get context(): AudioContext {
     if (!this.ctx) {
@@ -133,10 +136,11 @@ class AudioEngine {
     this.worklet.port.onmessage = (e: MessageEvent) => {
       const d = e.data
       if (d?.type === 'pitch') {
-        const frame: PitchFrame = { freq: d.freq, clarity: d.clarity, rms: d.rms, time: d.time }
+        const frame: PitchFrame = { freq: d.freq, clarity: d.clarity, rms: d.rms, time: d.time, chroma: d.chroma }
         for (const l of this.listeners) l(frame)
       }
     }
+    if (this.chromaEnabled) this.worklet.port.postMessage({ type: 'configure', chroma: true })
     // A silent sink guarantees the graph is pulled by the destination.
     this.sink = ctx.createGain()
     this.sink.gain.value = 0
@@ -147,8 +151,19 @@ class AudioEngine {
     this._micDeviceId = stream.getAudioTracks()[0]?.getSettings().deviceId ?? options.deviceId
   }
 
-  configureDetector(opts: { minFreq?: number; maxFreq?: number; threshold?: number }): void {
+  configureDetector(opts: { minFreq?: number; maxFreq?: number; threshold?: number; chroma?: boolean }): void {
+    if (opts.chroma !== undefined) this.chromaEnabled = opts.chroma
     this.worklet?.port.postMessage({ type: 'configure', ...opts })
+  }
+
+  /**
+   * Turns per-frame chroma analysis on or off (used for chord scoring). The flag
+   * survives mic restarts, so it can be set before `startMic`.
+   */
+  setChroma(enabled: boolean): void {
+    if (this.chromaEnabled === enabled) return
+    this.chromaEnabled = enabled
+    this.worklet?.port.postMessage({ type: 'configure', chroma: enabled })
   }
 
   stopMic(): void {

@@ -1,6 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie'
 import type { Chart, ChartSource } from '../chart/types'
-import type { Attempt, Profile, SessionRecord, SkillState, SongItemState, TestRecord } from '../training/types'
+import type { Attempt, Profile, SessionRecord, SkillState, SongItemState, TestRecord, Milestone } from '../training/types'
 
 export interface ScoreRecord {
   level: number
@@ -59,6 +59,7 @@ export const db = new Dexie('guitar-trainer') as Dexie & {
   tests: EntityTable<TestRecord, 'id'>
   songItems: EntityTable<SongItemState, 'key'>
   profile: EntityTable<Profile, 'id'>
+  milestones: EntityTable<Milestone, 'id'>
 }
 
 db.version(1).stores({
@@ -74,6 +75,18 @@ db.version(2).stores({
   tests: '++id, at, type',
   songItems: 'key, songId, nextReviewAt',
   profile: 'id',
+})
+
+// Milestones (Phase 3).
+db.version(3).stores({
+  songs: '++id, title, artist, createdAt, updatedAt',
+  skillStates: 'skillId, rating, nextReviewAt',
+  attempts: '++id, at, kind, skillId, songId, sessionId',
+  sessions: '++id, &date',
+  tests: '++id, at, type',
+  songItems: 'key, songId, nextReviewAt',
+  profile: 'id',
+  milestones: '++id, &key, at, type, skillId',
 })
 
 export async function addSong(input: NewSong): Promise<number> {

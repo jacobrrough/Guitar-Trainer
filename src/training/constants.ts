@@ -120,3 +120,25 @@ export const COMEBACK_TEMPO_FACTOR = 0.9
 
 /** Default exercise audio. */
 export const BACKING_SAMPLE_RATE = 44100
+
+/** Chroma chord scoring (docs §5; roadmap "chord detection for scoring"). */
+export const CHORD_CHROMA_MATCH = 0.75
+/** Fraction of a chord's pitch classes that must be present for a hit. */
+export const CHORD_MIN_PRESENT = 0.6
+/** A chroma bin counts as present when it reaches this fraction of the strongest bin. */
+export const CHROMA_PRESENT_RATIO = 0.3
+export const CHROMA_MIN_FREQ = 70
+export const CHROMA_MAX_FREQ = 1500
+
+/** Bends are judged on the reached pitch within this many semitones (25 cents). */
+export const BEND_TOLERANCE_SEMIS = 0.25
+
+/** Ear training (tuneByEar). */
+export const EAR_PROMPTS = 8
+export const EAR_RESPONSE_SECONDS = 6
+export const EAR_PERFECT_CENTS = 25
+export const EAR_GOOD_CENTS = 50
+
+/** Milestones. */
+export const MILESTONE_TEMPO_STEP = 10
+export const STREAK_MILESTONES = [3, 7, 14, 30, 60, 100]

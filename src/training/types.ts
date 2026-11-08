@@ -75,6 +75,12 @@ export interface AttemptResult {
   speed: number
   /** Accuracy per bar index (0..1), when bars are known. */
   perBar?: number[]
+  /**
+   * How chord groups were judged. 'chroma' means polyphonic chroma matching was
+   * active, so chord skills count fully; 'pitch' (or absent) is the lenient
+   * any-chord-tone path and keeps provisional chord skills capped.
+   */
+  chordScoring?: 'pitch' | 'chroma'
 }
 
 export interface Performance {
@@ -137,6 +143,12 @@ export interface GeneratedExercise {
   backingSampleRate: number
   /** Short instructions shown before the block. */
   instructions: string
+  /**
+   * How the exercise is run: on the note highway (default) or by the ear trainer,
+   * which plays each chart note as a reference and listens for the player to
+   * find and play it back.
+   */
+  interaction?: 'highway' | 'ear'
 }
 
 export interface ExerciseGenerator {
@@ -321,4 +333,23 @@ export interface Recommendation {
   title: string
   reason: string
   action?: RecommendationAction
+}
+
+/** Milestones (docs §8, Phase 3): durable "you got somewhere" events shown on Today and Progress. */
+export type MilestoneType = 'band' | 'tempo' | 'unlock' | 'streak' | 'song' | 'test'
+
+export interface Milestone {
+  id?: number
+  at: number
+  type: MilestoneType
+  skillId?: string
+  songId?: number
+  /** Short headline, e.g. "Chromatic now clean at 100 bpm". */
+  title: string
+  /** One sentence of context. */
+  detail: string
+  /** Numeric payload: band index, tempo, streak length, song level … */
+  value?: number
+  /** Dedupe key (unique index): the same milestone is stored once, e.g. `band:fret.chromatic:2`. */
+  key: string
 }
