@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { normalize, pluck } from '../synth'
+import { guitarBody, normalize, pluck } from '../synth'
 import { ChromaAnalyzer, PITCH_CLASSES, chordMatch, chromaSimilarity, chordTemplate } from './chroma'
 
 const SR = 44100
-const N = 2048
+/** Matches the worklet's chroma window: long enough to separate the low strings of an open chord. */
+const N = 4096
 const midiToFreq = (m: number): number => 440 * Math.pow(2, (m - 69) / 12)
 
-/** Plucks the given notes together (slight strum offsets) and returns a frame ~120 ms after the attack. */
+/** Plucks the given notes together (slight strum offsets) through the body model and returns a frame ~120 ms after the attack. */
 function frameOf(midis: number[]): Float32Array {
   const buf = new Float32Array(SR)
   midis.forEach((m, i) => pluck(buf, i * 200, midiToFreq(m), 0.8, 0.6, 11 + i * 7, SR))
+  guitarBody(buf, SR)
   normalize(buf)
   const start = Math.round(0.12 * SR)
   return buf.slice(start, start + N)

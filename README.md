@@ -48,7 +48,8 @@ subscription, no servers: your audio and progress never leave your device.
   ukulele tunings; adjustable reference pitch.
 - **Metronome** – 30–300 bpm, time signatures, subdivisions, accents, tap tempo, keyboard
   control, sample-accurate clicks.
-- **Demo song** – a synthesised riff so you can try everything without any files.
+- **Demo song and starter songs** – synthesised with a physical string model (so they sound
+  like a plucked guitar, not a beep) so you can try everything without any files.
 - **Installable PWA** – offline-capable service worker, home-screen icons, iOS audio
   session handling, wake lock, phone layout with tap-to-pause, and an icon badge while
   today's session is still waiting.

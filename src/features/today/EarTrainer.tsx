@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getSettings } from '../../app/settings'
 import { audioEngine } from '../../audio/AudioEngine'
-import { normalize, pluck } from '../../audio/synth'
+import { guitarBody, normalize, pluck } from '../../audio/synth'
 import { Button, Card, cx } from '../../components/ui'
 import { midiToFreq, midiToName } from '../../music/pitch'
 import { EAR_RESPONSE_SECONDS } from '../../training/constants'
@@ -82,6 +82,7 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
     const rate = ctx.sampleRate
     const data = new Float32Array(Math.round(REFERENCE_SECONDS * rate))
     pluck(data, 0, midiToFreq(midi), REFERENCE_SECONDS, 0.8, 7 + midi, rate)
+    guitarBody(data, rate)
     normalize(data, 0.8)
     const buffer = ctx.createBuffer(1, data.length, rate)
     buffer.copyToChannel(data, 0)

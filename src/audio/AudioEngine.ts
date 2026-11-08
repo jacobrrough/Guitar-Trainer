@@ -181,6 +181,7 @@ class AudioEngine {
       channelCount: 1,
       processorOptions: {
         windowSize: 2048,
+        chromaWindow: 4096,
         hop: 512,
         minFreq: options.minFreq ?? 55,
         maxFreq: options.maxFreq ?? 1500,

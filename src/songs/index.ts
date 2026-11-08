@@ -101,9 +101,13 @@ export async function builtInSongRecord(id: string): Promise<SongRecord> {
  * The synth normalises each render to the same peak, so the drums are rescaled to the level
  * they have inside the full mix; otherwise the backing would be louder than the reference track.
  */
+const backingCache = new Map<string, Float32Array>()
+
 export function builtInBacking(id: string): Float32Array | null {
   const song = builtInSong(id)
   if (!song) return null
+  const cached = backingCache.get(id)
+  if (cached) return cached
   const drums = renderChartBacking(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: false })
   const full = renderChartBacking(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
   let dot = 0
@@ -114,5 +118,6 @@ export function builtInBacking(id: string): Float32Array | null {
   }
   const gain = norm > 0 ? Math.min(1, Math.max(0.1, dot / norm)) : 1
   for (let i = 0; i < drums.length; i++) drums[i] *= gain
+  backingCache.set(id, drums)
   return drums
 }

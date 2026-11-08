@@ -135,7 +135,8 @@ export function Player({
   const [micError, setMicError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [noticeAction, setNoticeAction] = useState<'speaker-mode' | null>(null)
-  const [guide, setGuide] = useState(false)
+  // The guitar part is muted while the mic scores on a speaker, unless Speaker mode's echo cancellation keeps it out of the mic.
+  const [guide, setGuide] = useState(() => Boolean(guideAudio) && settings.echoCancellation)
   const [countdown, setCountdown] = useState<number | null>(null)
   const [progress, setProgress] = useState(0)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -616,8 +617,8 @@ export function Player({
             disabled={busy}
             aria-pressed={guide}
             onClick={() => setGuide((g) => !g)}
-            title={guide ? 'Guide notes on: the part is played for you' : 'Guide notes off: only the backing plays'}
-            aria-label="Toggle guide notes"
+            title={guide ? 'Guitar part on: it plays along with the drums' : 'Guitar part muted: only the drums play'}
+            aria-label="Toggle the guitar part"
             data-testid="guide-toggle"
           >
             {guide ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
@@ -634,7 +635,7 @@ export function Player({
               if (guideAudio) setGuide(true)
             } else {
               audioEngine.unlock()
-              setGuide(false)
+              setGuide(settingsRef.current.echoCancellation)
               void startMic()
             }
           }}
@@ -678,7 +679,10 @@ export function Player({
             >
               <Play className="h-12 w-12" />
             </button>
-            <p className="text-sm text-muted">{[readyHint ?? `${notesCount} notes · ${Math.round(speed * 100)}% speed`, guideAudio ? (guide ? 'guide notes on' : 'guide notes off') : null].filter(Boolean).join(' · ')}</p>
+            <p className="text-sm text-muted">{[readyHint ?? `${notesCount} notes · ${Math.round(speed * 100)}% speed`, guideAudio ? (guide ? 'guitar part on' : 'guitar part muted') : null].filter(Boolean).join(' · ')}</p>
+            {guideAudio && !guide && mode !== 'test' && (
+              <p className="max-w-sm text-xs text-muted">The guitar part is muted so the microphone hears you, not the speaker. Tap the speaker icon to hear it, or Listen first.</p>
+            )}
             {guideAudio && mode !== 'test' && (
               <Button variant="secondary" size="sm" onClick={listen} data-testid="listen">
                 <Volume2 className="h-4 w-4" /> Listen first

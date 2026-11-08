@@ -12,7 +12,8 @@ src/
 │   ├── AudioEngine.ts         single AudioContext + MediaStream + worklet node
 │   ├── pitch/fft.ts           radix-2 FFT
 │   ├── pitch/mpm.ts           McLeod Pitch Method (NSDF via FFT autocorrelation)
-│   ├── pitch/pitch-processor  AudioWorkletProcessor posting {freq, clarity, rms}
+│   ├── pitch/pitch-processor  AudioWorkletProcessor posting {freq, clarity, rms, chroma}
+│   ├── synth.ts               offline guitar: extended Karplus–Strong strings, body resonator, click track
 │   └── metronome/             pure lookahead scheduler + click synthesis
 ├── music/          pitch math, tunings, string colours, string/fret assignment (Viterbi)
 ├── chart/          the app's own chart model + importers + difficulty generator
@@ -68,7 +69,9 @@ src/
    timing window (±45 ms perfect, up to 170 ms late), with repeated-note attack
    gating, streak multipliers and miss detection. Bend notes carry the pitch to
    reach and are judged within 25 cents of it. For charts with chords the worklet
-   also posts a 12-bin chroma vector per frame (`audio/pitch/chroma.ts`); the
+   also posts a 12-bin chroma vector per frame (`audio/pitch/chroma.ts`, computed
+   over the last 4096 samples rather than the detector's 2048, because the low strings
+   of an open chord only separate with ~90 ms of signal); the
    tracker sums it over a chord's window and calls the chord hit when the cosine
    match to the chord's pitch-class template is ≥ 0.75 and at least 60 % of its
    pitch classes are present. The latency setting shifts the scoring clock to
