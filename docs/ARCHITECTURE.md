@@ -73,7 +73,9 @@ src/
    match to the chord's pitch-class template is ≥ 0.75 and at least 60 % of its
    pitch classes are present. The latency setting shifts the scoring clock to
    compensate for audio I/O delay; the Settings page measures it with a
-   click-and-strum calibration.
+   click-and-strum calibration (`calibration.ts`: onsets relative to the room's
+   noise floor, the earliest sound after each click counts, so on a phone speaker
+   the click's own echo serves as a loopback measurement).
 
 5. **Section practice.** `PlayPage` passes a bar range and pass count to the
    `Player`; on a loop finish the pure helpers in `sectionLoop.ts` step the speed

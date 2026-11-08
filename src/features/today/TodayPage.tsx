@@ -324,7 +324,7 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
     if (!a) return null
     switch (a.type) {
       case 'calibrate':
-        return { label: 'Calibrate', run: () => navigate('/settings') }
+        return { label: 'Calibrate', run: () => navigate('/settings?calibrate=1') }
       case 'song':
         return { label: 'Play song', run: () => navigate(`/play/${a.songId}`) }
       case 'test':

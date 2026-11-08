@@ -27,7 +27,7 @@ The app must be served over HTTPS; GitHub Pages (the included workflow) qualifie
 | **Best:** audio interface (USB-C / Lightning, class compliant, e.g. iRig HD, Focusrite Scarlett Solo, Apogee Jam) | Plug in, pick it under Settings → Input device, run *Calibrate*. Headphones from the interface. |
 | Wired headphones + built-in mic | Works well for acoustic and clean tones. Calibrate once. |
 | Bluetooth headphones | Playable, but expect 150–250 ms of latency. Calibration compensates for scoring, but the count-in and your own picking will feel late. Prefer wired. |
-| Phone speaker, no headphones | The microphone hears the speaker, so the song would score itself. While the mic is on, synthesised content (demo, drills) plays drums and click only; tap the speaker icon to hear the part. The count-in checks for bleed and, if found, the run is shown but does not count towards ratings. For real recordings use headphones, or turn on **Settings → Speaker mode** (echo cancellation), which iOS pays for with phone-call playback quality. |
+| Phone speaker, no headphones | The microphone hears the speaker, so the song would score itself. While the mic is on, synthesised content (demo, drills) plays drums and click only; tap the speaker icon to hear the part. The count-in checks for bleed and, if found, the run is shown but does not count towards ratings. For real recordings use headphones, or turn on **Settings → Speaker mode** (echo cancellation), which iOS pays for with phone-call playback quality. Sync your sound (calibration) works here too: the click's own echo is a valid measurement of the delay. |
 
 Other iOS details handled by the app:
 
@@ -115,7 +115,7 @@ microphone. These need a real iPhone:
 - [ ] Tuner reads a plucked string within a second; needle stable
 - [ ] Mic on + song playing through headphones: notes register and score
 - [ ] Mic on + phone speaker: Speaker mode reduces self-scoring
-- [ ] Latency calibration completes with ≥ 3 of 8 strums detected
+- [ ] Sync your sound (Settings → Advanced): the dots light on each click and the result is plausible (speaker 20–80 ms, wired headphones 40–150 ms, Bluetooth 150–300 ms)
 - [ ] Import an MP3 from Files and a Guitar Pro file from Files
 - [ ] AI transcription finishes on a 1-minute clip
 - [ ] Screen stays on during a song; rotating keeps the song running

@@ -54,7 +54,7 @@ function MicCheck() {
       unsub.current?.()
       unsub.current = audioEngine.subscribe((frame) => {
         setLevel(Math.min(1, frame.rms * 8))
-        if (frame.rms > 0.01) setHeard(true)
+        if (frame.rms > 0.005) setHeard(true)
       })
       setStatus('on')
     } catch {

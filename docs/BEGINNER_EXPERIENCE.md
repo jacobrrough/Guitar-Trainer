@@ -128,7 +128,7 @@ speaks of ratings, "T1", "mastered / solid / total", "provisional" and "rusty".
 |---|---|---|---|
 | 1 | Setup card | "Take the placement test" is the primary action | Make "I'm new to guitar" primary; hide the test behind "I've played before" |
 | 2 | Setup card | "Not calibrated" warning and latency talk | Remove from first run; default the latency, ask later only if scores look off |
-| 3 | Calibration | "strum a muted string" | Skip for beginners, or "rest your fingers lightly on the strings and strum" |
+| 3 | Calibration | "strum a muted string" | Done: "rest your fingers lightly across the strings", live level bar and hit dots, result in plain words |
 | 4 | Missing | No meet-your-guitar step | A short pre-flight: hold it, pick grip, string names, left-handed, phone placement |
 | 5 | Tuner | Two buttons both say "E" | "6 (thickest) E … 1 (thinnest) E" and "pluck the thickest string first" |
 | 6 | Tuner | cents and Hz | Big "Too low, tighten" / "Too high, loosen"; numbers behind a toggle |
@@ -168,6 +168,11 @@ Status: §3.2 (Start Here wizard with mic check and guided tuning), §3.3 (the t
 lessons with bundled songs) and the §3.4 engine and UI changes are implemented; see
 `src/features/onboarding`, `src/lessons`, `src/features/lessons`, `src/songs`,
 `src/components/diagrams` and the tuner's guided mode. Hardware testing is still open.
+The latency calibration ("Sync your sound") was rebuilt after the first phone report: onsets
+are judged against the room's noise floor instead of a fixed loudness, the earliest sound after
+each click counts (on a phone speaker that is the click's own echo, a valid loopback
+measurement), the dialog shows a level bar and per-click hit dots, the result is in plain words,
+and Today and the tests open it directly via `/settings?calibrate=1`.
 
 ### 3.1 Principles
 

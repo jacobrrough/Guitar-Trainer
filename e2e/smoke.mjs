@@ -68,6 +68,12 @@ function synthWav() {
       samples[start + n] += env * 0.5 * (Math.sin(2 * Math.PI * f * t) + 0.5 * Math.sin(2 * Math.PI * 2 * f * t) + 0.25 * Math.sin(2 * Math.PI * 3 * f * t))
     }
   })
+  return { buffer: pcm16Wav(samples, sr), expectedMidi: [40, 45, 50, 55] }
+}
+
+/** Float samples to a 16-bit mono WAV. */
+function pcm16Wav(samples, sr) {
+  const total = samples.length
   const buf = Buffer.alloc(44 + total * 2)
   buf.write('RIFF', 0)
   buf.writeUInt32LE(36 + total * 2, 4)
@@ -83,7 +89,30 @@ function synthWav() {
   buf.write('data', 36)
   buf.writeUInt32LE(total * 2, 40)
   for (let i = 0; i < total; i++) buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767))), 44 + i * 2)
-  return { buffer: buf, expectedMidi: [40, 45, 50, 55] }
+  return buf
+}
+
+/**
+ * Fifteen seconds of faint noise with a short 1.2 kHz burst every 300 ms: a "strum" lands in every
+ * calibration click window (clicks are 600 ms apart) at a constant offset, as a 48 kHz WAV for
+ * Chromium's --use-file-for-fake-audio-capture.
+ */
+function burstsWav() {
+  const sr = 48000
+  const samples = new Float32Array(sr * 15)
+  let seed = 1
+  const noise = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 4294967296 - 0.5
+  }
+  for (let i = 0; i < samples.length; i++) samples[i] = noise() * 0.0016
+  for (let start = Math.round(0.1 * sr); start + sr * 0.04 < samples.length; start += Math.round(0.3 * sr)) {
+    for (let n = 0; n < sr * 0.04; n++) {
+      const t = n / sr
+      samples[start + n] += 0.3 * Math.exp(-t * 60) * Math.sin(2 * Math.PI * 1200 * t)
+    }
+  }
+  return pcm16Wav(samples, sr)
 }
 
 class SkipRest extends Error {}
@@ -100,9 +129,8 @@ function check(cond, message) {
 const preview = await startPreview()
 const base = preview.url
 log('preview at', base)
-const browser = await chromium.launch({
-  args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--enable-unsafe-swiftshader'],
-})
+const LAUNCH_ARGS = ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required', '--enable-unsafe-swiftshader']
+const browser = await chromium.launch({ args: LAUNCH_ARGS })
 const context = await browser.newContext({ ...(DEVICE ?? { viewport: { width: 1280, height: 800 } }), permissions: ['microphone'] })
 const page = await context.newPage()
 const consoleErrors = []
@@ -314,6 +342,43 @@ try {
   await page.waitForFunction(() => (document.querySelector('[data-testid="data-status"]')?.textContent || '').length > 0, null, { timeout: 10000 })
   const exportStatus = await page.getByTestId('data-status').innerText()
   check(/^Export/.test(exportStatus), `training data export: ${exportStatus}`)
+
+  // Sync your sound (latency calibration): a second browser whose fake microphone plays a burst every
+  // 300 ms, so every click finds a sound in its window and the dialog must finish with a steady result.
+  {
+    const wavPath = path.join(OUT, 'calibration.wav')
+    writeFileSync(wavPath, burstsWav())
+    const b2 = await chromium.launch({ args: [...LAUNCH_ARGS, `--use-file-for-fake-audio-capture=${wavPath}`] })
+    try {
+      const c3 = await b2.newContext({ ...(DEVICE ?? { viewport: { width: 1280, height: 800 } }), permissions: ['microphone'] })
+      const p3 = await c3.newPage()
+      p3.on('pageerror', (err) => consoleErrors.push(`pageerror(calibration): ${err.message}`))
+      await p3.goto(`${base}/#/settings?calibrate=1`)
+      await p3.getByTestId('calibrate-start').click({ timeout: 15000 })
+      await p3.getByTestId('calibrate-running').waitFor({ timeout: 5000 })
+      await p3.waitForTimeout(2500)
+      await p3.screenshot({ path: path.join(OUT, `calibration-running${SUFFIX}.png`) })
+      const outcome = p3.locator('[data-testid="calibrate-result"], [data-testid="calibrate-error"]').first()
+      await outcome.waitFor({ timeout: 25000 })
+      await p3.screenshot({ path: path.join(OUT, `calibration${SUFFIX}.png`) })
+      const text = (await outcome.innerText()).replace(/\s+/g, ' ')
+      const resultShown = (await p3.getByTestId('calibrate-result').count()) === 1
+      check(resultShown, `calibration finishes with a result: ${text.slice(0, 140)}`)
+      if (resultShown) {
+        const ms = Number(/(-?\d+) ms/.exec(text)?.[1])
+        const heard = Number(/(\d+) of \d+ clicks heard/.exec(text)?.[1])
+        check(ms >= -60 && ms <= 500, `measured latency is plausible (${ms} ms)`)
+        check(heard >= 6, `most clicks were heard (${heard} of 8)`)
+        check(!/rough/.test(text), 'the gaps were steady')
+        await p3.getByTestId('calibrate-use').click()
+        await p3.waitForFunction((v) => document.body.innerText.includes(`Sync your sound (latency): ${v} ms`), Math.max(0, ms), { timeout: 5000 })
+        check(true, 'saved latency shows in settings')
+      }
+      await c3.close()
+    } finally {
+      await b2.close()
+    }
+  }
 
   // First steps: a brand-new learner in a fresh profile goes through the wizard and starts lesson 1
   {

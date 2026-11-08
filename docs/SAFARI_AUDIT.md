@@ -28,7 +28,7 @@ Status: **fixed** = already patched in an editable file, **patch** = diff below 
 | 14 | degraded | all text/number inputs, e.g. `TextInput`, `ImportDialog` fields (`text-sm`, 14 px) | iOS zooms the page when a field under 16 px is focused, and an installed app does not zoom back out. | fixed (iOS-only `font-size:16px` rule in `index.html`) |
 | 15 | cosmetic | `InstallBanner.tsx`, `platform.ts:isSafari` | Old `isSafari` accepted most in-app WebViews (no `Chrome` token); banner said third-party browsers cannot install (outdated since iOS 16.4) and said "iPhone" on iPad. Share button moved into the ••• menu on newer iOS. | fixed |
 | 16 | cosmetic | `docs/IOS.md` | Wrong/outdated claims, see below. | fixed |
-| 17 | note | `CalibrationDialog.tsx:36-57` | Latency detection uses an rms jump on the worklet frames; the click played through a phone speaker leaks into the mic (echo cancellation off), so the first "attack" per click is often the click itself and the 150 ms lock-out hides the strum. Result then measures acoustic loop latency, not guitar timing. It leaves the mic open after the dialog finishes until the Settings page unmounts (`SettingsPage.tsx:39`). | **device**; recommend calibrating with headphones/interface, and `audioEngine.stopMic()` in `onClose` |
+| 17 | note | `CalibrationDialog.tsx:36-57` | Latency detection uses an rms jump on the worklet frames; the click played through a phone speaker leaks into the mic (echo cancellation off), so the first "attack" per click is often the click itself and the 150 ms lock-out hides the strum. Result then measures acoustic loop latency, not guitar timing. It leaves the mic open after the dialog finishes until the Settings page unmounts (`SettingsPage.tsx:39`). | fixed: the earliest sound after each click counts (speaker echo is a valid loopback measurement), the onset threshold is relative to the room's noise floor, the mic closes when the run ends, and the dialog shows a level bar and per-click hit dots |
 | 18 | note | `Player.tsx:370-371` | `preservesPitch` unprefixed exists from Safari 15.4, so no `webkitPreservesPitch` fallback is needed on 16.4+. WebKit can reset `playbackRate` when a paused element starts. | patch adds `defaultPlaybackRate` and a re-assert; **device** (0.5x must sound half speed and an octave stays put) |
 
 ### Checked and fine (no change)
@@ -70,7 +70,7 @@ Patch contents by file:
 5. `ProgressPage.tsx`: share-sheet export, delayed revoke (8).
 6. `ImportDialog.tsx`, `transcribe.ts`: friendly decode error, MIME inference, honest hint (9).
 
-Also recommended, not in the diff: in `CalibrationDialog.tsx` call `audioEngine.stopMic()` in the `onClose` path (17).
+Done since: `CalibrationDialog.tsx` stops the mic when the run ends and on unmount (17).
 
 ```diff
 --- a/src/app/AppLayout.tsx

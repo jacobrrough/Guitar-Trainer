@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { DEFAULT_SETTINGS, updateSettings, useSettings } from '../../app/settings'
 import { audioEngine } from '../../audio/AudioEngine'
 import { Button, Card, Field, PageHeader, Select, Toggle } from '../../components/ui'
@@ -17,7 +18,20 @@ export function SettingsPage() {
   const settings = useSettings()
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
   const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown')
-  const [calibrating, setCalibrating] = useState(false)
+  const [params, setParams] = useSearchParams()
+  // Today and the tests send people here with ?calibrate=1: the dialog opens straight away.
+  const wantCalibrate = params.get('calibrate') === '1'
+  const [calibrating, setCalibrating] = useState(wantCalibrate)
+  const advancedRef = useRef<HTMLDetailsElement>(null)
+
+  useEffect(() => {
+    if (wantCalibrate && advancedRef.current) advancedRef.current.open = true
+  }, [wantCalibrate])
+
+  const closeCalibration = () => {
+    setCalibrating(false)
+    if (wantCalibrate) setParams({}, { replace: true })
+  }
 
   const refreshDevices = async () => {
     try {
@@ -102,10 +116,10 @@ export function SettingsPage() {
           </Field>
         </Card>
         <Card>
-          <details data-testid="advanced-settings">
+          <details data-testid="advanced-settings" ref={advancedRef}>
             <summary className="cursor-pointer font-semibold">Advanced</summary>
             <div className="mt-3">
-              <Field label={`Sync your sound (latency): ${settings.latencyMs} ms`} hint="Bluetooth headphones and USB interfaces add delay. Calibrate for the best scoring accuracy.">
+              <Field label={`Sync your sound (latency): ${settings.latencyMs} ms`} hint="Your sound takes a moment to reach the app, longer with Bluetooth headphones or a USB interface. Measure it once and scoring lines up with what you play.">
                 <input type="range" min={0} max={400} step={5} value={settings.latencyMs} onChange={(e) => updateSettings({ latencyMs: Number(e.target.value) })} />
               </Field>
               <div className="mt-3 flex gap-2">
@@ -163,7 +177,7 @@ export function SettingsPage() {
           </p>
         </Card>
       </div>
-      {calibrating && <CalibrationDialog deviceId={settings.inputDeviceId || undefined} onClose={() => setCalibrating(false)} onResult={(ms) => updateSettings({ latencyMs: ms, calibratedAt: Date.now() })} />}
+      {calibrating && <CalibrationDialog deviceId={settings.inputDeviceId || undefined} onClose={closeCalibration} onResult={(ms) => updateSettings({ latencyMs: ms, calibratedAt: Date.now() })} />}
     </div>
   )
 }

@@ -307,7 +307,7 @@ function TestFlowInner({ type }: { type: TestType }) {
             timing could be marked early or late by mistake.
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" onClick={() => navigate('/settings')}>
+            <Button variant="primary" onClick={() => navigate('/settings?calibrate=1')}>
               Calibrate
             </Button>
             {type === 'placement' && <Button onClick={() => setOverride(true)}>Continue anyway</Button>}
