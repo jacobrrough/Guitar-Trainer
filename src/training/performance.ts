@@ -34,6 +34,7 @@ export function attemptPerformance(result: AttemptResult, ctx: PerformanceContex
 
   const reasons: string[] = []
   if (result.coverage < MIN_COVERAGE) reasons.push('low coverage')
+  if (result.bleed) reasons.push('speaker bleed')
   if (ctx.isTest && (ctx.calibrationAgeDays == null || ctx.calibrationAgeDays > CALIBRATION_MAX_AGE_DAYS)) {
     reasons.push('calibration stale')
   }

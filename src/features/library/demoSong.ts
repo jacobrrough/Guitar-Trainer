@@ -75,6 +75,11 @@ export function renderDemoAudio(): Float32Array {
   return renderChartBacking(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000 })
 }
 
+/** The demo's drums and click without the riff: what plays while the microphone scores. */
+export function renderDemoBacking(): Float32Array {
+  return renderChartBacking(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000, plucks: false })
+}
+
 export { encodeWav }
 
 /** A short synthesised riff + chord progression, so the app is playable without any files. */

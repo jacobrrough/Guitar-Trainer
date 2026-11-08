@@ -81,6 +81,8 @@ export interface AttemptResult {
    * any-chord-tone path and keeps provisional chord skills capped.
    */
   chordScoring?: 'pitch' | 'chroma'
+  /** The microphone was hearing the device's own playback (speaker bleed): the run scored itself. */
+  bleed?: boolean
 }
 
 export interface Performance {
@@ -138,8 +140,10 @@ export interface GeneratedExercise {
   /** Difficulty d (docs §4.2) for these params. */
   difficulty: number
   params: ExerciseParams
-  /** Mono PCM backing track; null means "metronome click only". */
+  /** Mono PCM backing track (click and drums, no part) played while the mic scores; null until rendered. */
   backing: Float32Array | null
+  /** Same backing with the part's notes played, for listening; null for chord/strum drills and tests. */
+  guide?: Float32Array | null
   backingSampleRate: number
   /** Short instructions shown before the block. */
   instructions: string

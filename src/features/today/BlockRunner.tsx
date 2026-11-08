@@ -22,6 +22,7 @@ import { SKILLS_BY_ID } from '../../training/skills'
 import { localDateString } from '../../training/store'
 import type { AttemptResult, Block, ExerciseBlock, SessionRecord, SongBlock } from '../../training/types'
 import { useTodaySession } from '../../training/useTraining'
+import { renderDemoBacking } from '../library/demoSong'
 import { Player, type PlayerHandle } from '../play/Player'
 import { EarTrainer } from './EarTrainer'
 import type { ScoreSummary } from '../play/scoring'
@@ -130,6 +131,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   }, [block.id, tempo, tuning.join(',')])
   const exercise = exerciseResult.exercise
   const audio = useMemo(() => (exercise?.backing ? encodeWav(exercise.backing, exercise.backingSampleRate) : null), [exercise])
+  const guideAudio = useMemo(() => (exercise?.guide ? encodeWav(exercise.guide, exercise.backingSampleRate) : null), [exercise])
 
   // After "Next rep": the Player resets through resetKey (child effect), then we start it.
   // The audio element gets its new source one render later, so wait briefly.
@@ -297,6 +299,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
         chart={exercise.chart}
         notes={exercise.chart.notes}
         audio={audio}
+        guideAudio={guideAudio}
         playedTempo={tempo}
         targetTempo={block.tempo}
         readyHint={exercise.instructions}
@@ -347,6 +350,7 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
   const levels = useMemo(() => generateLevels(song.chart), [song])
   const level = Math.max(0, Math.min(levels.length - 1, block.level))
   const audio = useMemo(() => songAudioBlob(song), [song])
+  const demoBacking = useMemo(() => (song.source === 'demo' ? encodeWav(renderDemoBacking()) : null), [song])
   const chart = useMemo(() => ({ ...song.chart, duration: Math.max(song.chart.duration, song.duration) }), [song])
 
   const onFinished = (summary: ScoreSummary, result: AttemptResult) => {
@@ -428,7 +432,8 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
         subtitle={phase === 'loop' ? loopLabel : `Level ${level + 1}${block.speed < 1 ? ` · ${Math.round(block.speed * 100)}% speed` : ''}`}
         chart={chart}
         notes={levels[level].notes}
-        audio={audio}
+        audio={demoBacking ?? audio}
+        guideAudio={demoBacking ? audio : null}
         speed={block.speed}
         playedTempo={song.bpm * block.speed}
         targetTempo={song.bpm}

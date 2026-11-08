@@ -27,7 +27,7 @@ The app must be served over HTTPS; GitHub Pages (the included workflow) qualifie
 | **Best:** audio interface (USB-C / Lightning, class compliant, e.g. iRig HD, Focusrite Scarlett Solo, Apogee Jam) | Plug in, pick it under Settings → Input device, run *Calibrate*. Headphones from the interface. |
 | Wired headphones + built-in mic | Works well for acoustic and clean tones. Calibrate once. |
 | Bluetooth headphones | Playable, but expect 150–250 ms of latency. Calibration compensates for scoring, but the count-in and your own picking will feel late. Prefer wired. |
-| Phone speaker, no headphones | The song leaks from the speaker into the mic and gets "played" for you. Turn on **Settings → Speaker mode** (echo cancellation) and keep the volume moderate. Scores are less reliable in this mode. |
+| Phone speaker, no headphones | The microphone hears the speaker, so the song would score itself. While the mic is on, synthesised content (demo, drills) plays drums and click only; tap the speaker icon to hear the part. The count-in checks for bleed and, if found, the run is shown but does not count towards ratings. For real recordings use headphones, or turn on **Settings → Speaker mode** (echo cancellation), which iOS pays for with phone-call playback quality. |
 
 Other iOS details handled by the app:
 

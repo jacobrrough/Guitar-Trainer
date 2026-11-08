@@ -8,6 +8,8 @@ import { recordResult, songAudioBlob, type SongRecord } from '../../db/db'
 import { useSong } from '../../db/useSongs'
 import { tuningLabel } from '../../music/tunings'
 import { getSettings } from '../../app/settings'
+import { encodeWav } from '../../audio/synth'
+import { renderDemoBacking } from '../library/demoSong'
 import { recordSongPlay } from '../../training/coach'
 import type { AttemptResult } from '../../training/types'
 import { Player, type PlayerHandle } from './Player'
@@ -135,6 +137,8 @@ export function PlayPage() {
   const song: SongRecord | null = songQuery === 'loading' ? null : songQuery
   const levels = useMemo(() => (song ? generateLevels(song.chart) : null), [song])
   const audio = useMemo(() => (song ? songAudioBlob(song) : null), [song])
+  // The demo's stored WAV plays the riff itself; while the microphone scores we play drums only, so a phone speaker cannot score itself.
+  const demoBacking = useMemo(() => (song?.source === 'demo' ? encodeWav(renderDemoBacking()) : null), [song])
   const chart = useMemo(() => (song ? { ...song.chart, duration: Math.max(song.chart.duration, song.duration) } : null), [song])
   const [levelIdx, setLevelIdx] = useState<number | null>(null)
   const [speed, setSpeed] = useState(1)
@@ -331,7 +335,8 @@ export function PlayPage() {
       subtitle={`${song.artist || 'Unknown artist'} · ${tuningLabel(chart.tuning)}${chart.capo ? ` · capo ${chart.capo}` : ''} · ${Math.round(chartBpm(chart))} bpm`}
       chart={chart}
       notes={levels[li].notes}
-      audio={audio}
+      audio={demoBacking ?? audio}
+      guideAudio={demoBacking ? audio : null}
       mode="song"
       speed={speed}
       playedTempo={chartBpm(chart) * speed}

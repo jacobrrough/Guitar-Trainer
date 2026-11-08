@@ -1,4 +1,4 @@
-import { ArrowLeft, Mic, MicOff, Pause, Play, RotateCcw } from 'lucide-react'
+import { ArrowLeft, Mic, MicOff, Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react'
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref, type RefObject } from 'react'
 import { updateSettings, useSettings } from '../../app/settings'
 import { useWakeLock } from '../../app/useWakeLock'
@@ -9,6 +9,7 @@ import { Button, cx, formatTime } from '../../components/ui'
 import type { AttemptResult } from '../../training/types'
 import { HighwayRenderer } from './Highway'
 import { PlaybackClock } from './PlaybackClock'
+import { detectBleed } from './bleed'
 import { PitchSmoother } from './pitchTracker'
 import { ScoreTracker, hasChordGroups, type ScoreSummary } from './scoring'
 
@@ -39,6 +40,11 @@ export interface PlayerProps {
   /** 0-based inclusive bar range to loop; the player finishes after `loopCount` passes. */
   loopBars?: [number, number]
   loopCount?: number
+  /**
+   * The same track with the part's notes played (synthesised content only). Off by
+   * default while the microphone scores, so a phone speaker cannot score itself.
+   */
+  guideAudio?: Blob | null
   /** Changing this value resets the player to the start. */
   resetKey?: number | string
   /** Count-in clicks before the audio starts (default true). */
@@ -110,6 +116,7 @@ export function Player({
   targetTempo,
   loopBars,
   loopCount = 2,
+  guideAudio = null,
   resetKey,
   countIn = true,
   headerControls,
@@ -125,6 +132,8 @@ export function Player({
   const [micStatus, setMicStatus] = useState<'off' | 'on' | 'error'>(audioEngine.micActive ? 'on' : 'off')
   const [micError, setMicError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [noticeAction, setNoticeAction] = useState<'speaker-mode' | null>(null)
+  const [guide, setGuide] = useState(false)
   const [countdown, setCountdown] = useState<number | null>(null)
   const [progress, setProgress] = useState(0)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -141,6 +150,9 @@ export function Player({
   const mediaPrimedRef = useRef(false)
   const playbackStartedRef = useRef(false)
   const skipCountInRef = useRef(false)
+  const clickTimesRef = useRef<number[]>([])
+  const countInAttacksRef = useRef<number[]>([])
+  const bleedRef = useRef(false)
   const loopsDoneRef = useRef(0)
   const startedAtRef = useRef<number | null>(null)
   const phaseRef = useRef<PlayerPhase>('ready')
@@ -182,12 +194,13 @@ export function Player({
   }, [setPhase])
 
   // Audio source.
+  const source = guide && guideAudio ? guideAudio : audio
   useEffect(() => {
-    const url = URL.createObjectURL(audio)
+    const url = URL.createObjectURL(source)
     setAudioUrl(url)
     mediaPrimedRef.current = false
     return () => URL.revokeObjectURL(url)
-  }, [audio])
+  }, [source])
 
   // Score tracker follows the active notes and speed.
   useEffect(() => {
@@ -239,7 +252,8 @@ export function Player({
     tracker.advance(Number.POSITIVE_INFINITY)
     const p = propsRef.current
     const durationSec = startedAtRef.current ? (performance.now() - startedAtRef.current) / 1000 : (el?.currentTime ?? 0)
-    onFinished(tracker.summary(), tracker.toAttemptResult({ playedTempo: p.playedTempo, targetTempo: p.targetTempo, speed: p.speed, durationSec }))
+    const result = tracker.toAttemptResult({ playedTempo: p.playedTempo, targetTempo: p.targetTempo, speed: p.speed, durationSec })
+    onFinished(tracker.summary(), bleedRef.current ? { ...result, bleed: true } : result)
   }, [onFinished, setPhase])
   const finishRef = useRef(finish)
   finishRef.current = finish
@@ -309,6 +323,8 @@ export function Player({
         const st = settingsRef.current
         const { midi, isAttack } = smootherRef.current.push(frame, st.clarityThreshold, st.a4)
         detectedRef.current.midi = midi
+        // Count-in: microphone attacks right after our own clicks mean the speaker is being heard.
+        if (phaseRef.current === 'countin' && isAttack) countInAttacksRef.current.push(frame.time)
         const tracker = trackerRef.current
         const el = audioRef.current
         if (midi === null) tracker?.release()
@@ -352,10 +368,10 @@ export function Player({
     [],
   )
 
-  const startMic = useCallback(async () => {
+  const startMic = useCallback(async (overrides: { echoCancellation?: boolean } = {}) => {
     try {
       const st = settingsRef.current
-      await audioEngine.startMic({ deviceId: st.inputDeviceId || undefined, threshold: 0.9, echoCancellation: st.echoCancellation })
+      await audioEngine.startMic({ deviceId: st.inputDeviceId || undefined, threshold: 0.9, echoCancellation: overrides.echoCancellation ?? st.echoCancellation })
       setMicStatus('on')
       setMicError(null)
     } catch (err) {
@@ -363,6 +379,17 @@ export function Player({
       setMicError(err instanceof Error ? err.message : String(err))
     }
   }, [])
+
+  /** Speaker mode: echo cancellation removes our own playback from the microphone (iOS pays with phone-call playback quality). */
+  const enableSpeakerMode = useCallback(() => {
+    updateSettings({ echoCancellation: true })
+    setNoticeAction(null)
+    setNotice('Speaker mode is on. Restart the song to check the microphone again.')
+    if (audioEngine.micActive) {
+      audioEngine.stopMic()
+      void startMic({ echoCancellation: true })
+    }
+  }, [startMic])
 
   const restart = useCallback(() => {
     const el = audioRef.current
@@ -375,6 +402,7 @@ export function Player({
     startedAtRef.current = null
     trackerRef.current?.reset()
     judgementRef.current = null
+    bleedRef.current = false
     clockRef.current?.reset()
     setPhase('ready')
   }, [setPhase])
@@ -386,6 +414,7 @@ export function Player({
     audioEngine.unlock()
     primeMediaElement(el, mediaPrimedRef, playbackStartedRef)
     setNotice(null)
+    setNoticeAction(null)
     if (!audioEngine.micActive && micStatus !== 'error') await startMic()
     await audioEngine.resume()
     const p = propsRef.current
@@ -396,6 +425,7 @@ export function Player({
     const loopStart = p.loopBars ? (barStartTime(p.chart, p.loopBars[0]) ?? 0) : 0
     if (el.currentTime < loopStart) el.currentTime = loopStart
     const atStart = el.currentTime <= loopStart + 0.05
+    if (atStart) bleedRef.current = false
     if (atStart && countIn && !skipCountInRef.current) {
       setPhase('countin')
       const ctx = audioEngine.context
@@ -403,12 +433,20 @@ export function Player({
       const interval = 60 / bpm / p.speed
       const beats = 4
       const t0 = ctx.currentTime + 0.15
+      clickTimesRef.current = []
+      countInAttacksRef.current = []
       for (let i = 0; i < beats; i++) {
         playClick(ctx, ctx.destination, t0 + i * interval, i === 0 ? 'high' : 'mid', 0.6)
+        clickTimesRef.current.push(t0 + i * interval)
         setTimeout(() => setCountdown(beats - i), Math.max(0, (t0 + i * interval - ctx.currentTime) * 1000))
       }
       await new Promise((r) => setTimeout(r, Math.max(0, (t0 + beats * interval - ctx.currentTime) * 1000)))
       setCountdown(null)
+      if (audioEngine.micActive && detectBleed(clickTimesRef.current, countInAttacksRef.current)) {
+        bleedRef.current = true
+        setNotice('Your microphone can hear the speaker, so this run will not count towards your ratings. Use headphones, or turn on Speaker mode.')
+        setNoticeAction('speaker-mode')
+      }
     }
     try {
       el.muted = false
@@ -511,6 +549,20 @@ export function Player({
             {headerControls}
           </div>
         )}
+        {guideAudio && (
+          <Button
+            size="sm"
+            variant={guide ? 'secondary' : 'ghost'}
+            disabled={busy}
+            aria-pressed={guide}
+            onClick={() => setGuide((g) => !g)}
+            title={guide ? 'Guide notes on: the part is played for you' : 'Guide notes off: only the backing plays'}
+            aria-label="Toggle guide notes"
+            data-testid="guide-toggle"
+          >
+            {guide ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+          </Button>
+        )}
         <Button
           size="sm"
           variant={micStatus === 'on' ? 'secondary' : 'primary'}
@@ -518,8 +570,11 @@ export function Player({
             if (micStatus === 'on') {
               audioEngine.stopMic()
               setMicStatus('off')
+              // Listening without scoring: play the part.
+              if (guideAudio) setGuide(true)
             } else {
               audioEngine.unlock()
+              setGuide(false)
               void startMic()
             }
           }}
@@ -535,7 +590,16 @@ export function Player({
         </div>
       )}
       {micError && <div className="bg-bad/15 px-4 py-1 text-xs text-red-200">Microphone: {micError}. You can still play along without scoring.</div>}
-      {notice && <div className="bg-accent/15 px-4 py-1 text-xs text-amber-100">{notice}</div>}
+      {notice && (
+        <div className="flex flex-wrap items-center gap-2 bg-accent/15 px-4 py-1 text-xs text-amber-100" data-testid="player-notice">
+          <span>{notice}</span>
+          {noticeAction === 'speaker-mode' && (
+            <button type="button" className="rounded-md border border-amber-200/40 px-2 py-0.5 font-medium hover:bg-amber-200/10" onClick={enableSpeakerMode} data-testid="speaker-mode">
+              Turn on Speaker mode
+            </button>
+          )}
+        </div>
+      )}
       <div
         className="relative min-h-0 flex-1"
         onPointerUp={(e) => {
@@ -554,7 +618,7 @@ export function Player({
             >
               <Play className="h-12 w-12" />
             </button>
-            <p className="text-sm text-muted">{readyHint ?? `${notesCount} notes · ${Math.round(speed * 100)}% speed`}</p>
+            <p className="text-sm text-muted">{[readyHint ?? `${notesCount} notes · ${Math.round(speed * 100)}% speed`, guideAudio ? (guide ? 'guide notes on' : 'guide notes off') : null].filter(Boolean).join(' · ')}</p>
             {mode !== 'test' && (
               <p className="text-xs text-muted">
                 {portraitPhone ? 'Tip: rotate your phone for a wider highway. Tap the highway to pause.' : 'Space or tap the highway to pause · R to restart'}

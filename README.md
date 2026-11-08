@@ -97,6 +97,10 @@ Source: GitHub Actions*). For hosting under a sub-path, build with `BASE_PATH=/y
 
 Plug the guitar in through an audio interface for the cleanest detection; a laptop microphone
 works for acoustic and clean tones. Distorted tones: lower *Detection sensitivity* in Settings.
+Use headphones when scoring: a speaker next to the microphone would score the song itself.
+The app plays drums-only backing for synthesised content while the mic is on (the speaker
+icon brings the part back), warns when the count-in is heard through the speaker, and does
+not let such a run move your ratings.
 
 ## Built on open source
 

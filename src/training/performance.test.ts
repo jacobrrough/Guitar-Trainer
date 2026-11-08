@@ -62,6 +62,8 @@ describe('attemptPerformance', () => {
     expect(attemptPerformance(result(), { calibrationAgeDays: null }).reliable).toBe(true)
     expect(attemptPerformance(result(), { sessionTimingBiasMs: -45 }).reasons).toEqual(['timing bias'])
     expect(attemptPerformance(result(), { sessionTimingBiasMs: 40 }).reliable).toBe(true)
+    expect(attemptPerformance(result({ bleed: true })).reasons).toEqual(['speaker bleed'])
+    expect(attemptPerformance(result({ bleed: true })).reliable).toBe(false)
     const all = attemptPerformance(result({ coverage: 0.1 }), { isTest: true, sessionTimingBiasMs: 60 })
     expect(all.reasons).toEqual(['low coverage', 'calibration stale', 'timing bias'])
   })
