@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie'
 import type { Chart, ChartSource } from '../chart/types'
+import type { Attempt, Profile, SessionRecord, SkillState, SongItemState, TestRecord } from '../training/types'
 
 export interface ScoreRecord {
   level: number
@@ -52,10 +53,27 @@ export function songAudioBlob(song: SongRecord): Blob | null {
 
 export const db = new Dexie('guitar-trainer') as Dexie & {
   songs: EntityTable<SongRecord, 'id'>
+  skillStates: EntityTable<SkillState, 'skillId'>
+  attempts: EntityTable<Attempt, 'id'>
+  sessions: EntityTable<SessionRecord, 'id'>
+  tests: EntityTable<TestRecord, 'id'>
+  songItems: EntityTable<SongItemState, 'key'>
+  profile: EntityTable<Profile, 'id'>
 }
 
 db.version(1).stores({
   songs: '++id, title, artist, createdAt, updatedAt',
+})
+
+// Adaptive training tables (docs/ADAPTIVE_TRAINING.md §10).
+db.version(2).stores({
+  songs: '++id, title, artist, createdAt, updatedAt',
+  skillStates: 'skillId, rating, nextReviewAt',
+  attempts: '++id, at, kind, skillId, songId, sessionId',
+  sessions: '++id, &date',
+  tests: '++id, at, type',
+  songItems: 'key, songId, nextReviewAt',
+  profile: 'id',
 })
 
 export async function addSong(input: NewSong): Promise<number> {
