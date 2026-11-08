@@ -23,7 +23,14 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
   const [error, setError] = useState<string | null>(null)
   const cleanup = useRef<(() => void) | null>(null)
 
-  useEffect(() => () => cleanup.current?.(), [])
+  // Closing the dialog (done, cancelled or unmounted) must release the microphone.
+  useEffect(
+    () => () => {
+      cleanup.current?.()
+      audioEngine.stopMic()
+    },
+    [],
+  )
 
   const run = async () => {
     audioEngine.unlock()

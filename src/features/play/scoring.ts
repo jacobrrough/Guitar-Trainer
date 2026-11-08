@@ -2,7 +2,8 @@ import type { OctaveTolerance } from '../../app/settings'
 import { groupNotes, type NoteGroup } from '../../chart/events'
 import type { Beat, ChartNote } from '../../chart/types'
 import { findBeatIndex } from '../../chart/timing'
-import { WEAK_BAR_ACCURACY } from '../../training/constants'
+import { chordMatch } from '../../audio/pitch/chroma'
+import { BEND_TOLERANCE_SEMIS, WEAK_BAR_ACCURACY } from '../../training/constants'
 import type { AttemptResult } from '../../training/types'
 
 /** Timing windows in seconds of real time (scaled by playback speed into song time). */
@@ -53,12 +54,29 @@ export interface ScoreOptions {
   centsTolerance?: number
   /** Beat grid; enables per-bar statistics. */
   beats?: Beat[]
+  /**
+   * How chord groups are judged: 'pitch' (default) matches any single detected pitch of the chord;
+   * 'chroma' judges them from accumulated pitch-class energy fed through `onChroma`.
+   */
+  chordScoring?: 'pitch' | 'chroma'
 }
 
 export function pitchMatches(detected: number, target: number, toleranceSemis: number, allowOctave: boolean): boolean {
   const d = detected - target
   if (Math.abs(d) <= toleranceSemis) return true
   return allowOctave && (Math.abs(d - 12) <= toleranceSemis || Math.abs(d + 12) <= toleranceSemis)
+}
+
+/** True when a chord group (same chordId, >= 2 notes) spans at least two distinct pitch classes. */
+function isChromaChord(notes: ChartNote[]): boolean {
+  if (notes.length < 2) return false
+  const first = ((Math.round(notes[0].midi) % 12) + 12) % 12
+  return notes.some((n) => ((Math.round(n.midi) % 12) + 12) % 12 !== first)
+}
+
+/** True when any chord in the chart spans >= 2 distinct pitch classes (so chroma scoring is meaningful). */
+export function hasChordGroups(notes: ChartNote[]): boolean {
+  return groupNotes(notes).some((g) => isChromaChord(g.notes))
 }
 
 export class ScoreTracker {
@@ -78,6 +96,9 @@ export class ScoreTracker {
   private lastHit: { midi: number; time: number } | null = null
   /** True once a new pick (attack), silence or a different pitch has been heard since the last hit. */
   private armed = true
+  private readonly mode: 'pitch' | 'chroma'
+  /** Per-group accumulated chroma (chroma mode), keyed by group; dropped when the group resolves. */
+  private readonly chromaAcc = new Map<GroupState, { sum: Float32Array; first: number }>()
   score = 0
   streak = 0
   maxStreak = 0
@@ -88,6 +109,7 @@ export class ScoreTracker {
   constructor(notes: ChartNote[], opts: ScoreOptions = {}) {
     this.groups = groupNotes(notes).map((group) => ({ group, status: 'pending' as GroupStatus }))
     for (const g of this.groups) for (const n of g.group.notes) this.byNote.set(n.id, g)
+    this.mode = opts.chordScoring ?? 'pitch'
     this.baseWindow = { ...DEFAULT_WINDOW, ...opts.window }
     this.octave = opts.octaveTolerance ?? 'chords'
     this.tolerance = (opts.centsTolerance ?? 60) / 100
@@ -111,6 +133,11 @@ export class ScoreTracker {
     return { perfect: this.baseWindow.perfect * s, good: this.baseWindow.good * s, early: this.baseWindow.early * s, late: this.baseWindow.late * s }
   }
 
+  /** Chord scoring mode this tracker was created with. */
+  get chordScoring(): 'pitch' | 'chroma' {
+    return this.mode
+  }
+
   get multiplier(): number {
     return 1 + Math.min(3, Math.floor(this.streak / 10))
   }
@@ -126,6 +153,7 @@ export class ScoreTracker {
       delete g.delta
       delete g.hitAt
     }
+    this.chromaAcc.clear()
     this.cursor = 0
     this.covCursor = 0
     this.expectedFrames = 0
@@ -158,6 +186,7 @@ export class ScoreTracker {
       if (g.group.time >= songTime - late) break
       if (g.status === 'pending') {
         g.status = 'miss'
+        this.chromaAcc.delete(g)
         this.misses++
         this.streak = 0
         missed.push(g)
@@ -182,7 +211,11 @@ export class ScoreTracker {
   private matches(g: GroupState, midi: number): boolean {
     const isChord = g.group.notes.length > 1
     const allowOctave = this.octave === 'all' || (this.octave === 'chords' && isChord)
-    return g.group.notes.some((n) => pitchMatches(midi, n.midi, this.tolerance, allowOctave))
+    return g.group.notes.some((n) =>
+      n.tech?.bend
+        ? pitchMatches(midi, n.midi, BEND_TOLERANCE_SEMIS, false)
+        : pitchMatches(midi, n.midi, this.tolerance, allowOctave),
+    )
   }
 
   /** Call when the detector hears nothing: the next note of the same pitch counts as a fresh pick. */
@@ -203,21 +236,54 @@ export class ScoreTracker {
       if (g.group.time > songTime + w.early) break
       if (g.status !== 'pending') continue
       if (songTime - g.group.time > w.late) continue
+      if (this.mode === 'chroma' && isChromaChord(g.group.notes)) continue
       if (!this.matches(g, midi)) continue
       if (!this.armed && this.lastHit && Math.abs(this.lastHit.midi - midi) < 0.6) continue
-      const delta = songTime - g.group.time
-      const judgement: Judgement = Math.abs(delta) <= w.perfect ? 'perfect' : 'good'
-      g.status = 'hit'
-      g.judgement = judgement
-      g.delta = delta
-      g.hitAt = songTime
-      this.score += (judgement === 'perfect' ? 100 : 50) * this.multiplier
-      this.streak++
-      if (this.streak > this.maxStreak) this.maxStreak = this.streak
-      if (judgement === 'perfect') this.perfects++
-      else this.goods++
+      this.registerHit(g, songTime - g.group.time, songTime)
       this.lastHit = { midi, time: songTime }
       this.armed = false
+      return g
+    }
+    return null
+  }
+
+  /** Marks a group hit and updates score, streak and counters (shared by pitch and chroma judging). */
+  private registerHit(g: GroupState, delta: number, songTime: number): void {
+    const judgement: Judgement = Math.abs(delta) <= this.window.perfect ? 'perfect' : 'good'
+    g.status = 'hit'
+    g.judgement = judgement
+    g.delta = delta
+    g.hitAt = songTime
+    this.chromaAcc.delete(g)
+    this.score += (judgement === 'perfect' ? 100 : 50) * this.multiplier
+    this.streak++
+    if (this.streak > this.maxStreak) this.maxStreak = this.streak
+    if (judgement === 'perfect') this.perfects++
+    else this.goods++
+  }
+
+  /**
+   * Feed a 12-bin chroma frame (chroma mode only; null otherwise). Frames are summed per chord
+   * group inside its window; the group is hit once the accumulated chroma matches the chord.
+   * Timing is taken from the first contributing frame.
+   */
+  onChroma(chroma: Float32Array, songTime: number): GroupState | null {
+    if (this.mode !== 'chroma') return null
+    const w = this.window
+    for (let i = this.cursor; i < this.groups.length; i++) {
+      const g = this.groups[i]
+      if (g.group.time > songTime + w.early) break
+      if (g.status !== 'pending' || !isChromaChord(g.group.notes)) continue
+      if (songTime - g.group.time > w.late) continue
+      let acc = this.chromaAcc.get(g)
+      if (!acc) {
+        acc = { sum: new Float32Array(12), first: songTime }
+        this.chromaAcc.set(g, acc)
+      }
+      for (let k = 0; k < 12; k++) acc.sum[k] += chroma[k]
+      if (!chordMatch(acc.sum, g.group.notes.map((n) => n.midi)).ok) return null
+      const delta = Math.min(w.late, Math.max(-w.early, acc.first - g.group.time))
+      this.registerHit(g, delta, songTime)
       return g
     }
     return null
@@ -334,6 +400,7 @@ export class ScoreTracker {
       playedTempo: opts.playedTempo,
       targetTempo: opts.targetTempo,
       speed: opts.speed,
+      chordScoring: this.mode,
     }
     if (this.hasBeats) result.perBar = this.perBarAccuracy().map((a) => (a < 0 ? 1 : a))
     return result

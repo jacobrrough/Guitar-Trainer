@@ -7,7 +7,7 @@ specified against the code that already exists (chart model, scoring engine,
 difficulty levels, synthesised audio) and keeps the app's constraints: free,
 offline, all data on the device.
 
-Status: **Phases 0–2 implemented** (see `src/training/`); Phase 3 and later are open. Phases and estimates are in §13.
+Status: **Phases 0–3 implemented** (see `src/training/`), except reminders, which need a push relay. "Later" items are open. Phases and estimates are in §13.
 
 ---
 

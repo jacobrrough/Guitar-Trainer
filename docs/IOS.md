@@ -2,13 +2,16 @@
 
 The app is built iPhone-first as an installable web app (PWA). That is deliberate:
 it is free to distribute, needs no Mac or developer account, updates instantly, and
-Safari on iOS 16.4+ has everything we need (AudioWorklet, getUserMedia, Web Workers,
-IndexedDB, Wake Lock, WebGL in workers from iOS 17). A native wrapper for the App
+Safari on iOS 16.4+ has what we need (AudioWorklet, getUserMedia, Web Workers,
+IndexedDB, Wake Lock outside home-screen apps). Some of it needs a workaround on
+particular versions; see `docs/SAFARI_AUDIT.md` for the code-level audit.
+Transcription falls back from WebGL to CPU when the worker has no usable WebGL. A native wrapper for the App
 Store is prepared with Capacitor (see the end of this page).
 
 ## Install on an iPhone
 
-1. Open the site in **Safari** (other iOS browsers cannot install web apps).
+1. Open the site in **Safari**. Chrome, Edge and Firefox on iOS 16.4+ can also add a home-screen
+   web app, but in-app browsers (Instagram, Facebook, Mail links...) cannot.
 2. Tap **Share** → **Add to Home Screen** → **Add**.
 3. Launch it from the home screen. It runs full screen, works offline after the first
    visit, and its storage is exempt from Safari's 7-day eviction of website data.
@@ -30,9 +33,14 @@ Other iOS details handled by the app:
   song element synchronously, before the count-in. If Safari still refuses (older
   versions), the next tap starts the song immediately without a count-in.
 - With the microphone on, the app requests a *play-and-record* audio session
-  (Audio Session API, iOS 17+) so playback keeps using the speaker at full volume.
-- The screen stays awake while you play, tune or run the metronome (Wake Lock,
-  iOS 16.4+).
+  (Audio Session API, used where `navigator.audioSession` exists) so playback keeps using the
+  speaker at full volume. Without the mic it requests a *playback* session so the
+  metronome and count-in are not muted by the ringer switch.
+- The screen stays awake while you play, tune or run the metronome (Wake Lock API in Safari
+  16.4+). Home-screen web apps only honour it from iOS 18.4; on 16.4 to 18.3 (and in a
+  Capacitor wrapper, which has no Wake Lock API) the app plays a hidden muted video instead.
+- After a phone call, Siri or an app switch the app resumes the audio engine and reopens the
+  microphone; a song that was playing is paused rather than silently scored.
 - Audio is stored as raw bytes in IndexedDB rather than as Blobs, which have a
   history of corruption on iOS.
 - Transcription resampling falls back to a JavaScript resampler on Safari versions
@@ -41,17 +49,19 @@ Other iOS details handled by the app:
 ## Formats
 
 Safari decodes **MP3, M4A/AAC, WAV, AIFF, FLAC and CAF**. It does not decode
-**OGG Vorbis**; convert those first. Guitar Pro (.gp, .gp3–.gp5, .gpx), MusicXML
+**OGG Vorbis** on most iOS versions; convert those first. Guitar Pro (.gp, .gp3–.gp5, .gpx), MusicXML
 and MIDI files open from the Files app through the normal file picker.
 
 ## Limitations on iOS
 
-- Audio stops when the app goes to the background or the screen locks (no
-  background audio for web apps).
+- The microphone and Web Audio stop when the app goes to the background or the screen
+  locks, and the app pauses the song. Scoring cannot run in the background.
 - Safari caps the storage of a *non-installed* site and may evict it after 7 days
   without use. Install to the home screen to keep your library.
-- The microphone permission is asked again each time an installed web app launches
-  on some iOS versions.
+- The microphone permission is typically asked again each time an installed web app is
+  launched from a cold start (iOS does not persist it for home-screen apps).
+- A new version of the app is applied the next time every window of it has been closed
+  (swipe it away in the app switcher); it never reloads mid-song.
 - Transcription of a full song takes longer on a phone (expect about a minute for a
   4-minute track on a recent iPhone; longer on older models). It runs in a worker,
   so the UI stays responsive, but keep the app in the foreground.
@@ -87,10 +97,14 @@ Then in Xcode:
 4. Run on your iPhone.
 
 The web code detects the wrapper through `window.Capacitor` and skips the install
-banner. Everything else (audio session, wake lock, storage) behaves as in Safari
-because Capacitor uses the same WKWebView engine.
+banner. Audio, storage and the audio session behave as in Safari because Capacitor uses
+WKWebView, with these differences: there is no service worker (no offline cache, the files
+ship inside the app), no `navigator.wakeLock` (the hidden-video fallback is used) and the
+WebView's IndexedDB can be purged by iOS under storage pressure, so use Export regularly.
 
 ## Checklist for a real device (not yet done)
+
+The 15-minute version with expected results is the *Device checklist* in `docs/SAFARI_AUDIT.md`.
 
 This build was verified in Chromium with iPhone viewport/touch emulation and a fake
 microphone. These need a real iPhone:

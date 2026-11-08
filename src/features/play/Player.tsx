@@ -10,7 +10,7 @@ import type { AttemptResult } from '../../training/types'
 import { HighwayRenderer } from './Highway'
 import { PlaybackClock } from './PlaybackClock'
 import { PitchSmoother } from './pitchTracker'
-import { ScoreTracker, type ScoreSummary } from './scoring'
+import { ScoreTracker, hasChordGroups, type ScoreSummary } from './scoring'
 
 export type PlayerMode = 'song' | 'exercise' | 'test'
 export type PlayerPhase = 'ready' | 'countin' | 'playing' | 'paused' | 'finished'
@@ -159,6 +159,28 @@ export function Player({
 
   useWakeLock(phase === 'playing' || phase === 'countin')
 
+  // iOS pauses the <audio> element behind our back (phone call, Siri, lock screen, app switch) and cuts the
+  // mic. Without this the highway keeps "playing" a frozen clock and the run is scored as misses.
+  useEffect(() => {
+    const interrupted = () => {
+      const el = audioRef.current
+      if (!el || phaseRef.current !== 'playing' || el.ended) return
+      el.pause()
+      playbackStartedRef.current = false
+      setPhase('paused')
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') interrupted()
+    }
+    const el = audioRef.current
+    el?.addEventListener('pause', interrupted)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      el?.removeEventListener('pause', interrupted)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [setPhase])
+
   // Audio source.
   useEffect(() => {
     const url = URL.createObjectURL(audio)
@@ -169,7 +191,13 @@ export function Player({
 
   // Score tracker follows the active notes and speed.
   useEffect(() => {
-    const tracker = new ScoreTracker(notes, { octaveTolerance: settingsRef.current.octaveTolerance, beats: chart.beats })
+    const chords = hasChordGroups(notes)
+    audioEngine.setChroma(chords)
+    const tracker = new ScoreTracker(notes, {
+      octaveTolerance: settingsRef.current.octaveTolerance,
+      beats: chart.beats,
+      chordScoring: chords ? 'chroma' : 'pitch',
+    })
     tracker.setSpeed(speed)
     const el = audioRef.current
     if (el && el.currentTime > 0.05) tracker.seek(el.currentTime - settingsRef.current.latencyMs / 1000)
@@ -291,8 +319,10 @@ export function Player({
         const now = clockRef.current?.time ?? el.currentTime
         const t = now - st.latencyMs / 1000
         tracker.observe(t, midi !== null)
+        const chromaHit = frame.chroma ? tracker.onChroma(frame.chroma, t) : null
+        if (chromaHit) judgementRef.current = { text: chromaHit.judgement === 'perfect' ? 'Perfect!' : 'Good', at: now }
         if (midi === null) {
-          detectedRef.current.matches = false
+          detectedRef.current.matches = chromaHit !== null
           return
         }
         const hit = tracker.onPitch(midi, t, isAttack)
@@ -314,7 +344,13 @@ export function Player({
     return () => clearInterval(timer)
   }, [])
 
-  useEffect(() => () => audioEngine.stopMic(), [])
+  useEffect(
+    () => () => {
+      audioEngine.setChroma(false)
+      audioEngine.stopMic()
+    },
+    [],
+  )
 
   const startMic = useCallback(async () => {
     try {
@@ -353,6 +389,8 @@ export function Player({
     if (!audioEngine.micActive && micStatus !== 'error') await startMic()
     await audioEngine.resume()
     const p = propsRef.current
+    // WebKit can reset the rate when a paused element starts; set the default too and re-assert after play().
+    el.defaultPlaybackRate = p.speed
     el.playbackRate = p.speed
     el.preservesPitch = true
     const loopStart = p.loopBars ? (barStartTime(p.chart, p.loopBars[0]) ?? 0) : 0
@@ -376,6 +414,7 @@ export function Player({
       el.muted = false
       playbackStartedRef.current = true
       await el.play()
+      if (el.playbackRate !== p.speed) el.playbackRate = p.speed
     } catch (err) {
       playbackStartedRef.current = false
       skipCountInRef.current = true

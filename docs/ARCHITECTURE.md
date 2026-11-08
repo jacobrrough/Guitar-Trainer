@@ -61,10 +61,19 @@ src/
    McLeod pitch detection every 512 samples and posts frames to the main thread.
    `PitchSmoother` median-filters frames and flags attacks (level jumps).
    `ScoreTracker` matches detected pitches against pending note groups inside a
-   timing window (±45 ms perfect, up to 170 ms late), with octave tolerance on
-   chords, repeated-note attack gating, streak multipliers and miss detection.
-   The latency setting shifts the scoring clock to compensate for audio I/O delay;
-   the Settings page measures it with a click-and-strum calibration.
+   timing window (±45 ms perfect, up to 170 ms late), with repeated-note attack
+   gating, streak multipliers and miss detection. Bend notes carry the pitch to
+   reach and are judged within 25 cents of it. For charts with chords the worklet
+   also posts a 12-bin chroma vector per frame (`audio/pitch/chroma.ts`); the
+   tracker sums it over a chord's window and calls the chord hit when the cosine
+   match to the chord's pitch-class template is ≥ 0.75 and at least 60 % of its
+   pitch classes are present. The latency setting shifts the scoring clock to
+   compensate for audio I/O delay; the Settings page measures it with a
+   click-and-strum calibration.
+
+5. **Section practice.** `PlayPage` passes a bar range and pass count to the
+   `Player`; on a loop finish the pure helpers in `sectionLoop.ts` step the speed
+   up (≥ 85 % accuracy) or down (< 70 %) and nothing is recorded as a song play.
 
 ## Training layer (Coach)
 
@@ -76,16 +85,22 @@ Design: `ADAPTIVE_TRAINING.md`. The code mirrors its sections and is pure apart 
 | `types.ts`, `constants.ts` | contracts and every tunable number |
 | `skills.ts` | 25-skill prerequisite graph with tips and generator ids |
 | `performance.ts`, `learner.ts`, `review.ts` | attempt performance and reliability, Elo-style rating update, tempo ceiling, rust, bands, review scheduling, song items |
-| `exercises/` | `ChartBuilder` (beats → chart), nine generators, registry with aliases, backing audio via `audio/synth.ts` |
+| `exercises/` | `ChartBuilder` (beats → chart), thirteen generators (chromatic, melody, scale runs, string skipping, chord changes, strum patterns, power-chord riffs, subdivisions, steady beat, legato, slides, bends, match-the-pitch), registry, backing audio via `audio/synth.ts` |
 | `planner.ts` | session templates, focus selection, song level targeting, test insertion, in-session tempo adaptation |
 | `assessment.ts`, `recommend.ts`, `plateau.ts` | placement ladder, checkpoint and monthly tests, test scheduling, rule-based recommendations, plateau detection |
-| `store.ts`, `useTraining.ts` | Dexie v2 tables, streaks, export/import, read-only live-query hooks |
+| `milestones.ts`, `milestoneStore.ts` | band, tempo, unlock, streak, song and test milestones; deduplicated by key in a Dexie v3 table |
+| `store.ts`, `useTraining.ts` | Dexie tables, streaks, export/import, read-only live-query hooks |
 | `coach.ts` | orchestration: plan today → build exercise → record attempt → update model → adapt plan; song plays; tests |
 
 The play engine was split into a reusable `Player` (song / exercise / test modes,
 section looping, count-in, mic scoring) that `PlayPage`, the block runner and the
 test flow wrap. `ScoreTracker` reports timing statistics, per-bar accuracy and
 detection coverage, which become the `AttemptResult` the learner model consumes.
+Ear-training exercises (`interaction: 'ear'`) bypass the highway: `EarTrainer`
+plays each chart note as a synthesised reference and listens for a stable pitch,
+then hands the block runner the same `AttemptResult` shape. Attempts record how
+chords were scored (`chordScoring`), and only pitch-scored attempts keep the
+provisional cap on chord skills.
 
 ## iOS / PWA layer
 
@@ -96,9 +111,21 @@ detection coverage, which become the `AttemptResult` the learner model consumes.
   wraps the Audio Session API; `app/InstallBanner.tsx` explains Share → Add to Home
   Screen on iOS and uses `beforeinstallprompt` elsewhere.
 - `AudioEngine.unlock()` is called synchronously in tap handlers to create/resume the
-  context before any `await`; the play page also primes the `<audio>` element inside the
-  gesture so the post-count-in `play()` is allowed.
-- `app/useWakeLock.ts` keeps the screen on; songs are stored as `ArrayBuffer`s.
+  context before any `await`, and asks for a `playback` audio session so the ringer
+  switch does not mute the metronome, count-in or ear trainer; the play page also primes
+  the `<audio>` element inside the gesture so the post-count-in `play()` is allowed.
+- `platform.keepAudioContextRunning` resumes a context left `interrupted` by a call or
+  app switch and reopens a muted mic track; the `Player` pauses when the page is hidden
+  or iOS pauses the element behind its back. A saved input device that is gone falls
+  back to the default microphone.
+- In production the worklet module is fetched (through the service worker, so it works
+  offline) and loaded from a blob URL; the service worker uses `prompt` update mode so a
+  deploy never reloads a session mid-song.
+- `app/useWakeLock.ts` keeps the screen on, with a hidden muted video fallback where the
+  Wake Lock API is missing; the shell pads for the safe areas; songs are stored as
+  `ArrayBuffer`s.
+- `SAFARI_AUDIT.md` lists every finding of the code audit against iOS 16.4–18 and a
+  15-minute device checklist. iOS has not been exercised on hardware yet.
 
 ## Key decisions
 
@@ -124,9 +151,10 @@ detection coverage, which become the `AttemptResult` the learner model consumes.
 - `npm run test:e2e` – Playwright smoke test against the production build using
   Chromium's fake microphone: navigation, metronome, tuner, demo song play-through
   to the results screen, persistence, an end-to-end AI transcription of a
-  synthetic WAV, and the Coach flow (setup → today's plan → first block → stored
-  attempts). `BASE_URL=http://localhost:5173 SKIP_TRANSCRIBE=1` runs the fast
-  subset against a dev server.
+  synthetic WAV, the Coach flow (setup → today's plan → first block → stored
+  attempts), a section loop run, the ear trainer's first prompt, the Progress page
+  and a training-data export. `BASE_URL=http://localhost:5173 SKIP_TRANSCRIBE=1`
+  runs the fast subset against a dev server.
 
 Note on TensorFlow.js: Basic Pitch declares `@tensorflow/tfjs ^3`, but 3.21 crashes
 inside Web Workers (`window is not defined` in `setTimeoutCustom`). `package.json`

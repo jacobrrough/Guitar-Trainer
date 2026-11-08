@@ -13,8 +13,10 @@ subscription, no servers: your audio and progress never leave your device.
   exercise at the right tempo, your song at the right level, a review of earlier
   material, and a skill check when one is due. Every block is scored and feeds a per-skill
   rating; tempos adapt rep by rep; weekly checkpoints and monthly assessments keep the
-  plan honest. Progress page with a skill map and rating history. Design:
-  [docs/ADAPTIVE_TRAINING.md](docs/ADAPTIVE_TRAINING.md).
+  plan honest. Drills cover picking, chords, legato, slides, bends and ear training
+  (listen, then find the note). Milestones mark bands, tempos, unlocks and streaks.
+  Progress page with a skill map, rating history and milestones; training data can be
+  exported and imported as JSON. Design: [docs/ADAPTIVE_TRAINING.md](docs/ADAPTIVE_TRAINING.md).
 - **Play along with difficulty levels** – every song gets six auto-generated levels, from a
   sparse "one note per bar" skeleton up to the full transcription. Low levels keep the
   structurally important notes (downbeats, long notes, phrase starts) and simplify chords
@@ -24,9 +26,11 @@ subscription, no servers: your audio and progress never leave your device.
   sustain tails, chord names, technique marks (hammer-on, slide, bend…), count-in, streaks and
   multipliers, results with per-level best scores.
 - **Real-time pitch scoring** – McLeod pitch detection running in an AudioWorklet on the audio
-  thread; timing windows, octave tolerance for chords, repeated-note attack gating, a latency
-  calibration wizard for Bluetooth headphones and USB interfaces.
-- **Slow-down practice** – 50–100 % speed without changing pitch.
+  thread; timing windows, repeated-note attack gating, a latency calibration wizard for
+  Bluetooth headphones and USB interfaces. Strummed chords are judged on a 12-bin chroma
+  profile (are the chord's notes actually ringing?), bends on the pitch you reach.
+- **Slow-down and section practice** – 50–100 % speed without changing pitch; loop any bar
+  range, and let the player step the speed up when a pass is clean or down when it is not.
 - **Three ways to get a chart**
   - Guitar Pro (`.gp`, `.gp3`–`.gp5`, `.gpx`) and MusicXML via [alphaTab] – repeats, tempo
     changes, capo and techniques are preserved.
@@ -39,7 +43,8 @@ subscription, no servers: your audio and progress never leave your device.
   control, sample-accurate clicks.
 - **Demo song** – a synthesised riff so you can try everything without any files.
 - **Installable PWA** – offline-capable service worker, home-screen icons, iOS audio
-  session handling, wake lock, phone layout with tap-to-pause.
+  session handling, wake lock, phone layout with tap-to-pause, and an icon badge while
+  today's session is still waiting.
 
 ## On your iPhone
 
@@ -76,11 +81,15 @@ Source: GitHub Actions*). For hosting under a sub-path, build with `BASE_PATH=/y
    with the speakers/headphones you practise with.
 2. **Today** – pick your goals and daily minutes, take the placement test (or start as a
    beginner), then do the session the coach lays out. One block a day keeps the streak.
+   Ear-training blocks play a reference note and listen for you to find it on the guitar.
 3. **Songs → Add song** – pick the recording, then the chart source. Fix the title/artist, pick
    the track for Guitar Pro/MIDI files, set a chart offset if the recording has a count-in.
 4. **Play** – start at the suggested level. 90 %+ accuracy unlocks a "level up" suggestion;
-   under 60 % the game suggests an easier level or a slower speed.
-5. **Progress / Tuner / Metronome** – available any time from the sidebar.
+   under 60 % the game suggests an easier level or a slower speed. Turn on *Loop* to drill a
+   bar range (or the weakest bars of your last run) with automatic speed steps.
+5. **Settings → Your data** – export a JSON backup of your training history, import one on
+   another device, or reset the coach.
+6. **Progress / Tuner / Metronome** – available any time from the sidebar.
 
 Plug the guitar in through an audio interface for the cleanest detection; a laptop microphone
 works for acoustic and clean tones. Distorted tones: lower *Detection sensitivity* in Settings.

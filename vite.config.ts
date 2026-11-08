@@ -12,13 +12,17 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt' (no UI wired): a new service worker waits until every window is closed, so a deploy
+      // never calls location.reload() in the middle of a song or a latency calibration. 'autoUpdate'
+      // would skipWaiting and reload the page as soon as an update is found.
+      registerType: 'prompt',
       // Everything under public/ (icons, Basic Pitch model) is already matched by globPatterns below.
       includeAssets: ['favicon.svg'],
       manifest: {
         name: 'Guitar Trainer',
         short_name: 'Guitar Trainer',
         description: 'Free, open-source guitar trainer. Play along to your songs with adjustable difficulty, tune up and keep time.',
+        id: '.',
         start_url: '.',
         scope: '.',
         display: 'standalone',
@@ -38,6 +42,8 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,json,bin,webmanifest}'],
         navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
+        // First install: take control of the open page so the app works offline without a second launch.
+        clientsClaim: true,
       },
       devOptions: { enabled: false },
     }),

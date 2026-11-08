@@ -4,6 +4,7 @@ import { audioEngine } from '../../audio/AudioEngine'
 import { Button, Card, Field, PageHeader, Select, Toggle } from '../../components/ui'
 import { TUNINGS } from '../../music/tunings'
 import { CalibrationDialog } from './CalibrationDialog'
+import { DataSection } from './DataSection'
 
 const SENSITIVITY = [
   { value: 0.9, label: 'Clean tone (strict)' },
@@ -124,6 +125,7 @@ export function SettingsPage() {
             </Select>
           </Field>
         </Card>
+        <DataSection />
         <Card className="text-sm text-muted">
           <h2 className="mb-3 font-semibold text-slate-100">About</h2>
           <p>

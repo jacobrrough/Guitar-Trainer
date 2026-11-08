@@ -1,4 +1,4 @@
-import { RotateCcw } from 'lucide-react'
+import { Repeat, RotateCcw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { LEVELS, generateLevels, suggestedLevel } from '../../chart/difficulty'
@@ -12,6 +12,7 @@ import { recordSongPlay } from '../../training/coach'
 import type { AttemptResult } from '../../training/types'
 import { Player, type PlayerHandle } from './Player'
 import type { ScoreSummary } from './scoring'
+import { LOOP_PASS_OPTIONS, barCount, clampRange, loopHint, loopOutcome, weakestRange } from './sectionLoop'
 
 const SPEEDS = [0.5, 0.6, 0.7, 0.8, 0.9, 1]
 
@@ -59,11 +60,14 @@ export function ResultsOverlay({
   levelIndex,
   onRetry,
   onLevel,
+  loop,
 }: {
   summary: ScoreSummary
   levelIndex: number
   onRetry: () => void
   onLevel: (idx: number) => void
+  /** Section-loop run: shows the auto-step message and a "Go again" primary button. */
+  loop?: { message: string; onAgain: () => void }
 }) {
   const s = stars(summary.accuracy)
   const canUp = levelIndex < LEVELS.length - 1
@@ -93,14 +97,21 @@ export function ResultsOverlay({
             </div>
           ))}
         </dl>
-        {suggestion === 'up' && <p className="mt-4 text-sm text-green-200">Great run! You are ready for {LEVELS[levelIndex + 1].label}.</p>}
-        {suggestion === 'down' && <p className="mt-4 text-sm text-amber-200">Tough one. Try {LEVELS[levelIndex - 1].label} or slow the song down.</p>}
+        {loop && <p className="mt-4 text-sm font-medium text-accent">{loop.message}</p>}
+        {!loop && suggestion === 'up' && <p className="mt-4 text-sm text-green-200">Great run! You are ready for {LEVELS[levelIndex + 1].label}.</p>}
+        {!loop && suggestion === 'down' && <p className="mt-4 text-sm text-amber-200">Tough one. Try {LEVELS[levelIndex - 1].label} or slow the song down.</p>}
         <div className="mt-5 flex flex-wrap justify-center gap-2">
-          <Button variant="primary" onClick={onRetry}>
-            <RotateCcw className="h-4 w-4" /> Play again
-          </Button>
+          {loop ? (
+            <Button variant="primary" onClick={loop.onAgain} data-testid="loop-again">
+              <RotateCcw className="h-4 w-4" /> Go again
+            </Button>
+          ) : (
+            <Button variant="primary" onClick={onRetry}>
+              <RotateCcw className="h-4 w-4" /> Play again
+            </Button>
+          )}
           {canUp && (
-            <Button onClick={() => onLevel(levelIndex + 1)} variant={suggestion === 'up' ? 'primary' : 'secondary'}>
+            <Button onClick={() => onLevel(levelIndex + 1)} variant={!loop && suggestion === 'up' ? 'primary' : 'secondary'}>
               Level up
             </Button>
           )}
@@ -129,7 +140,14 @@ export function PlayPage() {
   const [busy, setBusy] = useState(false)
   const [results, setResults] = useState<ScoreSummary | null>(null)
   const [resetKey, setResetKey] = useState(0)
+  const [loopOn, setLoopOn] = useState(false)
+  const [loopRange, setLoopRange] = useState<[number, number]>([0, 3])
+  const [passes, setPasses] = useState(2)
+  const [autoStep, setAutoStep] = useState(false)
+  const [lastPerBar, setLastPerBar] = useState<number[] | null>(null)
+  const [loopNext, setLoopNext] = useState<{ message: string; nextSpeed: number } | null>(null)
   const playerRef = useRef<PlayerHandle>(null)
+  const startAfterReset = useRef(false)
   const songRef = useRef(song)
   songRef.current = song
 
@@ -140,9 +158,23 @@ export function PlayPage() {
     }
   }, [song, levelIdx])
 
+  // After a "Go again" reset the Player has re-initialised (child effects run first), so start now.
+  useEffect(() => {
+    if (startAfterReset.current) {
+      startAfterReset.current = false
+      playerRef.current?.start()
+    }
+  }, [resetKey])
+
   const onFinished = useCallback(
     (summary: ScoreSummary, result: AttemptResult) => {
       setResults(summary)
+      if (result.perBar) setLastPerBar(result.perBar)
+      if (loopOn) {
+        // A partial-song pass: show the loop message but never record it.
+        setLoopNext(loopOutcome(summary.accuracy, speed, autoStep))
+        return
+      }
       const s = songRef.current
       if (s && levelIdx !== null && summary.total > 0) {
         void recordSongPlay(s, levelIdx, result, getSettings()).catch(() => {})
@@ -159,7 +191,7 @@ export function PlayPage() {
         })
       }
     },
-    [levelIdx, speed],
+    [levelIdx, speed, loopOn, autoStep],
   )
 
   const pickLevel = (idx: number) => {
@@ -179,6 +211,15 @@ export function PlayPage() {
       </div>
     )
   }
+  const bars = barCount(chart)
+  const range = clampRange(loopRange, bars)
+  const weak = lastPerBar ? weakestRange(lastPerBar) : null
+  const goAgain = () => {
+    if (loopNext) setSpeed(loopNext.nextSpeed)
+    setResults(null)
+    startAfterReset.current = true
+    setResetKey((k) => k + 1)
+  }
   const li = levelIdx ?? suggestedLevel(song.chart) - 1
   const counts = levels.map((l) => l.notes.length)
   const speedSelect = (
@@ -189,6 +230,93 @@ export function PlayPage() {
         </option>
       ))}
     </Select>
+  )
+
+  const barOptions = Array.from({ length: bars }, (_, i) => (
+    <option key={i} value={i}>
+      {i + 1}
+    </option>
+  ))
+  const loopToggle = (
+    <Button
+      size="sm"
+      variant={loopOn ? 'primary' : 'secondary'}
+      aria-pressed={loopOn}
+      disabled={busy}
+      onClick={() => setLoopOn((v) => !v)}
+      data-testid="loop-toggle"
+      title="Practice a section on repeat"
+    >
+      <Repeat className="h-4 w-4" /> Loop
+    </Button>
+  )
+  const loopOptions = loopOn && (
+    <>
+      <label className="flex items-center gap-1 text-xs text-muted">
+        From
+        <Select
+          value={range[0]}
+          onChange={(e) => setLoopRange(clampRange([Number(e.target.value), Math.max(range[1], Number(e.target.value))], bars))}
+          disabled={busy}
+          aria-label="Loop from bar"
+          className="h-8 px-2 py-0"
+          data-testid="loop-from"
+        >
+          {barOptions}
+        </Select>
+      </label>
+      <label className="flex items-center gap-1 text-xs text-muted">
+        To
+        <Select
+          value={range[1]}
+          onChange={(e) => setLoopRange(clampRange([Math.min(range[0], Number(e.target.value)), Number(e.target.value)], bars))}
+          disabled={busy}
+          aria-label="Loop to bar"
+          className="h-8 px-2 py-0"
+          data-testid="loop-to"
+        >
+          {barOptions}
+        </Select>
+      </label>
+      <Select
+        value={passes}
+        onChange={(e) => setPasses(Number(e.target.value))}
+        disabled={busy}
+        aria-label="Passes"
+        title="Passes"
+        className="h-8 px-2 py-0"
+        data-testid="loop-passes"
+      >
+        {LOOP_PASS_OPTIONS.map((n) => (
+          <option key={n} value={n}>
+            {n}×
+          </option>
+        ))}
+      </Select>
+      <Button
+        size="sm"
+        variant={autoStep ? 'primary' : 'secondary'}
+        aria-pressed={autoStep}
+        disabled={busy}
+        onClick={() => setAutoStep((v) => !v)}
+        data-testid="loop-auto"
+        title="Speed up after a clean pass, slow down after a rough one"
+      >
+        Auto-step
+      </Button>
+      <Button
+        size="sm"
+        disabled={busy || !weak}
+        onClick={() => weak && setLoopRange(weak)}
+        data-testid="loop-weakest"
+        title={weak ? 'Loop the bars you missed most' : 'Play the song once to find your weakest bars'}
+      >
+        Weakest bars
+      </Button>
+      <Button size="sm" variant="ghost" disabled={busy} onClick={() => setLoopOn(false)}>
+        Whole song
+      </Button>
+    </>
   )
 
   return (
@@ -204,18 +332,26 @@ export function PlayPage() {
       playedTempo={chartBpm(chart) * speed}
       targetTempo={chartBpm(chart)}
       resetKey={resetKey}
-      readyHint={`${LEVELS[li].label} · ${counts[li]} notes · ${Math.round(speed * 100)}% speed`}
+      loopBars={loopOn ? range : undefined}
+      loopCount={passes}
+      readyHint={loopOn ? loopHint(range, passes, speed) : `${LEVELS[li].label} · ${counts[li]} notes · ${Math.round(speed * 100)}% speed`}
       headerControls={
         <>
           <LevelPicker levelIdx={li} counts={counts} disabled={busy} onPick={pickLevel} />
           {speedSelect}
+          {loopToggle}
+          {loopOptions}
         </>
       }
       mobileControls={
-        <>
-          <LevelPicker levelIdx={li} counts={counts} disabled={busy} onPick={pickLevel} compact />
-          {speedSelect}
-        </>
+        <div className="flex w-full flex-col gap-1.5 short-landscape:gap-1">
+          <div className="flex items-center gap-2">
+            <LevelPicker levelIdx={li} counts={counts} disabled={busy} onPick={pickLevel} compact />
+            {speedSelect}
+            {loopToggle}
+          </div>
+          {loopOn && <div className="flex flex-wrap items-center gap-1.5">{loopOptions}</div>}
+        </div>
       }
       resultsOverlay={
         results ? (
@@ -228,6 +364,7 @@ export function PlayPage() {
               playerRef.current?.start()
             }}
             onLevel={pickLevel}
+            loop={loopOn && loopNext ? { message: loopNext.message, onAgain: goAgain } : undefined}
           />
         ) : null
       }

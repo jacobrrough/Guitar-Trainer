@@ -116,7 +116,8 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={cx('max-h-[92vh] w-full overflow-y-auto rounded-t-2xl border border-line bg-panel p-5 shadow-xl sm:rounded-2xl', wide ? 'sm:max-w-2xl' : 'sm:max-w-lg')}
+        className={cx('max-h-[92dvh] w-full overflow-y-auto rounded-t-2xl border border-line bg-panel p-5 shadow-xl sm:rounded-2xl', wide ? 'sm:max-w-2xl' : 'sm:max-w-lg')}
+        style={{ paddingBottom: 'max(1.25rem, env(safe-area-inset-bottom))' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">

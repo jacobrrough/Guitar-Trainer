@@ -1,13 +1,17 @@
 import type { ExerciseGenerator, ExerciseParams, GeneratedExercise, SkillDef } from '../types'
+import { bendTargetsGenerator } from './bendTargets'
 import { chordChangesGenerator } from './chordChanges'
 import { chromaticGenerator } from './chromatic'
+import { legatoLickGenerator } from './legatoLick'
 import { melodyGenerator } from './melody'
 import { metronomeSteadyGenerator } from './metronomeSteady'
 import { powerChordRiffGenerator } from './powerChordRiff'
 import { scaleRunGenerator } from './scaleRun'
+import { slideLickGenerator } from './slideLick'
 import { stringSkippingGenerator } from './stringSkipping'
 import { strumPatternGenerator } from './strumPattern'
 import { subdivisionSwitchGenerator } from './subdivisionSwitch'
+import { tuneByEarGenerator } from './tuneByEar'
 
 export const GENERATORS: Record<string, ExerciseGenerator> = {
   chromatic: chromaticGenerator,
@@ -19,19 +23,18 @@ export const GENERATORS: Record<string, ExerciseGenerator> = {
   powerChordRiff: powerChordRiffGenerator,
   subdivisionSwitch: subdivisionSwitchGenerator,
   metronomeSteady: metronomeSteadyGenerator,
+  legatoLick: legatoLickGenerator,
+  slideLick: slideLickGenerator,
+  bendTargets: bendTargetsGenerator,
+  tuneByEar: tuneByEarGenerator,
 }
 
 /**
- * Generator ids the skill taxonomy refers to that have no dedicated generator
- * yet (Phase 3 in docs/ADAPTIVE_TRAINING.md). They fall back to the closest
- * implemented generator so every skill is always practisable.
+ * Fallbacks for generator ids without a dedicated generator. Every id in the
+ * skill taxonomy has one now; the map stays so a future skill can point at a
+ * stand-in until its generator exists.
  */
-export const GENERATOR_ALIASES: Record<string, string> = {
-  legatoLick: 'scaleRun',
-  slideLick: 'melody',
-  bendTargets: 'melody',
-  tuneByEar: 'metronomeSteady',
-}
+export const GENERATOR_ALIASES: Record<string, string> = {}
 
 export function resolveGeneratorId(id: string): string {
   return GENERATORS[id] ? id : (GENERATOR_ALIASES[id] ?? 'melody')

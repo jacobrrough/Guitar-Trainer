@@ -106,6 +106,14 @@ describe('applyAttempt', () => {
     expect(out.rating).toBe(75)
   })
 
+  it('does not cap provisional skills after a chroma-scored attempt', () => {
+    const start = { ...confident, rating: 74.9 }
+    const pitch = applyAttempt(start, attempt({ difficulty: 74.9, chordScoring: 'pitch' }), { ...skill, provisional: true })
+    const chroma = applyAttempt(start, attempt({ difficulty: 74.9, chordScoring: 'chroma' }), { ...skill, provisional: true })
+    expect(pitch.rating).toBe(75)
+    expect(chroma.rating).toBeGreaterThan(75)
+  })
+
   it('updates confidence incrementally with recency decay', () => {
     const first = applyAttempt(newSkillState('s', 0), attempt(), skill)
     expect(first.confidence).toBe(1)

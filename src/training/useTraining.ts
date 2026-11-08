@@ -1,7 +1,8 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
+import { listMilestones, milestonesSince } from './milestoneStore'
 import { defaultProfile, recentAttempts } from './store'
-import type { Attempt, LearnerModel, Profile, SessionRecord, TestRecord } from './types'
+import type { Attempt, LearnerModel, Milestone, Profile, SessionRecord, TestRecord } from './types'
 
 /** Read-only: returns the stored profile, or the default (unsaved) one until `loadProfile()` creates it. */
 export function useProfile(): Profile | undefined {
@@ -31,4 +32,14 @@ export function useRecentAttempts(days: number): Attempt[] | undefined {
 
 export function useTests(limit = 10): TestRecord[] | undefined {
   return useLiveQuery(() => db.tests.orderBy('at').reverse().limit(limit).toArray(), [limit])
+}
+
+/** Newest-first milestones (live). */
+export function useMilestones(limit = 20): Milestone[] | undefined {
+  return useLiveQuery(() => listMilestones(limit), [limit])
+}
+
+/** Milestones earned after `ts` (live), newest first. */
+export function useMilestonesSince(ts: number): Milestone[] | undefined {
+  return useLiveQuery(() => milestonesSince(ts), [ts])
 }

@@ -23,6 +23,7 @@ import { localDateString } from '../../training/store'
 import type { AttemptResult, Block, ExerciseBlock, SessionRecord, SongBlock } from '../../training/types'
 import { useTodaySession } from '../../training/useTraining'
 import { Player, type PlayerHandle } from '../play/Player'
+import { EarTrainer } from './EarTrainer'
 import type { ScoreSummary } from '../play/scoring'
 import { bandLabel, pct, repSummaryText, timingText } from './todayUtils'
 
@@ -104,6 +105,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   const [error, setError] = useState<string | null>(null)
   const [ratingBefore, setRatingBefore] = useState(0)
   const [savingFlag, setSavingFlag] = useState(false)
+  const [retryKey, setRetryKey] = useState(0)
   const startNext = useRef(false)
   const lastResult = useRef<AttemptResult | null>(null)
 
@@ -192,11 +194,12 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   const retry = () => {
     setNoScore(false)
     setRepResult(null)
+    setRetryKey((k) => k + 1)
     playerRef.current?.restart()
     playerRef.current?.start()
   }
 
-  if (!skill || !exercise || !audio) {
+  if (!skill || !exercise || (!audio && exercise.interaction !== 'ear')) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-muted" data-testid="block-runner">
         <p>{exerciseResult.error ?? 'This exercise has no audio.'}</p>
@@ -272,6 +275,17 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
       </Overlay>
     ) : null
   }
+
+  if (exercise.interaction === 'ear') {
+    return (
+      <div data-testid="block-runner" className="relative h-full">
+        <EarTrainer exercise={exercise} resetKey={rep * 1000 + (retryKey % 1000)} onExit={() => navigate('/')} onFinished={onFinished} />
+        {overlay}
+      </div>
+    )
+  }
+
+  if (!audio) return null
 
   return (
     <div data-testid="block-runner">

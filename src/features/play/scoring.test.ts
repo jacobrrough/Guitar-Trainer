@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { ChartNote } from '../../chart/types'
 import { constantBeatGrid } from '../../chart/timing'
-import { ScoreTracker, pitchMatches } from './scoring'
+import { chordTemplate } from '../../audio/pitch/chroma'
+import { ScoreTracker, hasChordGroups, pitchMatches } from './scoring'
 
 function note(id: number, time: number, midi: number, chordId = id): ChartNote {
   return { id, time, duration: 0.25, midi, string: 0, fret: 0, velocity: 1, chordId }
@@ -189,5 +190,70 @@ describe('ScoreTracker statistics', () => {
     expect(r.perfects + r.goods).toBe(8)
     expect(r.timingMedianMs).not.toBeNull()
     expect(r.perBar).toBeUndefined()
+  })
+})
+
+describe('chroma chord scoring', () => {
+  const E_MAJOR = [40, 47, 52, 56, 59, 64]
+  const chord = (id0: number, time: number, midis: number[], chordId = id0): ChartNote[] =>
+    midis.map((m, i) => note(id0 + i, time, m, chordId))
+  const eChroma = chordTemplate(E_MAJOR)
+  const aChroma = chordTemplate([45, 52, 57, 61, 64])
+
+  it('hits a chord via onChroma inside the window', () => {
+    const t = new ScoreTracker(chord(0, 1, E_MAJOR), { chordScoring: 'chroma' })
+    expect(t.chordScoring).toBe('chroma')
+    const hit = t.onChroma(eChroma, 1.01)
+    expect(hit?.judgement).toBe('perfect')
+    expect(t.stateOfNote(0)?.status).toBe('hit')
+    expect(t.summary().score).toBe(100)
+    expect(t.streak).toBe(1)
+  })
+
+  it('never hits on a wrong chord and advance records the miss', () => {
+    const t = new ScoreTracker(chord(0, 1, [40, 47, 52]), { chordScoring: 'chroma' })
+    expect(t.onChroma(chordTemplate([43, 50, 55]), 1)).toBeNull()
+    expect(t.onChroma(aChroma, 1.05)).toBeNull()
+    expect(t.advance(2)).toHaveLength(1)
+    expect(t.misses).toBe(1)
+  })
+
+  it('is a no-op in pitch mode and outside the window', () => {
+    const p = new ScoreTracker(chord(0, 1, E_MAJOR))
+    expect(p.onChroma(eChroma, 1)).toBeNull()
+    const c = new ScoreTracker(chord(0, 1, E_MAJOR), { chordScoring: 'chroma' })
+    expect(c.onChroma(eChroma, 0.5)).toBeNull()
+    expect(c.onChroma(eChroma, 1.5)).toBeNull()
+  })
+
+  it('onPitch ignores chords but judges single notes in chroma mode', () => {
+    const notes = [...chord(0, 1, [40, 47]), note(10, 2, 45)]
+    const t = new ScoreTracker(notes, { chordScoring: 'chroma' })
+    expect(t.onPitch(40, 1, true)).toBeNull()
+    expect(t.onPitch(45, 2, true)?.status).toBe('hit')
+    const pitch = new ScoreTracker(notes)
+    expect(pitch.onPitch(40, 1, true)?.status).toBe('hit')
+  })
+
+  it('hasChordGroups', () => {
+    expect(hasChordGroups(chord(0, 1, E_MAJOR))).toBe(true)
+    expect(hasChordGroups(chord(0, 1, [40, 47]))).toBe(true)
+    expect(hasChordGroups(chord(0, 1, [40, 52]))).toBe(false)
+    expect(hasChordGroups([note(0, 1, 40), note(1, 2, 47)])).toBe(false)
+  })
+
+  it('reports chordScoring in the attempt result', () => {
+    const o = { playedTempo: 100, targetTempo: 100, speed: 1, durationSec: 1 }
+    expect(new ScoreTracker([note(0, 1, 40)]).toAttemptResult(o).chordScoring).toBe('pitch')
+    expect(new ScoreTracker([note(0, 1, 40)], { chordScoring: 'chroma' }).toAttemptResult(o).chordScoring).toBe('chroma')
+  })
+})
+
+describe('bend matching', () => {
+  const bend: ChartNote = { ...note(0, 1, 64), tech: { bend: true } }
+  it('uses the bend tolerance and no octave tolerance', () => {
+    expect(new ScoreTracker([bend], { octaveTolerance: 'all' }).onPitch(64.2, 1, true)).not.toBeNull()
+    expect(new ScoreTracker([bend], { octaveTolerance: 'all' }).onPitch(64.4, 1, true)).toBeNull()
+    expect(new ScoreTracker([bend], { octaveTolerance: 'all' }).onPitch(76, 1, true)).toBeNull()
   })
 })

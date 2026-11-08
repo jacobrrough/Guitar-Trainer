@@ -16,12 +16,14 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { getSettings, useSettings } from '../../app/settings'
+import { useAppBadge } from '../../app/useAppBadge'
 import { Badge, Button, Card, PageHeader, cx } from '../../components/ui'
 import { db } from '../../db/db'
 import { coachRecommendations, getOrCreateTodaySession, skipSessionBlock, updatePrefs } from '../../training/coach'
 import { localDateString } from '../../training/store'
 import type { Block, Recommendation, SessionRecord } from '../../training/types'
-import { useProfile, useRecentAttempts, useTodaySession } from '../../training/useTraining'
+import { useMilestonesSince, useProfile, useRecentAttempts, useTodaySession } from '../../training/useTraining'
+import { MilestoneList } from '../progress/MilestoneList'
 import { GoalChips, MinutesPicker, SetupCard } from './SetupCard'
 import {
   BLOCK_META,
@@ -107,6 +109,45 @@ function PlanRow({
   )
 }
 
+const SEEN_KEY = 'gt.milestonesSeenAt'
+
+function readSeenAt(): number {
+  try {
+    const n = Number(localStorage.getItem(SEEN_KEY))
+    return Number.isFinite(n) ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+function MilestoneStrip() {
+  const [seenAt, setSeenAt] = useState(readSeenAt)
+  const fresh = useMilestonesSince(seenAt)
+  if (!fresh || fresh.length === 0) return null
+  const dismiss = () => {
+    const ts = Math.max(Date.now(), ...fresh.map((m) => m.at))
+    try {
+      localStorage.setItem(SEEN_KEY, String(ts))
+    } catch {
+      /* storage unavailable: dismiss for this view only */
+    }
+    setSeenAt(ts)
+  }
+  return (
+    <Card className="border-accent/40">
+      <div data-testid="milestone-strip" className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">New milestones</h2>
+          <Button size="sm" variant="ghost" onClick={dismiss}>
+            Dismiss
+          </Button>
+        </div>
+        <MilestoneList milestones={fresh.slice(0, 5)} emptyText="" />
+      </div>
+    </Card>
+  )
+}
+
 function RecommendationCard({ rec, action }: { rec: Recommendation; action: { label: string; run: () => void } | null }) {
   return (
     <Card className="flex flex-col gap-1">
@@ -153,6 +194,8 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
   const recent = useRecentAttempts(1)
 
   const session: SessionRecord | null = live !== 'loading' && live !== null ? live : created
+  // Home-screen badge while today's session still has pending blocks (installed web app only).
+  useAppBadge(session ? session.plan.blocks.some((b) => b.status === 'pending') : false)
 
   useEffect(() => {
     let cancelled = false
@@ -266,6 +309,7 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
           </>
         }
       />
+      <MilestoneStrip />
       {error && <div className="rounded-lg bg-bad/15 px-3 py-2 text-sm text-red-200">{error}</div>}
       {!session && !error && <div className="py-10 text-center text-muted">Planning your session…</div>}
       {session && (

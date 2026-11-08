@@ -1,8 +1,8 @@
 import { db } from '../db/db'
-import type { Attempt, LearnerModel, Profile, SessionRecord, SkillState, SongItemState, TestRecord } from './types'
+import type { Attempt, LearnerModel, Milestone, Profile, SessionRecord, SkillState, SongItemState, TestRecord } from './types'
 
 const DAY_MS = 24 * 60 * 60 * 1000
-const TRAINING_TABLES = [db.skillStates, db.songItems, db.attempts, db.sessions, db.tests, db.profile]
+const TRAINING_TABLES = [db.skillStates, db.songItems, db.attempts, db.sessions, db.tests, db.profile, db.milestones]
 
 function clearTrainingTables(): Promise<unknown> {
   return Promise.all(TRAINING_TABLES.map((t) => t.clear()))
@@ -166,14 +166,15 @@ export async function markSessionDay(date: string): Promise<Profile> {
 
 export async function exportTrainingData(): Promise<string> {
   const profile = await loadProfile()
-  const [skillStates, songItems, attempts, sessions, tests] = await Promise.all([
+  const [skillStates, songItems, attempts, sessions, tests, milestones] = await Promise.all([
     db.skillStates.toArray(),
     db.songItems.toArray(),
     db.attempts.toArray(),
     db.sessions.toArray(),
     db.tests.toArray(),
+    db.milestones.toArray(),
   ])
-  return JSON.stringify({ version: 1, exportedAt: Date.now(), profile, skillStates, songItems, attempts, sessions, tests })
+  return JSON.stringify({ version: 1, exportedAt: Date.now(), profile, skillStates, songItems, attempts, sessions, tests, milestones })
 }
 
 function asArray<T>(value: unknown, name: string): T[] {
@@ -189,6 +190,8 @@ export async function importTrainingData(json: string): Promise<{ attempts: numb
   const attempts = asArray<Attempt>(data.attempts, 'attempts')
   const sessions = asArray<SessionRecord>(data.sessions, 'sessions')
   const tests = asArray<TestRecord>(data.tests, 'tests')
+  // Milestones arrived after the first exports; older backups simply have none.
+  const milestones = data.milestones === undefined ? [] : asArray<Milestone>(data.milestones, 'milestones')
   const profile = data.profile as Profile | undefined
   if (!profile || typeof profile !== 'object') throw new Error('Invalid training data: profile missing')
   await db.transaction('rw', TRAINING_TABLES, async () => {
@@ -198,6 +201,7 @@ export async function importTrainingData(json: string): Promise<{ attempts: numb
     await db.attempts.bulkPut(attempts)
     await db.sessions.bulkPut(sessions)
     await db.tests.bulkPut(tests)
+    await db.milestones.bulkPut(milestones)
     await db.profile.put({ ...profile, id: 1 })
   })
   return { attempts: attempts.length, skills: skillStates.length }

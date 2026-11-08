@@ -209,6 +209,20 @@ try {
   check(/accuracy/.test(results), `results screen shown: ${results.split('\n').slice(0, 3).join(' | ')}`)
   await page.screenshot({ path: path.join(OUT, `results${SUFFIX}.png`) })
 
+  // Section practice: loop bars 1–2 and expect the loop overlay instead of a recorded play
+  const loopToggle = page.getByTestId('loop-toggle').filter({ visible: true }).first()
+  check((await loopToggle.count()) === 1, 'loop control present')
+  await loopToggle.click()
+  await page.waitForSelector('[data-testid="loop-from"]', { timeout: 5000 })
+  await page.getByTestId('loop-from').filter({ visible: true }).first().selectOption({ label: '1' })
+  await page.getByTestId('loop-to').filter({ visible: true }).first().selectOption({ label: '2' })
+  await page.screenshot({ path: path.join(OUT, `play-loop${SUFFIX}.png`) })
+  const again = page.getByRole('button', { name: 'Play again' })
+  if (await again.count()) await again.click()
+  else await page.getByTestId('start').click()
+  await page.waitForSelector('[data-testid="loop-again"]', { timeout: 40000 })
+  check(true, 'loop run finished with the loop overlay')
+
   // Back to the library: best-score indicator and play count persisted
   await page.goto(`${base}/#/songs`)
   await page.waitForSelector('text=Demo riff in E minor', { timeout: 10000 })
@@ -217,6 +231,8 @@ try {
   // Coach: skip placement, get a plan, run the first (warm-up) block to its result
   await page.goto(`${base}/#/`)
   await page.waitForSelector('[data-testid="setup-card"]', { timeout: 15000 })
+  // 45 minutes a day: the only template with an ear-training block
+  await page.getByRole('button', { name: '45 min' }).click()
   await page.getByTestId('setup-skip').click()
   await page.waitForSelector('[data-testid="plan-block"]', { timeout: 20000 })
   const blockCount = await page.getByTestId('plan-block').count()
@@ -253,6 +269,37 @@ try {
   })
   check(trainingRows.attempts >= 1 && trainingRows.skillStates >= 1 && trainingRows.sessions === 1, `training data persisted (${JSON.stringify(trainingRows)})`)
   await page.screenshot({ path: path.join(OUT, `today${SUFFIX}.png`) })
+
+  // Ear trainer: open the plan's ear block and start the first prompt
+  const earRow = page.locator('[data-testid="plan-block"]', { hasText: /Tuning by ear|Match the pitch/ })
+  check((await earRow.count()) === 1, 'plan includes an ear-training block')
+  if (await earRow.count()) {
+    await earRow.getByTestId('block-start').click()
+    await page.waitForSelector('[data-testid="ear-trainer"]', { timeout: 15000 })
+    await page.getByTestId('ear-start').click()
+    await page.waitForSelector('[data-testid="ear-prompt"]', { timeout: 15000 })
+    check(true, 'ear trainer started and shows the first prompt')
+    await page.waitForTimeout(1500)
+    await page.screenshot({ path: path.join(OUT, `ear${SUFFIX}.png`) })
+    await page.goto(`${base}/#/`)
+  }
+
+  // Progress page renders the milestones card
+  await page.goto(`${base}/#/progress`)
+  await page.waitForSelector('text=Milestones', { timeout: 10000 })
+  check(true, 'progress page shows the milestones card')
+  await page.screenshot({ path: path.join(OUT, `progress${SUFFIX}.png`) })
+
+  // Settings: training data export produces a download (or opens the JSON on iOS)
+  await page.goto(`${base}/#/settings`)
+  await page.waitForSelector('[data-testid="data-export"]', { timeout: 10000 })
+  const download = page.waitForEvent('download', { timeout: 10000 }).catch(() => null)
+  const popup = page.waitForEvent('popup', { timeout: 10000 }).catch(() => null)
+  await page.getByTestId('data-export').click()
+  await Promise.race([download, popup])
+  await page.waitForFunction(() => (document.querySelector('[data-testid="data-status"]')?.textContent || '').length > 0, null, { timeout: 10000 })
+  const exportStatus = await page.getByTestId('data-status').innerText()
+  check(/^Export/.test(exportStatus), `training data export: ${exportStatus}`)
 
   // Import with AI transcription of a synthetic 4-note WAV (slow on CPU; SKIP_TRANSCRIBE=1 to skip)
   if (process.env.SKIP_TRANSCRIBE) throw new SkipRest()

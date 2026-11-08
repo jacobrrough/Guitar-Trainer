@@ -1,7 +1,7 @@
 import { Download, Share, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Button } from '../components/ui'
-import { isIOS, isSafari, isStandalone } from './platform'
+import { iosBrowser, isIOS, isStandalone } from './platform'
 
 const DISMISS_KEY = 'guitar-trainer.install-dismissed'
 
@@ -36,6 +36,8 @@ export function InstallBanner() {
   if (dismissed || isStandalone()) return null
   const ios = isIOS()
   if (!ios && !promptEvent) return null
+  const browser = ios ? iosBrowser() : 'safari'
+  const device = ios && /iPad/.test(navigator.userAgent) ? 'iPad' : 'iPhone'
 
   const dismiss = () => {
     setDismissed(true)
@@ -50,16 +52,18 @@ export function InstallBanner() {
     <div className="mb-5 flex items-start gap-3 rounded-xl border border-accent/40 bg-accent/10 p-4 text-sm" data-testid="install-banner">
       <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="" className="h-10 w-10 rounded-lg" />
       <div className="min-w-0 flex-1">
-        <p className="font-semibold">Install Guitar Trainer on this {ios ? 'iPhone' : 'device'}</p>
+        <p className="font-semibold">Install Guitar Trainer on this {ios ? device : 'device'}</p>
         {ios ? (
           <p className="mt-1 text-muted">
-            {isSafari() ? (
-              <>
-                Tap <Share className="inline h-4 w-4 align-text-bottom" aria-label="Share" /> <strong>Share</strong>, then <strong>Add to Home Screen</strong>.
-                You get a full-screen app, offline use and your songs stay saved.
-              </>
+            {browser === 'webview' ? (
+              <>This in-app browser cannot install apps. Open this page in Safari, then use Share → Add to Home Screen.</>
             ) : (
-              <>Open this page in Safari, then tap Share → Add to Home Screen for the full-screen app.</>
+              <>
+                Tap <Share className="inline h-4 w-4 align-text-bottom" aria-label="Share" /> <strong>Share</strong> (or <strong>•••</strong> on newer iOS), then{' '}
+                <strong>Add to Home Screen</strong>
+                {browser === 'browser' ? ' (works in this browser on iOS 16.4+, Safari is the most reliable)' : ''}. You get a full-screen app, offline use and your
+                songs stay saved.
+              </>
             )}
           </p>
         ) : (

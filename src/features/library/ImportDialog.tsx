@@ -35,6 +35,13 @@ function shiftChart(chart: Chart, offsetSec: number): Chart {
   }
 }
 
+/** iOS can hand over files with an empty MIME type; <audio> picks its decoder from the blob type. */
+function audioTypeFromName(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  const map: Record<string, string> = { mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', flac: 'audio/flac', aif: 'audio/aiff', aiff: 'audio/aiff', caf: 'audio/x-caf', ogg: 'audio/ogg' }
+  return map[ext] ?? 'audio/mpeg'
+}
+
 export function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported: (id: number) => void }) {
   const settings = useSettings()
   const [audioFile, setAudioFile] = useState<File | null>(null)
@@ -118,7 +125,7 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
         title: chart.title || audioFile.name,
         artist: chart.artist,
         audio: audioFile,
-        audioType: audioFile.type || 'audio/mpeg',
+        audioType: audioFile.type || audioTypeFromName(audioFile.name),
         audioName: audioFile.name,
         duration,
         chart: { ...chart, duration: Math.max(chart.duration, duration) },
@@ -137,7 +144,7 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
   return (
     <Modal title="Add a song" onClose={busy ? undefined : onClose} wide>
       <div className="flex flex-col gap-5">
-        <Field label="Audio file" hint="MP3, WAV, FLAC, OGG, M4A… the recording you want to play along with.">
+        <Field label="Audio file" hint="MP3, M4A, WAV, FLAC… the recording you want to play along with. (OGG does not play on iPhone.)">
           <input type="file" accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac" disabled={busy} onChange={(e) => onAudio(e.target.files?.[0] ?? null)} className="text-sm file:mr-3 file:rounded-md file:border-0 file:bg-panel-2 file:px-3 file:py-2 file:text-slate-100" />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">

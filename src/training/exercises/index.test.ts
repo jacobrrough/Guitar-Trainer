@@ -26,7 +26,12 @@ describe('exercise registry', () => {
       expect(ex.chart.notes.length, skill.id).toBeGreaterThan(0)
       expect(ex.difficulty).toBeGreaterThanOrEqual(0)
       expect(ex.params.tempo).toBe(skill.startTempo)
-      for (const n of ex.chart.notes) expect(ex.chart.tuning[n.string] + n.fret).toBe(n.midi)
+      for (const n of ex.chart.notes) {
+        // Bend notes carry the reached pitch (fret pitch + 1 or 2 semitones); everything else is the fret pitch.
+        const fretPitch = ex.chart.tuning[n.string] + n.fret
+        if (n.tech?.bend) expect([1, 2], `${skill.id} bend`).toContain(n.midi - fretPitch)
+        else expect(fretPitch, `${skill.id} ${n.id}`).toBe(n.midi)
+      }
     }
   })
 

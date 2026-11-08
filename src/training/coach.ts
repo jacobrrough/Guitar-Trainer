@@ -11,6 +11,8 @@ import { exerciseParams, generateExercise, resolveGeneratorId } from './exercise
 import { renderExerciseBacking } from './exercises/backing'
 import { DEFAULT_TUNING } from './exercises/builder'
 import { applyAttempt, effectiveRating, newSkillState } from './learner'
+import { recordMilestones } from './milestoneStore'
+import { skillMilestones, songMilestone, streakMilestone, testMilestone, unlockMilestones } from './milestones'
 import { attemptPerformance } from './performance'
 import { adaptAfterBlock, nextRepTempo, planSession } from './planner'
 import { recommendations } from './recommend'
@@ -37,11 +39,14 @@ import type {
   AttemptResult,
   ExerciseBlock,
   GeneratedExercise,
+  LearnerModel,
+  Milestone,
   Performance,
   Prefs,
   Profile,
   Recommendation,
   SessionRecord,
+  SkillDef,
   SkillState,
   SongBlock,
   SongItemState,
@@ -141,7 +146,13 @@ export function exerciseForBlock(block: ExerciseBlock, tuning: number[] = DEFAUL
   if (!skill) throw new Error(`Unknown skill ${block.skillId}`)
   const params = exerciseParams(skill, block.generatorId, block.tempo, block.params)
   const exercise = generateExercise(skill, block.generatorId, params, tuning)
-  return renderExerciseBacking(exercise, { plucks: !CLICK_ONLY_GENERATORS.has(resolveGeneratorId(block.generatorId)) })
+  return withBacking(exercise, block.generatorId)
+}
+
+/** Ear exercises play their own reference tones, so they get no rendered backing. */
+function withBacking(exercise: GeneratedExercise, generatorId: string): GeneratedExercise {
+  if (exercise.interaction === 'ear') return exercise
+  return renderExerciseBacking(exercise, { plucks: !CLICK_ONLY_GENERATORS.has(resolveGeneratorId(generatorId)) })
 }
 
 /** Builds the playable exercise for a test task (null for song tasks, which load the song instead). */
@@ -149,7 +160,7 @@ export function exerciseForTask(task: TestTask, tuning: number[] = DEFAULT_TUNIN
   if (task.generatorId === 'song') return null
   const skill = SKILLS_BY_ID[task.skillIds[0]] ?? SKILLS[0]
   const exercise = generateExercise(skill, task.generatorId, task.params, tuning)
-  return renderExerciseBacking(exercise, { plucks: !CLICK_ONLY_GENERATORS.has(resolveGeneratorId(task.generatorId)) })
+  return withBacking(exercise, task.generatorId)
 }
 
 const KIND_BY_BLOCK: Record<ExerciseBlock['kind'], AttemptKind> = { warmup: 'warmup', focus: 'practice', second: 'practice', review: 'review', ear: 'practice' }
@@ -170,8 +181,27 @@ async function persistBlockDone(session: SessionRecord, blockId: string, minutes
   const allDone = plan.blocks.every((b) => b.status === 'done' || b.status === 'skipped')
   const record: SessionRecord = { ...session, plan, completedBlockIds, minutesDone: session.minutesDone + minutes, finishedAt: allDone ? now : session.finishedAt }
   const id = await saveSession(record)
-  if (completedBlockIds.length === 1) await markSessionDay(session.date)
+  if (completedBlockIds.length === 1) {
+    const before = await loadProfile()
+    const after = await markSessionDay(session.date)
+    await recordMilestones(compact([streakMilestone(before.streak, after.streak, now)]))
+  }
   return { ...record, id }
+}
+
+function compact<T>(items: Array<T | null | undefined>): T[] {
+  return items.filter((m): m is T => m !== null && m !== undefined)
+}
+
+function ratingMap(model: LearnerModel): Record<string, number> {
+  return Object.fromEntries(Object.values(model.skills).map((s) => [s.skillId, s.rating]))
+}
+
+/** Milestones from one skill update: band and tempo for the skill, plus any skills the new rating unlocks. */
+function skillUpdateMilestones(model: LearnerModel, skill: SkillDef, before: SkillState | null, after: SkillState, now: number): Milestone[] {
+  const ratingsBefore = ratingMap(model)
+  const ratingsAfter = { ...ratingsBefore, [skill.id]: after.rating }
+  return [...skillMilestones(skill, before, after, now), ...unlockMilestones(SKILLS, ratingsBefore, ratingsAfter, now)]
 }
 
 export interface RepOutcome {
@@ -220,6 +250,7 @@ async function applyExerciseAttempt(
   attempt.ratingAfter = state.rating
   const id = await recordAttempt(attempt)
   await saveSkillState(state)
+  await recordMilestones(skillUpdateMilestones(model, skill, model.skills[block.skillId] ?? null, state, now))
   const startTempo = typeof block.params.startTempo === 'number' ? block.params.startTempo : block.tempo
   return {
     attempt: { ...attempt, id },
@@ -301,6 +332,7 @@ export async function recordSongPlay(
   const songItem = applySongAttempt(existing ?? newSongItem(song.id, level), attempt, now)
   const id = await recordAttempt(attempt)
   await saveSongItem(songItem)
+  await recordMilestones(compact([songMilestone(song.title, existing ?? null, songItem, now)]))
   return { attempt: { ...attempt, id }, songItem, performance }
 }
 
@@ -357,6 +389,12 @@ export async function finishTest(type: TestType, tasks: TestTask[], results: Tes
   for (const r of results) await recordAttempt(r.attempt)
   const record: TestRecord = { at: now, type, tasks, results, report: applied.report }
   const id = await recordTest(record)
+  const changed = SKILLS.filter((s) => applied.model.skills[s.id] && applied.model.skills[s.id].rating !== model.skills[s.id]?.rating)
+  await recordMilestones([
+    ...changed.flatMap((s) => skillMilestones(s, model.skills[s.id] ?? null, applied.model.skills[s.id], now)),
+    ...unlockMilestones(SKILLS, ratingMap(model), ratingMap(applied.model), now),
+    ...compact([testMilestone({ ...record, id }, now)]),
+  ])
   return { ...record, id }
 }
 

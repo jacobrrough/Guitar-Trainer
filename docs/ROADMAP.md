@@ -13,38 +13,42 @@
 - Synthesised demo song for instant onboarding
 - iPhone-ready PWA: install banner, offline service worker, iOS audio unlock and
   audio session handling, wake lock, phone layout; Capacitor config for a native build
-- Coach (Phases 0–2 of ADAPTIVE_TRAINING.md): Today page with planned sessions,
+- Coach (Phases 0–3 of ADAPTIVE_TRAINING.md): Today page with planned sessions,
   generated exercises with synthesised backing, learner model and progress page,
-  placement / checkpoint / monthly skill checks, recommendations, plateau detection
+  placement / checkpoint / monthly skill checks, recommendations, plateau detection,
+  dedicated legato / slide / bend / ear-training drills, milestones, training data
+  export and import, home-screen badge
+- Chroma-based chord scoring: strummed chords are judged on their pitch-class profile,
+  so chord skills are no longer rating-capped; bends are judged on the reached pitch
+- Section practice in the song player: loop a bar range (or the weakest bars of the last
+  run) with automatic speed steps
+- Safari / iOS code audit with a device checklist (`SAFARI_AUDIT.md`)
 
 ## Next
 
-0. **Coach Phase 3** – dedicated generators for legato, slides, bends and ear
-   training (today aliased to melodic generators), chroma-based chord scoring so
-   chord skills leave the provisional cap, milestones, reminders. See
-   [ADAPTIVE_TRAINING.md](ADAPTIVE_TRAINING.md) §13.
-1. **Section practice** – loop a bar range, auto-slowdown until clean, then speed up
-   (looping exists inside sessions; expose it in the song player).
-2. **Tab view** – render the real tablature with alphaTab under/instead of the
+1. **Tab view** – render the real tablature with alphaTab under/instead of the
    highway, with a synced cursor; print/export.
-3. **Better transcription** – stem separation in the browser with
+2. **Better transcription** – stem separation in the browser with
    [demucs-rs](https://github.com/nikhilunni/demucs-rs) (WebGPU) before Basic Pitch;
    let the user choose the guitar stem; optional isolated-guitar playback mix.
-4. **Beat grid editing** – tap-to-set tempo/offset for transcribed songs; manual
+3. **Beat grid editing** – tap-to-set tempo/offset for transcribed songs; manual
    nudge of chart offset for tabs that do not line up with the recording.
-5. **Chord detection for scoring** – chroma-based matching so strummed chords are
-   judged on more than one detected pitch.
-6. **Progress & practice stats** – per-song history, accuracy by section, daily streak.
-7. **Lessons** – generated exercises (scales, chord changes, string skipping) that
-   use the same highway and scorer.
-8. **Offline PWA** – service worker precache so the app and models work offline.
-9. **Open chart interchange** – import/export the CC0 `feedpak` format and plain JSON.
-10. **Native builds** – finish the Capacitor iOS wrapper (background audio session,
-    Files integration, TestFlight); Tauri for desktop with ASIO/low-latency drivers.
+4. **Practice stats** – per-song history, accuracy by section, calendar view.
+5. **Reminders** – optional Web Push through a tiny relay (iOS 16.4+ installed apps);
+   the only Phase 3 item deferred, because it needs a server.
+6. **Open chart interchange** – import/export the CC0 `feedpak` format and plain JSON.
+7. **Native builds** – finish the Capacitor iOS wrapper (background audio session,
+   Files integration, TestFlight); Tauri for desktop with ASIO/low-latency drivers.
+8. **Ear training depth** – intervals and chord quality recognition on top of pitch
+   matching; vibrato depth/rate measurement for `lead.vibrato`.
 
 ## Known limitations
 
 - Transcription of full mixes is rough; the model works best on exposed guitar.
   Stem separation is the planned fix.
-- Polyphonic scoring accepts any chord tone (lenient by design).
+- Chord scoring checks that a chord's pitch classes are ringing (12-bin chroma), not
+  the exact voicing or fingering. Charts without chords keep the single-pitch path.
+- Vibrato is scored as a held note; its depth and rate are not measured yet.
 - Safari needs a user gesture before audio starts (the Play button provides it).
+- iOS behaviour has been verified under Chromium emulation and by code audit only; see
+  the device checklist in `SAFARI_AUDIT.md`.

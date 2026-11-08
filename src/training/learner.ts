@@ -92,7 +92,8 @@ export function applyAttempt(
   now = attempt.at,
 ): SkillState {
   let rating = Math.min(100, Math.max(0, state.rating + ratingDelta(state, attempt)))
-  if (skill.provisional) rating = Math.min(rating, PROVISIONAL_RATING_CAP)
+  // Chroma-scored attempts judge whole chords reliably, so the provisional cap only guards pitch-scored ones.
+  if (skill.provisional && attempt.chordScoring !== 'chroma') rating = Math.min(rating, PROVISIONAL_RATING_CAP)
   const days = state.lastPracticedAt === undefined ? 0 : Math.max(0, (now - state.lastPracticedAt) / DAY_MS)
   const next: SkillState = {
     ...state,

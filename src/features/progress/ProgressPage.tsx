@@ -1,11 +1,13 @@
 import { Award, Download, Trash2, TrendingUp, Upload } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
+import { isIOS } from '../../app/platform'
 import { Badge, Button, Card, PageHeader } from '../../components/ui'
 import { masteryBand, effectiveRating } from '../../training/learner'
 import { SKILLS } from '../../training/skills'
 import { exportTrainingData, importTrainingData, resetTrainingData, saveProfile } from '../../training/store'
-import { useLearnerModel, useRecentAttempts, useTests } from '../../training/useTraining'
+import { useLearnerModel, useMilestones, useRecentAttempts, useTests } from '../../training/useTraining'
 import { practiceStreakDays, ratingSeries, weeklyMinutes } from './progressStats'
+import { MilestoneList } from './MilestoneList'
 import { SkillMap } from './SkillMap'
 
 function Tile({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -60,6 +62,7 @@ export function ProgressPage() {
   const model = useLearnerModel()
   const attempts = useRecentAttempts(120)
   const tests = useTests(10)
+  const milestones = useMilestones(12)
   const fileRef = useRef<HTMLInputElement>(null)
   const [message, setMessage] = useState<string | null>(null)
   const now = useMemo(() => Date.now(), [])
@@ -91,14 +94,27 @@ export function ProgressPage() {
 
   const onExport = async () => {
     const json = await exportTrainingData()
-    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
+    const name = `guitar-trainer-progress-${new Date().toISOString().slice(0, 10)}.json`
+    const blob = new Blob([json], { type: 'application/json' })
+    // iOS (esp. installed web apps): the share sheet is the only reliable way to reach Files.
+    const file = new File([blob], name, { type: 'application/json' })
+    if (isIOS() && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: name })
+      } catch (err) {
+        if (!(err instanceof DOMException && err.name === 'AbortError')) throw err
+      }
+      return
+    }
+    const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `guitar-trainer-progress-${new Date().toISOString().slice(0, 10)}.json`
+    a.download = name
     document.body.appendChild(a)
     a.click()
     a.remove()
-    URL.revokeObjectURL(url)
+    // Safari cancels the download if the URL is revoked synchronously.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
   }
 
   const onImport = async (file: File | undefined) => {
@@ -178,6 +194,17 @@ export function ProgressPage() {
               )}
             </Card>
           </div>
+
+          <Card>
+            <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted">
+              <Award size={16} aria-hidden /> Milestones
+            </h2>
+            {milestones ? (
+              <MilestoneList milestones={milestones} emptyText="Milestones appear as you improve." />
+            ) : (
+              <p className="text-sm text-muted">Loading…</p>
+            )}
+          </Card>
 
           <section aria-label="Skill map">
             <h2 className="mb-3 text-lg font-semibold">Skill map</h2>

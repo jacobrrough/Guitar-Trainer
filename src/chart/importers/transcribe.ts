@@ -22,7 +22,15 @@ export type ProgressCallback = (fraction: number, stage: 'decoding' | 'resamplin
 
 export async function decodeAudio(blob: Blob): Promise<AudioBuffer> {
   const data = await blob.arrayBuffer()
-  return audioEngine.context.decodeAudioData(data)
+  try {
+    return await audioEngine.context.decodeAudioData(data)
+  } catch (err) {
+    // WebKit rejects with an EncodingError / "Unable to decode audio data" for OGG Vorbis, DRM'd or truncated files.
+    if (err instanceof DOMException && (err.name === 'EncodingError' || err.name === 'NotSupportedError')) {
+      throw new Error('This device cannot decode that audio file. On iPhone use MP3, M4A, WAV, AIFF or FLAC (OGG is not supported).')
+    }
+    throw err
+  }
 }
 
 async function renderMono(buffer: AudioBuffer, sampleRate: number): Promise<Float32Array> {

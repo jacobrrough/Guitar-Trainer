@@ -1,4 +1,4 @@
-import { setAudioSessionType } from '../app/platform'
+import { keepAudioContextRunning, setAudioSessionType } from '../app/platform'
 import pitchWorkletUrl from './pitch/pitch-processor.ts?worker&url'
 
 export interface PitchFrame {
@@ -42,10 +42,16 @@ class AudioEngine {
   private _micDeviceId: string | undefined
   private unlocked = false
   private chromaEnabled = false
+  private lastMicOptions: MicOptions = {}
 
   get context(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext({ latencyHint: 'interactive' })
+      // iOS "interrupted" state (phone call, Siri, app switch) never recovers by itself.
+      keepAudioContextRunning(this.ctx, () => void this.recoverMic())
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') void this.recoverMic()
+      })
     }
     return this.ctx
   }
@@ -79,6 +85,8 @@ class AudioEngine {
   unlock(): void {
     const ctx = this.context
     if (ctx.state !== 'running') void ctx.resume()
+    // Without a mic session iOS mutes Web Audio (metronome, count-in, ear trainer) when the ringer switch is on silent.
+    if (!this._micActive) setAudioSessionType('playback')
     if (this.unlocked) return
     try {
       const buffer = ctx.createBuffer(1, 1, ctx.sampleRate)
@@ -94,7 +102,7 @@ class AudioEngine {
 
   private ensureWorklet(): Promise<void> {
     if (!this.workletLoaded) {
-      this.workletLoaded = this.context.audioWorklet.addModule(pitchWorkletUrl).catch((err) => {
+      this.workletLoaded = this.loadWorkletModule().catch((err) => {
         this.workletLoaded = null
         throw err
       })
@@ -102,22 +110,68 @@ class AudioEngine {
     return this.workletLoaded
   }
 
+  /**
+   * In production the worklet is fetched with fetch() (always routed through the service worker, so it
+   * works offline) and loaded from a blob URL; the bundle is a single file with no imports. If that fails
+   * we fall back to the plain URL. In dev the module imports other files, so the URL is used directly.
+   */
+  private async loadWorkletModule(): Promise<void> {
+    const worklet = this.context.audioWorklet
+    if (import.meta.env.PROD) {
+      try {
+        const res = await fetch(pitchWorkletUrl)
+        if (res.ok) {
+          const blobUrl = URL.createObjectURL(new Blob([await res.text()], { type: 'text/javascript' }))
+          try {
+            await worklet.addModule(blobUrl)
+            return
+          } finally {
+            URL.revokeObjectURL(blobUrl)
+          }
+        }
+      } catch {
+        /* fall through to the direct URL */
+      }
+    }
+    await worklet.addModule(pitchWorkletUrl)
+  }
+
+  private async openMicStream(options: MicOptions): Promise<MediaStream> {
+    const base = { echoCancellation: options.echoCancellation ?? false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: { ...base, deviceId: options.deviceId ? { exact: options.deviceId } : undefined },
+        video: false,
+      })
+    } catch (err) {
+      // A saved interface that was unplugged (or whose id iOS reset) must not lock the user out of the mic.
+      if (options.deviceId && err instanceof DOMException && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
+        return navigator.mediaDevices.getUserMedia({ audio: base, video: false })
+      }
+      throw err
+    }
+  }
+
+  /** After backgrounding or a call iOS leaves the mic track muted/ended; reopen it. */
+  private async recoverMic(): Promise<void> {
+    if (!this._micActive) return
+    const track = this.stream?.getAudioTracks()[0]
+    if (track && track.readyState === 'live' && !track.muted) return
+    try {
+      await this.startMic(this.lastMicOptions)
+    } catch {
+      this._micActive = false
+    }
+  }
+
   async startMic(options: MicOptions = {}): Promise<void> {
     await this.resume()
     this.stopMic()
     const ctx = this.context
+    this.lastMicOptions = options
     // iOS: ask for a session that records and plays through the speaker at full volume.
     setAudioSessionType('play-and-record')
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId: options.deviceId ? { exact: options.deviceId } : undefined,
-        echoCancellation: options.echoCancellation ?? false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        channelCount: 1,
-      },
-      video: false,
-    })
+    const stream = await this.openMicStream(options)
     await this.ensureWorklet()
     this.stream = stream
     this.source = ctx.createMediaStreamSource(stream)
@@ -148,6 +202,7 @@ class AudioEngine {
     this.worklet.connect(this.sink)
     this.sink.connect(ctx.destination)
     this._micActive = true
+    stream.getAudioTracks()[0]?.addEventListener('unmute', () => void this.recoverMic())
     this._micDeviceId = stream.getAudioTracks()[0]?.getSettings().deviceId ?? options.deviceId
   }
 
