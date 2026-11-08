@@ -1,6 +1,6 @@
 import type { Chart } from '../chart/types'
-import { addSong, db, type SongRecord } from '../db/db'
-import { SYNTH_SAMPLE_RATE, encodeWav, renderChartBacking } from '../audio/synth'
+import { addSong, db, type SongRecord, updateSong } from '../db/db'
+import { SYNTH_SAMPLE_RATE, encodeWav, renderChartBacking, synthAudioName } from '../audio/synth'
 import { amazingGrace } from './tunes/amazingGrace'
 import { dAGroove } from './tunes/dAGroove'
 import { emAmGroove } from './tunes/emAmGroove'
@@ -67,7 +67,7 @@ function install(song: BuiltInSong): Promise<SongRecord> {
       title: song.title,
       artist: song.artist,
       audioType: 'audio/wav',
-      audioName: `${song.id}.wav`,
+      audioName: synthAudioName(song.id),
       duration: song.chart.duration,
       chart: song.chart,
       source: 'builtin',
@@ -89,11 +89,28 @@ export async function installBuiltInSongs(): Promise<void> {
   for (const song of BUILT_IN_SONGS) if (!have.has(song.id)) await install(song)
 }
 
-/** The library record for a bundled song, installing it first if needed. */
+/** True when the record's audio was rendered by an older synth. */
+export function hasStaleAudio(record: Pick<SongRecord, 'builtinId' | 'audioName'>): boolean {
+  return !!record.builtinId && record.audioName !== synthAudioName(record.builtinId)
+}
+
+/** Renders the bundled song again with the current synth and stores it on the existing record (scores and play count stay). */
+export async function rerenderBuiltIn(record: SongRecord): Promise<SongRecord> {
+  const song = record.builtinId ? builtInSong(record.builtinId) : undefined
+  if (!song) return record
+  const samples = renderChartBacking(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
+  const audioData = await encodeWav(samples, SYNTH_SAMPLE_RATE).arrayBuffer()
+  await updateSong(record.id, { audioData, audio: undefined, audioType: 'audio/wav', audioName: synthAudioName(song.id) })
+  return (await db.songs.get(record.id)) ?? record
+}
+
+/** The library record for a bundled song, installing it first if needed and refreshing audio from an older synth. */
 export async function builtInSongRecord(id: string): Promise<SongRecord> {
   const song = builtInSong(id)
   if (!song) throw new Error(`Unknown built-in song ${id}`)
-  return (await findRecord(id)) ?? install(song)
+  const existing = await findRecord(id)
+  if (!existing) return install(song)
+  return hasStaleAudio(existing) ? rerenderBuiltIn(existing) : existing
 }
 
 /**

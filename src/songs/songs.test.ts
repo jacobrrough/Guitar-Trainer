@@ -2,7 +2,10 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../db/db'
 import { BUILT_IN_SONGS, builtInBacking, builtInSong, builtInSongRecord, installBuiltInSongs } from './index'
-import { renderChartBacking } from '../audio/synth'
+import { renderChartBacking, synthAudioName } from '../audio/synth'
+import { addSong } from '../db/db'
+import { createDemoSong, DEMO_AUDIO_NAME } from '../features/library/demoSong'
+import { refreshSynthesisedAudio } from './refresh'
 
 const IDS = [
   'open-strings-groove', 'ode-to-joy', 'twinkle-twinkle', 'happy-birthday', 'jingle-bells', 'first-riff',
@@ -62,6 +65,24 @@ describe('built-in songs', () => {
       expect(new Set(rows.map((r) => r.builtinId)).size).toBe(BUILT_IN_SONGS.length)
       expect(rows.every((r) => r.source === 'builtin')).toBe(true)
     }, 60_000)
+
+    it('renders audio again for songs stored by an older synth, keeping scores', async () => {
+      const rec = await builtInSongRecord('ode-to-joy')
+      expect(rec.audioName).toBe(synthAudioName('ode-to-joy'))
+      await db.songs.update(rec.id, { audioName: 'ode-to-joy.wav', playCount: 3 })
+      const demoId = await addSong(createDemoSong())
+      await db.songs.update(demoId, { audioName: 'demo-riff.wav' })
+      expect(await refreshSynthesisedAudio()).toBe(2)
+      const fresh = await db.songs.get(rec.id)
+      expect(fresh?.audioName).toBe(synthAudioName('ode-to-joy'))
+      expect(fresh?.playCount).toBe(3)
+      expect(fresh?.audioData?.byteLength).toBeGreaterThan(1000)
+      expect((await db.songs.get(demoId))?.audioName).toBe(DEMO_AUDIO_NAME)
+      expect(await refreshSynthesisedAudio()).toBe(0)
+      // builtInSongRecord refreshes on its own too
+      await db.songs.update(rec.id, { audioName: 'ode-to-joy.wav' })
+      expect((await builtInSongRecord('ode-to-joy')).audioName).toBe(synthAudioName('ode-to-joy'))
+    }, 30_000)
 
     it('builtInSongRecord installs a single song', async () => {
       const rec = await builtInSongRecord('ode-to-joy')

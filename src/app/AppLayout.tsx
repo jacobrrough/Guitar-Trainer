@@ -1,6 +1,8 @@
 import { Activity, CalendarCheck, ListMusic, Settings, Timer, TrendingUp } from 'lucide-react'
+import { useEffect } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { cx } from '../components/ui'
+import { refreshSynthesisedAudio } from '../songs/refresh'
 
 const NAV = [
   { to: '/', label: 'Today', icon: CalendarCheck, end: true },
@@ -12,6 +14,12 @@ const NAV = [
 ]
 
 export function AppLayout() {
+  // Songs rendered by an older synth get their audio rendered again, once per launch, in the background.
+  useEffect(() => {
+    refreshSynthesisedAudio().catch(() => {
+      /* the library keeps the old render */
+    })
+  }, [])
   return (
     <div className="flex min-h-full flex-col md:flex-row">
       <aside className="hidden w-56 shrink-0 flex-col border-r border-line bg-panel p-4 pl-[max(1rem,env(safe-area-inset-left))] pt-[calc(env(safe-area-inset-top)+1rem)] md:flex">

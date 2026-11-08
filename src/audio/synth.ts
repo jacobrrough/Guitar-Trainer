@@ -10,6 +10,13 @@ import type { Chart, ChartNote } from '../chart/types'
 import { midiToFreq } from '../music/pitch'
 
 export const SYNTH_SAMPLE_RATE = 44100
+/** Bumped whenever the sound changes, so audio rendered by an older synth and stored in the library is rendered again. */
+export const SYNTH_VERSION = 2
+
+/** File name for stored synthesised audio; carries the synth version so stale renders can be found. */
+export function synthAudioName(base: string): string {
+  return `${base}.v${SYNTH_VERSION}.wav`
+}
 
 function lcg(seed: number): () => number {
   let s = seed >>> 0

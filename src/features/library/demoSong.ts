@@ -1,7 +1,7 @@
 import { constantBeatGrid } from '../../chart/timing'
 import type { Chart, ChartNote } from '../../chart/types'
 import type { NewSong } from '../../db/db'
-import { encodeWav, renderChartBacking } from '../../audio/synth'
+import { encodeWav, renderChartBacking, synthAudioName } from '../../audio/synth'
 
 const TUNING = [40, 45, 50, 55, 59, 64]
 const BPM = 90
@@ -82,6 +82,9 @@ export function renderDemoBacking(): Float32Array {
 
 export { encodeWav }
 
+/** Stored name of the demo's audio; changes with the synth version. */
+export const DEMO_AUDIO_NAME = synthAudioName('demo-riff')
+
 /** A short synthesised riff + chord progression, so the app is playable without any files. */
 export function createDemoSong(): NewSong {
   const chart = demoChart()
@@ -90,7 +93,7 @@ export function createDemoSong(): NewSong {
     artist: chart.artist,
     audio: encodeWav(renderDemoAudio()),
     audioType: 'audio/wav',
-    audioName: 'demo-riff.wav',
+    audioName: DEMO_AUDIO_NAME,
     duration: DURATION,
     chart,
     source: 'demo',
