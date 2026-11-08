@@ -213,7 +213,7 @@ try {
   const loopToggle = page.getByTestId('loop-toggle').filter({ visible: true }).first()
   check((await loopToggle.count()) === 1, 'loop control present')
   await loopToggle.click()
-  await page.waitForSelector('[data-testid="loop-from"]', { timeout: 5000 })
+  await page.getByTestId('loop-from').filter({ visible: true }).first().waitFor({ timeout: 5000 })
   await page.getByTestId('loop-from').filter({ visible: true }).first().selectOption({ label: '1' })
   await page.getByTestId('loop-to').filter({ visible: true }).first().selectOption({ label: '2' })
   await page.screenshot({ path: path.join(OUT, `play-loop${SUFFIX}.png`) })
