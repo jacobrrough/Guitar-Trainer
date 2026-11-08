@@ -26,6 +26,10 @@
 - First steps for real beginners: tier-0 open-string and first-fret drills, a
   planner mode that keeps new learners on tier 0–1 with a slowed sparse song, and
   "Listen first" on every drill with a guide track
+- Zero-to-first-song path (`BEGINNER_EXPERIENCE.md`): Start Here wizard with mic check
+  and guided tuning, a ten-lesson First steps course with illustrated cards, bundled
+  public-domain songs with synthesised backing, finger numbers and string names on the
+  note lane, left-handed mirroring, and plain-language copy throughout
 
 ## Next
 

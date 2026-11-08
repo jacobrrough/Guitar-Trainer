@@ -9,6 +9,11 @@ subscription, no servers: your audio and progress never leave your device.
 
 ## Features
 
+- **First steps for complete beginners** – a Start Here wizard (played before? acoustic or
+  electric? which hand strums? minutes a day), a microphone check and a guided string-by-string
+  tune-up, then a ten-lesson course: hold it and pick it, first frets, crossing strings, your
+  first chords, three-chord songs, rhythm and a first riff. Every lesson is learn (an illustrated
+  card), try (a drill with the part played first) and play (a bundled public-domain tune).
 - **Daily coach** – open the app and get today's session: warm-up, a focused technique
   exercise at the right tempo, your song at the right level, a review of earlier
   material, and a skill check when one is due. Every block is scored and feeds a per-skill

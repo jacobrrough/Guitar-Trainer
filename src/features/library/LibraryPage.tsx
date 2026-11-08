@@ -9,6 +9,7 @@ import { addSong, deleteSong, type SongRecord } from '../../db/db'
 import { useSongs } from '../../db/useSongs'
 import { tuningLabel } from '../../music/tunings'
 import { ImportDialog } from './ImportDialog'
+import { installBuiltInSongs } from '../../songs'
 import { createDemoSong } from './demoSong'
 
 const SOURCE_LABEL: Record<ChartSource, string> = {
@@ -69,6 +70,16 @@ export function LibraryPage() {
   const navigate = useNavigate()
   const [importing, setImporting] = useState(false)
   const [creatingDemo, setCreatingDemo] = useState(false)
+  const [installing, setInstalling] = useState(false)
+
+  const addStarterSongs = async () => {
+    setInstalling(true)
+    try {
+      await installBuiltInSongs()
+    } finally {
+      setInstalling(false)
+    }
+  }
 
   const addDemo = async () => {
     setCreatingDemo(true)
@@ -91,8 +102,11 @@ export function LibraryPage() {
         subtitle="Your library is stored in this browser. Audio never leaves your device."
         actions={
           <>
+            <Button onClick={addStarterSongs} disabled={installing} data-testid="add-builtin">
+              <Sparkles className="h-4 w-4" /> {installing ? 'Adding…' : 'Starter songs'}
+            </Button>
             <Button onClick={addDemo} disabled={creatingDemo} data-testid="add-demo">
-              <Sparkles className="h-4 w-4" /> {creatingDemo ? 'Creating…' : 'Demo song'}
+              {creatingDemo ? 'Creating…' : 'Demo song'}
             </Button>
             <Button variant="primary" onClick={() => setImporting(true)} data-testid="add-song">
               <Plus className="h-4 w-4" /> Add song
@@ -107,8 +121,8 @@ export function LibraryPage() {
         <Card className="flex flex-col items-center gap-4 py-12 text-center">
           <h2 className="text-xl font-semibold">Add your first song</h2>
           <p className="max-w-md text-sm text-muted">
-            Bring an audio file (MP3, WAV, FLAC, OGG…) and, if you have one, a Guitar Pro, MusicXML or MIDI chart. No chart? The app can
-            listen to the song and build one for you, right here in your browser.
+            New to guitar? <strong>Starter songs</strong> adds a set of easy, well-known tunes made for the first lessons. You can also bring
+            your own recording (MP3, WAV, FLAC…) with a Guitar Pro, MusicXML or MIDI chart, or let the app listen and build a chart for you.
           </p>
           <div className="flex gap-2">
             <Button onClick={addDemo} disabled={creatingDemo}>

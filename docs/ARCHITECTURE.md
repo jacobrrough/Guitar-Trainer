@@ -25,9 +25,13 @@ src/
 ├── db/             Dexie database (songs + training tables) and React hooks
 ├── training/       the Coach: skills graph, learner model, exercise generators,
 │                   session planner, tests, recommendations, store, orchestration
-└── features/       UI: today (session + block runner), progress, test flow,
-                    library (+ import dialog, demo song), play (Player engine,
-                    highway, scoring), tuner, metronome, settings
+├── lessons/        the First steps course: lesson content, progress store
+├── songs/          bundled public-domain songs built with ChartBuilder and synthesised
+├── components/diagrams  SVG instruction set: chord boxes, fretboard spots, posture, pick grip
+└── features/       UI: onboarding (Start Here wizard), lessons (course + lesson pages),
+                    today (session + block runner), progress, test flow, library
+                    (+ import dialog, demo song), play (Player engine, highway,
+                    scoring), tuner (+ guided tune-up), metronome, settings
 ```
 
 ## Data flow
