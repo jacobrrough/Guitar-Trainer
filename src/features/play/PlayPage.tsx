@@ -123,6 +123,7 @@ export function PlayPage() {
   const song: SongRecord | null = songQuery === 'loading' ? null : songQuery
   const levels = useMemo(() => (song ? generateLevels(song.chart) : null), [song])
   const audio = useMemo(() => (song ? songAudioBlob(song) : null), [song])
+  const chart = useMemo(() => (song ? { ...song.chart, duration: Math.max(song.chart.duration, song.duration) } : null), [song])
   const [levelIdx, setLevelIdx] = useState<number | null>(null)
   const [speed, setSpeed] = useState(1)
   const [busy, setBusy] = useState(false)
@@ -168,7 +169,7 @@ export function PlayPage() {
   }
 
   if (songQuery === 'loading') return <div className="flex h-full items-center justify-center text-muted">Loading…</div>
-  if (!song || !levels || !audio) {
+  if (!song || !levels || !audio || !chart) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-muted">
         <p>This song is not in your library.</p>
@@ -180,7 +181,6 @@ export function PlayPage() {
   }
   const li = levelIdx ?? suggestedLevel(song.chart) - 1
   const counts = levels.map((l) => l.notes.length)
-  const chart = { ...song.chart, duration: Math.max(song.chart.duration, song.duration) }
   const speedSelect = (
     <Select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={busy} aria-label="Playback speed" className="h-9 py-0">
       {SPEEDS.map((s) => (

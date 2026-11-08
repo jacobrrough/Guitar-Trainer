@@ -149,14 +149,13 @@ export function Player({
   settingsRef.current = settings
   propsRef.current = { chart, notes, speed, loopBars, loopCount, playedTempo, targetTempo, mode }
 
-  const setPhase = useCallback(
-    (p: PlayerPhase) => {
-      phaseRef.current = p
-      setPhaseState(p)
-      onPhaseChange?.(p)
-    },
-    [onPhaseChange],
-  )
+  const onPhaseChangeRef = useRef(onPhaseChange)
+  onPhaseChangeRef.current = onPhaseChange
+  const setPhase = useCallback((p: PlayerPhase) => {
+    phaseRef.current = p
+    setPhaseState(p)
+    onPhaseChangeRef.current?.(p)
+  }, [])
 
   useWakeLock(phase === 'playing' || phase === 'countin')
 
@@ -418,15 +417,18 @@ export function Player({
 
   useImperativeHandle(ref, () => ({ start: () => void start(), pause, restart, seek }), [start, pause, restart, seek])
 
-  // External reset (new rep, level change).
+  // External reset (new rep, level change). Depends on resetKey only: parent
+  // re-renders must never restart a run in progress.
+  const restartRef = useRef(restart)
+  restartRef.current = restart
   const firstResetRef = useRef(true)
   useEffect(() => {
     if (firstResetRef.current) {
       firstResetRef.current = false
       return
     }
-    restart()
-  }, [resetKey, restart])
+    restartRef.current()
+  }, [resetKey])
 
   const togglePlayPause = useCallback(() => {
     if (phaseRef.current === 'playing') pause()
