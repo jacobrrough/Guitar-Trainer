@@ -1,9 +1,11 @@
-import { Activity, ListMusic, Settings, Timer } from 'lucide-react'
+import { Activity, CalendarCheck, ListMusic, Settings, Timer, TrendingUp } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router'
 import { cx } from '../components/ui'
 
 const NAV = [
-  { to: '/', label: 'Songs', icon: ListMusic, end: true },
+  { to: '/', label: 'Today', icon: CalendarCheck, end: true },
+  { to: '/songs', label: 'Songs', icon: ListMusic, end: false },
+  { to: '/progress', label: 'Progress', icon: TrendingUp, end: false },
   { to: '/tuner', label: 'Tuner', icon: Activity, end: false },
   { to: '/metronome', label: 'Metronome', icon: Timer, end: false },
   { to: '/settings', label: 'Settings', icon: Settings, end: false },

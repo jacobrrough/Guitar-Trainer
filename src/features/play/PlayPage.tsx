@@ -105,7 +105,7 @@ export function ResultsOverlay({
             </Button>
           )}
           {canDown && <Button onClick={() => onLevel(levelIndex - 1)}>Easier</Button>}
-          <Link to="/">
+          <Link to="/songs">
             <Button variant="ghost">Songs</Button>
           </Link>
         </div>
@@ -172,7 +172,7 @@ export function PlayPage() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-muted">
         <p>This song is not in your library.</p>
-        <Link to="/" className="underline">
+        <Link to="/songs" className="underline">
           Back to songs
         </Link>
       </div>
@@ -231,7 +231,7 @@ export function PlayPage() {
           />
         ) : null
       }
-      onExit={() => navigate('/')}
+      onExit={() => navigate('/songs')}
       onFinished={onFinished}
       onPhaseChange={(p) => {
         setBusy(p === 'playing' || p === 'countin')

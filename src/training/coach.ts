@@ -159,6 +159,8 @@ export interface BlockOutcome {
   attempt: Attempt
   performance: Performance
   state?: SkillState
+  /** Skill rating before this block (exercise blocks). */
+  ratingBefore?: number
   songItem?: SongItemState
 }
 
@@ -176,6 +178,8 @@ export interface RepOutcome {
   attempt: Attempt
   performance: Performance
   state: SkillState
+  /** Skill rating before this rep. */
+  ratingBefore: number
   /** Suggested tempo for the next rep (docs §6.4). */
   nextTempo: number
 }
@@ -217,7 +221,13 @@ async function applyExerciseAttempt(
   const id = await recordAttempt(attempt)
   await saveSkillState(state)
   const startTempo = typeof block.params.startTempo === 'number' ? block.params.startTempo : block.tempo
-  return { attempt: { ...attempt, id }, performance, state, nextTempo: nextRepTempo(block.tempo, performance.acc, startTempo) }
+  return {
+    attempt: { ...attempt, id },
+    performance,
+    state,
+    ratingBefore: previous.rating,
+    nextTempo: nextRepTempo(block.tempo, performance.acc, startTempo),
+  }
 }
 
 /** Records one rep of an exercise block (not the last): attempt + rating, and suggests the next rep's tempo. */
@@ -243,7 +253,21 @@ export async function completeExerciseBlock(
 ): Promise<BlockOutcome> {
   const rep = await applyExerciseAttempt(block, exercise, result, settings, now, session.id, true)
   const updated = await persistBlockDone(session, block.id, block.minutes, rep.attempt, rep.performance, now)
-  return { session: updated, attempt: rep.attempt, performance: rep.performance, state: rep.state }
+  return { session: updated, attempt: rep.attempt, performance: rep.performance, state: rep.state, ratingBefore: rep.ratingBefore }
+}
+
+/**
+ * Closes an exercise block early from the last recorded rep: no new attempt,
+ * just the review scheduling and the plan/session bookkeeping.
+ */
+export async function finishExerciseBlock(session: SessionRecord, block: ExerciseBlock, lastRep: RepOutcome, now = Date.now()): Promise<BlockOutcome> {
+  const model = await loadLearnerModel()
+  let state = model.skills[block.skillId] ?? lastRep.state
+  if (block.kind === 'review' && state.nextReviewAt) state = { ...state, ...nextReview(state, lastRep.performance.p, now) }
+  else if (!state.nextReviewAt && state.rating >= 75) state = { ...state, ...startReview(now) }
+  await saveSkillState(state)
+  const updated = await persistBlockDone(session, block.id, block.minutes, lastRep.attempt, lastRep.performance, now)
+  return { session: updated, attempt: lastRep.attempt, performance: lastRep.performance, state, ratingBefore: lastRep.ratingBefore }
 }
 
 function buildSongAttempt(song: SongRecord, level: number, result: AttemptResult, performance: Performance, now: number, sessionId?: number): Attempt {
