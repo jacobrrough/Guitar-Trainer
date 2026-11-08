@@ -14,13 +14,12 @@ const GENERATORS = [
   'bendTargets',
   'subdivisionSwitch',
   'metronomeSteady',
-  'tuneByEar',
-]
+  'tuneByEar', 'openStrings', 'firstFrets']
 
 describe('skills', () => {
-  it('has exactly 25 skills with unique ids', () => {
-    expect(SKILLS).toHaveLength(25)
-    expect(new Set(SKILLS.map((s) => s.id)).size).toBe(25)
+  it('has exactly 27 skills with unique ids', () => {
+    expect(SKILLS).toHaveLength(27)
+    expect(new Set(SKILLS.map((s) => s.id)).size).toBe(27)
   })
 
   it('has existing prerequisites', () => {
@@ -29,7 +28,7 @@ describe('skills', () => {
 
   it('is acyclic and orders prerequisites first', () => {
     const order = topologicalOrder()
-    expect(order).toHaveLength(25)
+    expect(order).toHaveLength(27)
     const pos = new Map(order.map((s, i) => [s.id, i]))
     for (const s of SKILLS) for (const p of s.prerequisites) expect(pos.get(p)!).toBeLessThan(pos.get(s.id)!)
   })

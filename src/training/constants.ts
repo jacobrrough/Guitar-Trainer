@@ -1,10 +1,10 @@
 import type { MasteryBand, NoteValue, Prefs } from './types'
 
 /** Tier base difficulty (docs §4.2). */
-export const TIER_BASE: Record<1 | 2 | 3 | 4, number> = { 1: 20, 2: 40, 3: 60, 4: 80 }
+export const TIER_BASE: Record<0 | 1 | 2 | 3 | 4, number> = { 0: 10, 1: 20, 2: 40, 3: 60, 4: 80 }
 
 /** Density bonus by note value (docs §4.2). */
-export const DENSITY_BONUS: Record<NoteValue, number> = { quarter: 0, eighth: 8, triplet: 12, sixteenth: 16 }
+export const DENSITY_BONUS: Record<NoteValue, number> = { whole: -10, half: -6, quarter: 0, eighth: 8, triplet: 12, sixteenth: 16 }
 
 /** Difficulty points per technique present (bend, slide, hammer/pull, palm mute). */
 export const TECHNIQUE_BONUS = 5
@@ -142,3 +142,13 @@ export const EAR_GOOD_CENTS = 50
 /** Milestones. */
 export const MILESTONE_TEMPO_STEP = 10
 export const STREAK_MILESTONES = [3, 7, 14, 30, 60, 100]
+
+/**
+ * First steps (tier 0). A learner whose best rating is below BEGINNER_MAX_RATING
+ * gets tier 0–1 skills only, the sparsest song level slowed to BEGINNER_SONG_SPEED,
+ * and a warm-up on something comfortable rather than the chromatic spider.
+ */
+export const BEGINNER_MAX_RATING = 25
+export const BEGINNER_SONG_SPEED = 0.75
+/** A skill rated at least this is "comfortable" enough to warm up on. */
+export const WARMUP_COMFORT_RATING = 40

@@ -22,6 +22,8 @@ import type {
 } from './types'
 import {
   BAND_THRESHOLDS,
+  BEGINNER_MAX_RATING,
+  BEGINNER_SONG_SPEED,
   CHECKPOINT_MINUTES,
   COMEBACK_AFTER_DAYS,
   COMEBACK_TEMPO_FACTOR,
@@ -43,6 +45,7 @@ import {
   SONG_TARGET_ACCURACY,
   START_TEMPO_FACTOR,
   UNLOCK_RATING,
+  WARMUP_COMFORT_RATING,
 } from './constants'
 
 export interface PlannerInput {
@@ -77,6 +80,8 @@ const EXERCISE_BARS = 4
 const RECENCY_CAP_DAYS = 7
 const READINESS_MIN = 0.6
 const READINESS_MAX = 1.0
+/** Tie-break for the warm-up fallback: open-string picking is gentler than first fretting. */
+const WARMUP_CATEGORY_ORDER: SkillCategory[] = ['picking', 'fretting', 'timing']
 const REPS = { focus: 3, second: 3, review: 2, warmup: 1, ear: 2 } as const
 
 const GOAL_CATEGORIES: Record<Exclude<Goal, 'all-round'>, SkillCategory[]> = {
@@ -148,12 +153,16 @@ export function nextRepTempo(currentTempo: number, accuracy: number, sessionStar
   return Math.max(MIN_TEMPO, Math.round(t))
 }
 
-/** Picks the song, level, speed and loop range for a song block. `levelOffset` shifts the level (comeback = -1). */
+/**
+ * Picks the song, level, speed and loop range for a song block. `levelOffset` shifts the level (comeback = -1).
+ * With `options.beginner` and nothing played yet, the first song starts at the sparsest level, slowed down.
+ */
 export function pickSongBlock(
   library: SongSummary[],
   songItems: Record<string, SongItemState>,
   minutes: number,
   levelOffset = 0,
+  options: { beginner?: boolean } = {},
 ): SongBlock | null {
   if (library.length === 0) return null
   const itemsOf = (songId: number): SongItemState[] => Object.values(songItems).filter((i) => i.songId === songId)
@@ -177,6 +186,7 @@ export function pickSongBlock(
   const passed = played.filter((l) => (byLevel.get(l)?.bestAccuracy ?? 0) >= SONG_TARGET_ACCURACY)
   let level: number
   let why: string
+  let firstSong = false
   if (passed.length > 0) {
     level = passed[passed.length - 1]
     why = `Level ${level + 1} is cleared`
@@ -187,16 +197,20 @@ export function pickSongBlock(
   } else if (played.length > 0) {
     level = played[0]
     why = `Level ${level + 1} is not yet at ${Math.round(SONG_TARGET_ACCURACY * 100)} %`
+  } else if (options.beginner) {
+    level = 0
+    why = 'first song: the sparse level, slowed down'
+    firstSong = true
   } else {
     level = DEFAULT_SONG_LEVEL
     why = 'Nothing played yet, starting at a medium level'
   }
   level = clamp(level + levelOffset, 0, maxLevel)
-  if (levelOffset < 0) why += ' (one level easier today)'
+  if (levelOffset < 0 && !firstSong) why += ' (one level easier today)'
 
   const item = byLevel.get(level)
   const acc = item?.bestAccuracy ?? null
-  const speed = acc !== null && acc < SONG_SLOW_DOWN_ACCURACY ? SLOW_SONG_SPEED : 1
+  const speed = firstSong ? BEGINNER_SONG_SPEED : acc !== null && acc < SONG_SLOW_DOWN_ACCURACY ? SLOW_SONG_SPEED : 1
   const block: SongBlock = {
     id: '',
     kind: 'song',
@@ -205,7 +219,7 @@ export function pickSongBlock(
     songId: song.id,
     level,
     speed,
-    reason: `${song.title}: ${why}${speed < 1 ? `; slowed to ${Math.round(speed * 100)} % speed` : ''}.`,
+    reason: `${song.title}: ${why}${speed < 1 && !firstSong ? `; slowed to ${Math.round(speed * 100)} % speed` : ''}.`,
   }
   if (item && item.weakBars.length > 0) {
     block.loopBars = [Math.min(...item.weakBars), Math.max(...item.weakBars)]
@@ -244,10 +258,27 @@ function reviewTempo(skill: SkillDef, state: SkillState | undefined, dayFactor: 
   return Math.max(MIN_TEMPO, Math.round(base * dayFactor))
 }
 
-function pickWarmupSkill(skills: SkillDef[]): SkillDef | undefined {
-  const pool = skills.filter((s) => s.tier === 1 && (s.category === 'fretting' || s.category === 'timing'))
-  const byName = (word: string) => pool.find((s) => s.id.includes(word))
-  return byName('chromatic') ?? byName('metronome') ?? pool[0] ?? skills.find((s) => s.tier === 1)
+/**
+ * Warm-up skill that respects ability: the easiest comfortable (rated at least WARMUP_COMFORT_RATING) tier 0-1
+ * fretting, picking or timing skill, otherwise the gentlest skill without prerequisites.
+ */
+export function pickWarmupSkill(skills: SkillDef[], ratings: Record<string, number>): SkillDef | undefined {
+  const pool = skills.filter((s) => s.category === 'fretting' || s.category === 'picking' || s.category === 'timing')
+  const rated = (s: SkillDef) => ratings[s.id] ?? 0
+  const comfortable = pool
+    .filter((s) => s.tier <= 1 && rated(s) >= WARMUP_COMFORT_RATING)
+    .sort((a, b) => a.tier - b.tier || rated(b) - rated(a) || a.id.localeCompare(b.id))
+  if (comfortable.length > 0) return comfortable[0]
+  const gentle = pool
+    .filter((s) => s.prerequisites.length === 0)
+    .sort(
+      (a, b) =>
+        a.tier - b.tier ||
+        a.startTempo - b.startTempo ||
+        WARMUP_CATEGORY_ORDER.indexOf(a.category) - WARMUP_CATEGORY_ORDER.indexOf(b.category) ||
+        a.id.localeCompare(b.id),
+    )
+  return gentle[0] ?? skills.find((s) => s.tier <= 1)
 }
 
 interface Draft {
@@ -308,23 +339,32 @@ export function planSession(input: PlannerInput): SessionPlan {
   const skillById = new Map(skills.map((s) => [s.id, s]))
   const unlocked = (s: SkillDef) => s.prerequisites.every((p) => (ratings[p] ?? 0) >= UNLOCK_RATING)
   const unlockedSkills = skills.filter(unlocked)
-  let candidates = unlockedSkills.filter((s) => ratings[s.id] < MASTERED_RATING)
+  // Beginner mode: until any rating reaches BEGINNER_MAX_RATING, only tier 0-1 skills are trained.
+  const beginner = Math.max(0, ...Object.values(ratings)) < BEGINNER_MAX_RATING
+  const inScope = (s: SkillDef) => !beginner || s.tier <= 1
+  let candidates = unlockedSkills.filter((s) => inScope(s) && ratings[s.id] < MASTERED_RATING)
+  if (candidates.length === 0) candidates = unlockedSkills.filter(inScope)
   if (candidates.length === 0) candidates = unlockedSkills
   const priority = (s: SkillDef) => focusPriority(s, stateOf(s.id), prefs, nowMs, ratings)
-  const ranked = [...candidates].sort((a, b) => priority(b) - priority(a))
+  const ranked = [...candidates].sort((a, b) => (beginner ? a.tier - b.tier : 0) || priority(b) - priority(a))
+  const firstSteps = 'First steps: open strings and first frets before anything faster.'
 
   // Focus selection
   const recent = input.recentFocusSkillIds ?? []
   const repeated = (id: string) =>
     recent.length >= FOCUS_REPEAT_LIMIT_DAYS && recent.slice(0, FOCUS_REPEAT_LIMIT_DAYS).every((r) => r === id)
   const pinned = prefs.pinnedSkillId ? skillById.get(prefs.pinnedSkillId) : undefined
+  // The warm-up skill is chosen first so the focus and second blocks never repeat it.
+  const warmSkill = pickWarmupSkill(skills, ratings)
+  const sessionHasWarmup = !input.quick && SESSION_TEMPLATES[prefs.dailyMinutes].warmup > 0
+  const notWarmup = (s: SkillDef) => !sessionHasWarmup || s.id !== warmSkill?.id
   let focus: SkillDef | undefined
   let focusNote = ''
   if (pinned && unlocked(pinned)) {
     focus = pinned
     focusNote = 'pinned by you'
   } else {
-    focus = ranked.find((s) => !repeated(s.id)) ?? ranked[0]
+    focus = ranked.find((s) => notWarmup(s) && !repeated(s.id)) ?? ranked.find(notWarmup) ?? ranked[0]
     focusNote = ranked[0] && focus && ranked[0].id !== focus.id ? 'next in line, to rotate focus' : 'top priority for your goals'
   }
 
@@ -345,12 +385,12 @@ export function planSession(input: PlannerInput): SessionPlan {
     explanation.push('Quick session: one focused block.')
     if (!focus) return finish([], dayFactor)
     explanation.push(`Focus: ${focus.name} (${focusNote}).`)
+    if (beginner) explanation.push(firstSteps)
     if (comeback) explanation.push('Welcome back after a break: tempos are eased.')
     return finish([mkFocusLike('focus', focus, QUICK_MINUTES, focusNote)], dayFactor)
   }
 
   const tpl = SESSION_TEMPLATES[prefs.dailyMinutes]
-  const warmSkill = pickWarmupSkill(skills)
   const mkWarmup = (minutes: number): ExerciseBlock | null => {
     if (!warmSkill) return null
     const st = stateOf(warmSkill.id)
@@ -365,11 +405,11 @@ export function planSession(input: PlannerInput): SessionPlan {
     const w = mkWarmup(tpl.warmup || 1)
     if (w) drafts.push(w)
     const strongest = [...skills]
-      .filter((s) => stateOf(s.id))
+      .filter((s) => stateOf(s.id) && inScope(s))
       .sort((a, b) => ratings[b.id] - ratings[a.id] || a.tier - b.tier)
       .slice(0, 2)
     const total = prefs.dailyMinutes
-    const song = pickSongBlock(library, model.songItems, tpl.song, -1)
+    const song = pickSongBlock(library, model.songItems, tpl.song, -1, { beginner })
     const songMin = song ? tpl.song : 0
     const pool = Math.max(strongest.length, total - (w ? w.minutes : 0) - songMin)
     strongest.forEach((s, i) => {
@@ -390,6 +430,7 @@ export function planSession(input: PlannerInput): SessionPlan {
     explanation.push(`Welcome back after ${input.daysSinceLastSession} days away: an easy day to shake off the rust.`)
     explanation.push(`Tempos are ${Math.round((1 - COMEBACK_TEMPO_FACTOR) * 100)} % lower and no tests today.`)
     if (strongest.length > 0) explanation.push(`Reviewing your strongest skills: ${strongest.map((s) => s.name).join(', ')}.`)
+    if (beginner) explanation.push(firstSteps)
     if (song) explanation.push(`Song one level easier than usual (level ${song.level + 1}).`)
     return finish(drafts, dayFactor)
   }
@@ -406,12 +447,15 @@ export function planSession(input: PlannerInput): SessionPlan {
   const checkpoint = input.dueTest === 'checkpoint'
 
   let second: SkillDef | undefined
-  if (tpl.second > 0 && focus) second = ranked.find((s) => s.id !== focus.id && s.category !== focus.category)
+  if (tpl.second > 0 && focus) {
+    const others = ranked.filter((s) => s.id !== focus.id && notWarmup(s))
+    second = others.find((s) => s.category !== focus.category) ?? others[0]
+  }
   if (tpl.second > 0 && !second) extra += tpl.second
   if (focus) inPlan.add(focus.id)
   if (second) inPlan.add(second.id)
 
-  const song = tpl.song > 0 ? pickSongBlock(library, model.songItems, tpl.song) : null
+  const song = tpl.song > 0 ? pickSongBlock(library, model.songItems, tpl.song, 0, { beginner }) : null
   if (tpl.song > 0 && !song) extra += tpl.song
 
   let ear: SkillDef | undefined
@@ -445,7 +489,7 @@ export function planSession(input: PlannerInput): SessionPlan {
   const reviewMinutes = tpl.review
   const needReview = reviewMinutes > 0 && !(checkpoint && !second)
   if (needReview) {
-    const pool = skills.filter((s) => stateOf(s.id) && !inPlan.has(s.id))
+    const pool = skills.filter((s) => stateOf(s.id) && !inPlan.has(s.id) && inScope(s))
     const due = pool
       .filter((s) => (stateOf(s.id)?.nextReviewAt ?? Infinity) <= nowMs)
       .sort((a, b) => (stateOf(a.id)?.nextReviewAt ?? 0) - (stateOf(b.id)?.nextReviewAt ?? 0))[0]
@@ -453,7 +497,7 @@ export function planSession(input: PlannerInput): SessionPlan {
     const rusty = pool
       .filter((s) => rawRatings[s.id] >= REVIEW_RUST_RATING && rustOf(s) > 0)
       .sort((a, b) => rustOf(b) - rustOf(a))[0]
-    const strong = [...skills.filter((s) => !inPlan.has(s.id))].sort((a, b) => ratings[b.id] - ratings[a.id] || a.tier - b.tier)[0]
+    const strong = [...skills.filter((s) => !inPlan.has(s.id) && inScope(s))].sort((a, b) => ratings[b.id] - ratings[a.id] || a.tier - b.tier)[0]
     const pick = due ?? rusty ?? strong
     if (pick) {
       const st = stateOf(pick.id)
@@ -488,6 +532,7 @@ export function planSession(input: PlannerInput): SessionPlan {
 
   if (monthly) explanation.push('Monthly assessment today: it replaces the focus and second blocks.')
   else if (focus) explanation.push(`Focus: ${focus.name} (${focusNote}).`)
+  if (beginner) explanation.push(firstSteps)
   if (second && !checkpoint && !monthly) explanation.push(`Second skill: ${second.name}, from a different area.`)
   if (song) explanation.push(song.reason)
   else explanation.push('No songs in your library yet, so that time goes to practice.')

@@ -85,7 +85,7 @@ Design: `ADAPTIVE_TRAINING.md`. The code mirrors its sections and is pure apart 
 | `types.ts`, `constants.ts` | contracts and every tunable number |
 | `skills.ts` | 25-skill prerequisite graph with tips and generator ids |
 | `performance.ts`, `learner.ts`, `review.ts` | attempt performance and reliability, Elo-style rating update, tempo ceiling, rust, bands, review scheduling, song items |
-| `exercises/` | `ChartBuilder` (beats → chart), thirteen generators (chromatic, melody, scale runs, string skipping, chord changes, strum patterns, power-chord riffs, subdivisions, steady beat, legato, slides, bends, match-the-pitch), registry, backing audio via `audio/synth.ts` |
+| `exercises/` | `ChartBuilder` (beats → chart), fifteen generators (open strings, first frets, chromatic, melody, scale runs, string skipping, chord changes, strum patterns, power-chord riffs, subdivisions, steady beat, legato, slides, bends, match-the-pitch), registry, backing audio via `audio/synth.ts` |
 | `planner.ts` | session templates, focus selection, song level targeting, test insertion, in-session tempo adaptation |
 | `assessment.ts`, `recommend.ts`, `plateau.ts` | placement ladder, checkpoint and monthly tests, test scheduling, rule-based recommendations, plateau detection |
 | `milestones.ts`, `milestoneStore.ts` | band, tempo, unlock, streak, song and test milestones; deduplicated by key in a Dexie v3 table |

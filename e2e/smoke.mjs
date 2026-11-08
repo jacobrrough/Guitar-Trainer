@@ -172,6 +172,7 @@ try {
     check(await page.getByTestId('controls-desktop').isVisible(), 'desktop controls visible')
   }
   check((await page.getByTestId('guide-toggle').count()) === 1, 'guide toggle present for the synthesised demo')
+  check((await page.getByTestId('listen').count()) === 1, 'listen-first button present on the ready screen')
   await page.getByTestId('level-3').filter({ visible: true }).click()
   await page.getByTestId('start').click()
   await page.waitForSelector('[data-testid="countdown"]', { timeout: 5000 })

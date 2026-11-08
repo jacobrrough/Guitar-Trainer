@@ -7,7 +7,7 @@
 import type { Chart } from '../chart/types'
 
 export type SkillCategory = 'fretting' | 'picking' | 'chords' | 'lead' | 'timing' | 'ear'
-export type NoteValue = 'quarter' | 'eighth' | 'sixteenth' | 'triplet'
+export type NoteValue = 'whole' | 'half' | 'quarter' | 'eighth' | 'sixteenth' | 'triplet'
 export type Goal = 'songs' | 'rhythm' | 'lead' | 'technique' | 'all-round'
 export type MasteryBand = 'new' | 'learning' | 'developing' | 'solid' | 'mastered'
 
@@ -15,7 +15,8 @@ export interface SkillDef {
   id: string
   name: string
   category: SkillCategory
-  tier: 1 | 2 | 3 | 4
+  /** 0 = first steps (open strings, first frets), 1–4 as in docs §3. */
+  tier: 0 | 1 | 2 | 3 | 4
   prerequisites: string[]
   /** Tempo (bpm) at which an exercise for this skill has difficulty = tier base. */
   refTempo: number

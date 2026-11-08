@@ -10,6 +10,41 @@ function def(input: SkillInput): SkillDef {
 }
 
 export const SKILLS: SkillDef[] = [
+  // Tier 0: first steps. No prerequisites; the planner keeps brand-new learners here first.
+  def({
+    id: 'basics.open-strings',
+    name: 'Open strings on the beat',
+    category: 'picking',
+    tier: 0,
+    prerequisites: [],
+    refTempo: 60,
+    startTempo: 50,
+    targetTempo: 80,
+    description: 'Pick single open strings in time: your first notes, with no fretting hand needed.',
+    tips: [
+      'Hold the pick between the thumb and the side of the index finger, with only a few millimetres showing.',
+      'Rest the heel of the picking hand lightly near the bridge so it always knows where the strings are.',
+      'Pick down through the string with a small wrist movement and let the note ring until the next one.',
+    ],
+    generators: ['openStrings'],
+  }),
+  def({
+    id: 'basics.first-frets',
+    name: 'First frets, one finger each',
+    category: 'fretting',
+    tier: 0,
+    prerequisites: [],
+    refTempo: 60,
+    startTempo: 50,
+    targetTempo: 80,
+    description: 'Press frets 1, 2 and 3 on one string with the index, middle and ring finger, back to the open string in between.',
+    tips: [
+      'Press with the fingertip just behind the fret wire, not on top of it, with the thumb resting behind the neck.',
+      'Press only as hard as a clean note needs; a buzz means move closer to the fret or press a little more.',
+      'Keep the other fingers hovering over their own frets so they are ready.',
+    ],
+    generators: ['firstFrets'],
+  }),
   def({
     id: 'fret.single-string',
     name: 'Single notes on one string',
@@ -24,7 +59,7 @@ export const SKILLS: SkillDef[] = [
       'Keep your thumb roughly behind the neck and your fingers curved above the string.',
       'Lift each finger only as far as needed; hovering close to the string saves time and effort.',
     ],
-    generators: ['melody'],
+    generators: ['firstFrets', 'melody'],
   }),
   def({
     id: 'fret.cross-string',

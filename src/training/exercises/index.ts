@@ -2,9 +2,11 @@ import type { ExerciseGenerator, ExerciseParams, GeneratedExercise, SkillDef } f
 import { bendTargetsGenerator } from './bendTargets'
 import { chordChangesGenerator } from './chordChanges'
 import { chromaticGenerator } from './chromatic'
+import { firstFretsGenerator } from './firstFrets'
 import { legatoLickGenerator } from './legatoLick'
 import { melodyGenerator } from './melody'
 import { metronomeSteadyGenerator } from './metronomeSteady'
+import { openStringsGenerator } from './openStrings'
 import { powerChordRiffGenerator } from './powerChordRiff'
 import { scaleRunGenerator } from './scaleRun'
 import { slideLickGenerator } from './slideLick'
@@ -27,6 +29,8 @@ export const GENERATORS: Record<string, ExerciseGenerator> = {
   slideLick: slideLickGenerator,
   bendTargets: bendTargetsGenerator,
   tuneByEar: tuneByEarGenerator,
+  openStrings: openStringsGenerator,
+  firstFrets: firstFretsGenerator,
 }
 
 /**

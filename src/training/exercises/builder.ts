@@ -11,7 +11,7 @@ import type { NoteValue } from '../types'
 export const DEFAULT_TUNING = [40, 45, 50, 55, 59, 64]
 
 /** Length of one note value in beats (quarter = 1). */
-export const NOTE_VALUE_BEATS: Record<NoteValue, number> = { quarter: 1, eighth: 0.5, triplet: 1 / 3, sixteenth: 0.25 }
+export const NOTE_VALUE_BEATS: Record<NoteValue, number> = { whole: 4, half: 2, quarter: 1, eighth: 0.5, triplet: 1 / 3, sixteenth: 0.25 }
 
 export interface BuilderOptions {
   bpm: number

@@ -23,6 +23,9 @@
 - Section practice in the song player: loop a bar range (or the weakest bars of the last
   run) with automatic speed steps
 - Safari / iOS code audit with a device checklist (`SAFARI_AUDIT.md`)
+- First steps for real beginners: tier-0 open-string and first-fret drills, a
+  planner mode that keeps new learners on tier 0–1 with a slowed sparse song, and
+  "Listen first" on every drill with a guide track
 
 ## Next
 

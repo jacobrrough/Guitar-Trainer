@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { adaptAfterBlock, focusPriority, nextRepTempo, pickSongBlock, planSession } from './planner'
+import { adaptAfterBlock, focusPriority, nextRepTempo, pickSongBlock, pickWarmupSkill, planSession } from './planner'
 import type { PlannerInput } from './planner'
 import type {
   Attempt,
@@ -12,7 +12,7 @@ import type {
   SongItemState,
   SongSummary,
 } from './types'
-import { COMEBACK_TEMPO_FACTOR, MAX_SESSION_TEMPO_GAIN, PLACEMENT_MINUTES } from './constants'
+import { BEGINNER_SONG_SPEED, COMEBACK_TEMPO_FACTOR, MAX_SESSION_TEMPO_GAIN, PLACEMENT_MINUTES } from './constants'
 
 function deepFreeze<T>(o: T): T {
   if (o && typeof o === 'object' && !Object.isFrozen(o)) {
@@ -346,5 +346,88 @@ describe('pickSongBlock', () => {
   })
   it('drops one level for comebacks', () => {
     expect(pickSongBlock(LIBRARY, {}, 7, -1)?.level).toBe(1)
+  })
+})
+
+describe('beginner mode (first steps)', () => {
+  const TIERED: SkillDef[] = [
+    { ...skill('basics.open-strings', 'picking', 0), startTempo: 50 },
+    { ...skill('basics.first-frets', 'fretting', 0), startTempo: 50 },
+    skill('single', 'fretting', 1),
+    skill('pick.down', 'picking', 1),
+    skill('fret.chromatic', 'fretting', 1, ['single']),
+    skill('power-chords', 'chords', 2, ['single']),
+    skill('string-skip', 'picking', 2, ['basics.open-strings']),
+  ]
+  const FIRST_STEPS = 'First steps: open strings and first frets before anything faster.'
+  const tiered = (states: SkillState[] = [], over: Partial<PlannerInput> = {}, prefs: Partial<Prefs> = {}) =>
+    input({ model: model(states), skills: TIERED, daysSinceLastSession: undefined, ...over }, prefs)
+  const tierOf = (id: string) => TIERED.find((s) => s.id === id)?.tier ?? -1
+  const skillIds = (plan: { blocks: { kind: string }[] }) =>
+    plan.blocks.filter((b) => 'skillId' in b).map((b) => (b as ExerciseBlock).skillId)
+
+  it('gives a new learner open strings, a tier-0 focus, nothing above tier 1 and a gentle song', () => {
+    const plan = planSession(tiered())
+    expect((plan.blocks[0] as ExerciseBlock).skillId).toBe('basics.open-strings')
+    const focus = plan.blocks.find((b) => b.kind === 'focus') as ExerciseBlock
+    expect(tierOf(focus.skillId)).toBe(0)
+    expect(skillIds(plan).every((id) => tierOf(id) <= 1)).toBe(true)
+    expect(plan.blocks.find((b) => b.kind === 'song')).toMatchObject({ level: 0, speed: BEGINNER_SONG_SPEED })
+    expect(plan.explanation).toContain(FIRST_STEPS)
+    expect(plan.explanation.length).toBeLessThanOrEqual(6)
+  })
+
+  it('never schedules the warm-up skill again as focus or second', () => {
+    for (const minutes of [20, 30, 45] as const) {
+      const plan = planSession(tiered([], {}, { dailyMinutes: minutes }))
+      const ids = skillIds(plan)
+      expect(new Set(ids).size, `${minutes} min`).toBe(ids.length)
+      expect((plan.blocks[0] as ExerciseBlock).skillId).toBe('basics.open-strings')
+      expect((plan.blocks.find((b) => b.kind === 'focus') as ExerciseBlock).skillId).toBe('basics.first-frets')
+    }
+  })
+
+  it('restricts the second block too and prefers a different category', () => {
+    const plan = planSession(tiered([], {}, { dailyMinutes: 30 }))
+    const focus = plan.blocks.find((b) => b.kind === 'focus') as ExerciseBlock
+    const second = plan.blocks.find((b) => b.kind === 'second') as ExerciseBlock
+    expect(tierOf(second.skillId)).toBeLessThanOrEqual(1)
+    expect(TIERED.find((s) => s.id === second.skillId)?.category).not.toBe(TIERED.find((s) => s.id === focus.skillId)?.category)
+  })
+
+  it('lifts the restriction for a comfortable learner and warms up on the chromatic exercise', () => {
+    const plan = planSession(tiered([state('fret.chromatic', 60), state('single', 50)]))
+    expect((plan.blocks[0] as ExerciseBlock).skillId).toBe('fret.chromatic')
+    expect(plan.explanation).not.toContain(FIRST_STEPS)
+    expect(plan.blocks.find((b) => b.kind === 'song')).toMatchObject({ level: 2, speed: 1 })
+  })
+
+  it('stays in beginner mode at 24 and leaves it at 25', () => {
+    expect(planSession(tiered([state('basics.first-frets', 24)])).explanation).toContain(FIRST_STEPS)
+    expect(planSession(tiered([state('basics.first-frets', 25)])).explanation).not.toContain(FIRST_STEPS)
+  })
+
+  it('quick session for a new learner is a tier-0 block', () => {
+    const plan = planSession(tiered([], { quick: true }))
+    expect(plan.blocks).toHaveLength(1)
+    expect(tierOf((plan.blocks[0] as ExerciseBlock).skillId)).toBe(0)
+  })
+
+  it('comeback for a beginner stays within tier 1 and starts the song gently', () => {
+    const plan = planSession(tiered([state('basics.open-strings', 10), state('string-skip', 20)], { daysSinceLastSession: 10 }))
+    expect(skillIds(plan).every((id) => tierOf(id) <= 1)).toBe(true)
+    expect(plan.blocks.find((b) => b.kind === 'song')).toMatchObject({ level: 0, speed: BEGINNER_SONG_SPEED })
+  })
+
+  it('pickWarmupSkill respects ratings and falls back to the gentlest prerequisite-free skill', () => {
+    expect(pickWarmupSkill(TIERED, {})?.id).toBe('basics.open-strings')
+    expect(pickWarmupSkill(TIERED, { 'basics.first-frets': 45, single: 70 })?.id).toBe('basics.first-frets')
+    expect(pickWarmupSkill(TIERED, { single: 70, 'fret.chromatic': 60 })?.id).toBe('single')
+  })
+
+  it('pickSongBlock only starts gently for beginners who have played nothing', () => {
+    expect(pickSongBlock(LIBRARY, {}, 7, 0, { beginner: true })).toMatchObject({ level: 0, speed: BEGINNER_SONG_SPEED })
+    expect(pickSongBlock(LIBRARY, {}, 7, 0, { beginner: true })?.reason).toMatch(/first song: the sparse level, slowed down/)
+    expect(pickSongBlock(LIBRARY, {}, 7)).toMatchObject({ level: 2, speed: 1 })
   })
 })

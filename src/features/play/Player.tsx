@@ -17,6 +17,8 @@ export type PlayerMode = 'song' | 'exercise' | 'test'
 export type PlayerPhase = 'ready' | 'countin' | 'playing' | 'paused' | 'finished'
 
 export interface PlayerHandle {
+  /** Plays the guide track once, without the microphone or scoring. */
+  listen: () => void
   start(): void
   pause(): void
   restart(): void
@@ -153,6 +155,9 @@ export function Player({
   const clickTimesRef = useRef<number[]>([])
   const countInAttacksRef = useRef<number[]>([])
   const bleedRef = useRef(false)
+  const listenOnlyRef = useRef(false)
+  const listenUrlRef = useRef<string | null>(null)
+  const audioUrlRef = useRef<string | null>(null)
   const loopsDoneRef = useRef(0)
   const startedAtRef = useRef<number | null>(null)
   const phaseRef = useRef<PlayerPhase>('ready')
@@ -198,9 +203,27 @@ export function Player({
   useEffect(() => {
     const url = URL.createObjectURL(source)
     setAudioUrl(url)
+    audioUrlRef.current = url
     mediaPrimedRef.current = false
     return () => URL.revokeObjectURL(url)
   }, [source])
+
+  /** Leaves listen mode: drops the temporary guide source and points the element back at the scored track. */
+  const endListen = useCallback(() => {
+    if (!listenOnlyRef.current) return
+    listenOnlyRef.current = false
+    setNotice(null)
+    const el = audioRef.current
+    if (listenUrlRef.current) {
+      URL.revokeObjectURL(listenUrlRef.current)
+      listenUrlRef.current = null
+      if (el && audioUrlRef.current) {
+        el.src = audioUrlRef.current
+        el.load()
+      }
+      mediaPrimedRef.current = false
+    }
+  }, [])
 
   // Score tracker follows the active notes and speed.
   useEffect(() => {
@@ -246,6 +269,17 @@ export function Player({
     if (phaseRef.current === 'finished') return
     const el = audioRef.current
     el?.pause()
+    if (listenOnlyRef.current) {
+      // A listen-through ends back at the start, unscored.
+      endListen()
+      if (el) el.currentTime = 0
+      playbackStartedRef.current = false
+      loopsDoneRef.current = 0
+      startedAtRef.current = null
+      clockRef.current?.reset()
+      setPhase('ready')
+      return
+    }
     setPhase('finished')
     const tracker = trackerRef.current
     if (!tracker) return
@@ -254,7 +288,7 @@ export function Player({
     const durationSec = startedAtRef.current ? (performance.now() - startedAtRef.current) / 1000 : (el?.currentTime ?? 0)
     const result = tracker.toAttemptResult({ playedTempo: p.playedTempo, targetTempo: p.targetTempo, speed: p.speed, durationSec })
     onFinished(tracker.summary(), bleedRef.current ? { ...result, bleed: true } : result)
-  }, [onFinished, setPhase])
+  }, [endListen, onFinished, setPhase])
   const finishRef = useRef(finish)
   finishRef.current = finish
 
@@ -290,8 +324,10 @@ export function Player({
             t = loopStart
           }
         }
-        const missed = tracker.advance(t - st.latencyMs / 1000)
-        if (missed.length) judgementRef.current = { text: 'Miss', at: t }
+        if (!listenOnlyRef.current) {
+          const missed = tracker.advance(t - st.latencyMs / 1000)
+          if (missed.length) judgementRef.current = { text: 'Miss', at: t }
+        }
       }
       const widthFactor = Math.min(1, Math.max(0.45, renderer.width / 900))
       renderer.draw({
@@ -323,6 +359,10 @@ export function Player({
         const st = settingsRef.current
         const { midi, isAttack } = smootherRef.current.push(frame, st.clarityThreshold, st.a4)
         detectedRef.current.midi = midi
+        if (listenOnlyRef.current) {
+          detectedRef.current.matches = false
+          return
+        }
         // Count-in: microphone attacks right after our own clicks mean the speaker is being heard.
         if (phaseRef.current === 'countin' && isAttack) countInAttacksRef.current.push(frame.time)
         const tracker = trackerRef.current
@@ -392,6 +432,7 @@ export function Player({
   }, [startMic])
 
   const restart = useCallback(() => {
+    endListen()
     const el = audioRef.current
     if (el) {
       el.pause()
@@ -405,17 +446,18 @@ export function Player({
     bleedRef.current = false
     clockRef.current?.reset()
     setPhase('ready')
-  }, [setPhase])
+  }, [endListen, setPhase])
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (opts: { listen?: boolean } = {}) => {
     const el = audioRef.current
     if (!el || phaseRef.current === 'countin' || phaseRef.current === 'playing') return
     if (phaseRef.current === 'finished') restart()
+    if (!opts.listen) endListen()
     audioEngine.unlock()
     primeMediaElement(el, mediaPrimedRef, playbackStartedRef)
     setNotice(null)
     setNoticeAction(null)
-    if (!audioEngine.micActive && micStatus !== 'error') await startMic()
+    if (!opts.listen && !audioEngine.micActive && micStatus !== 'error') await startMic()
     await audioEngine.resume()
     const p = propsRef.current
     // WebKit can reset the rate when a paused element starts; set the default too and re-assert after play().
@@ -426,7 +468,7 @@ export function Player({
     if (el.currentTime < loopStart) el.currentTime = loopStart
     const atStart = el.currentTime <= loopStart + 0.05
     if (atStart) bleedRef.current = false
-    if (atStart && countIn && !skipCountInRef.current) {
+    if (!opts.listen && atStart && countIn && !skipCountInRef.current) {
       setPhase('countin')
       const ctx = audioEngine.context
       const bpm = p.chart.tempos[0]?.bpm ?? 120
@@ -470,7 +512,25 @@ export function Player({
     clockRef.current?.reset()
     smootherRef.current.reset()
     setPhase('playing')
-  }, [countIn, micStatus, restart, setPhase, startMic])
+    if (opts.listen) setNotice('Listening: the part is played for you and nothing is scored.')
+  }, [countIn, endListen, micStatus, restart, setPhase, startMic])
+
+  /** Plays the guide track once without the microphone or scoring, then returns to ready. */
+  const listen = useCallback(() => {
+    const el = audioRef.current
+    if (!el || !guideAudio || phaseRef.current === 'countin' || phaseRef.current === 'playing') return
+    if (phaseRef.current === 'finished') restart()
+    listenOnlyRef.current = true
+    if (!guide) {
+      // Swap the source synchronously inside the tap, so iOS still counts the gesture.
+      const url = URL.createObjectURL(guideAudio)
+      listenUrlRef.current = url
+      el.src = url
+      el.load()
+      mediaPrimedRef.current = false
+    }
+    void start({ listen: true })
+  }, [guide, guideAudio, restart, start])
 
   const pause = useCallback(() => {
     if (mode === 'test') return
@@ -492,7 +552,7 @@ export function Player({
     [mode, setPhase],
   )
 
-  useImperativeHandle(ref, () => ({ start: () => void start(), pause, restart, seek }), [start, pause, restart, seek])
+  useImperativeHandle(ref, () => ({ start: () => void start(), listen, pause, restart, seek }), [start, listen, pause, restart, seek])
 
   // External reset (new rep, level change). Depends on resetKey only: parent
   // re-renders must never restart a run in progress.
@@ -619,6 +679,11 @@ export function Player({
               <Play className="h-12 w-12" />
             </button>
             <p className="text-sm text-muted">{[readyHint ?? `${notesCount} notes · ${Math.round(speed * 100)}% speed`, guideAudio ? (guide ? 'guide notes on' : 'guide notes off') : null].filter(Boolean).join(' · ')}</p>
+            {guideAudio && mode !== 'test' && (
+              <Button variant="secondary" size="sm" onClick={listen} data-testid="listen">
+                <Volume2 className="h-4 w-4" /> Listen first
+              </Button>
+            )}
             {mode !== 'test' && (
               <p className="text-xs text-muted">
                 {portraitPhone ? 'Tip: rotate your phone for a wider highway. Tap the highway to pause.' : 'Space or tap the highway to pause · R to restart'}

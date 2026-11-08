@@ -13,7 +13,9 @@ subscription, no servers: your audio and progress never leave your device.
   exercise at the right tempo, your song at the right level, a review of earlier
   material, and a skill check when one is due. Every block is scored and feeds a per-skill
   rating; tempos adapt rep by rep; weekly checkpoints and monthly assessments keep the
-  plan honest. Drills cover picking, chords, legato, slides, bends and ear training
+  plan honest. Brand-new players start with first steps (open strings, first frets,
+  half notes, the sparsest song level) and can hear every drill before playing it;
+  drills then cover picking, chords, legato, slides, bends and ear training
   (listen, then find the note). Milestones mark bands, tempos, unlocks and streaks.
   Progress page with a skill map, rating history and milestones; training data can be
   exported and imported as JSON. Design: [docs/ADAPTIVE_TRAINING.md](docs/ADAPTIVE_TRAINING.md).

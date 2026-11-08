@@ -83,6 +83,8 @@ Skills form a small prerequisite graph. Each skill has a measurable target
 |---|---|---|---|---|---|---|
 | `fret.single-string` | Single notes on one string | Fretting | 1 | – | 60 → 100 bpm quarters | melody accuracy |
 | `fret.cross-string` | Notes across strings, open position | Fretting | 1 | single-string | 60 → 100 | melody accuracy |
+| `basics.open-strings` | Open strings on the beat (first notes, picking hand only) | Picking | 0 | – | 50 → 80 half notes | accuracy + timing |
+| `basics.first-frets` | Frets 1–3 on one string, one finger each, back to open | Fretting | 0 | – | 50 → 80 half notes | accuracy |
 | `fret.chromatic` | 1-2-3-4 finger independence ("spider") | Fretting | 1 | single-string | 60 → 120 eighths | accuracy + timing σ |
 | `fret.shifts` | Position shifts | Fretting | 2 | cross-string | 70 → 110 | accuracy |
 | `pick.downstrokes` | Downstrokes on the beat | Picking/rhythm | 1 | – | 60 → 120 quarters | timing σ, accuracy |
@@ -523,3 +525,26 @@ Phase 1 alone already delivers "open the app, do today's session, see progress".
 - [ts-fsrs](https://github.com/open-spaced-repetition/ts-fsrs) (MIT), TypeScript
   implementation of the FSRS scheduler, candidate replacement for the SM-2-style
   review scheduling in §4.4.
+
+---
+
+## 15. First steps (added after the first real-beginner session)
+
+A brand-new learner found the first sessions far too hard: the warm-up was the
+chromatic spider at eighth notes, the focus block a cross-string melody, the song
+at Level 3. The planner now has a **first-steps mode** while the learner's best
+rating is below `BEGINNER_MAX_RATING` (25):
+
+- Two tier-0 skills with no prerequisites: `basics.open-strings` (generator
+  `openStrings`: half notes on one or two open strings) and `basics.first-frets`
+  (generator `firstFrets`: frets 0–3 on one string, back to the open string between
+  fretted notes). `fret.single-string` uses `firstFrets` with four frets and quarter
+  notes before the melody generator.
+- Focus, second, review, quick and comeback candidates are limited to tier ≤ 1 and
+  ranked tier-first, so tier 0 is practised until it leaves the beginner band.
+- The warm-up is a *comfortable* skill (rated ≥ `WARMUP_COMFORT_RATING`, lowest tier
+  first) and otherwise open strings; the spider is only a warm-up once it is easy.
+- The first song is the sparsest level at `BEGINNER_SONG_SPEED` (75 %).
+- Every exercise with a guide track offers **Listen first** on the ready screen: the
+  part plays once without the microphone or scoring.
+
