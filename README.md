@@ -48,6 +48,10 @@ subscription, no servers: your audio and progress never leave your device.
 
 ## On your iPhone
 
+The app is published from this repository with GitHub Pages at
+**<https://jacobrrough.github.io/Guitar-Trainer/>** (the `CI & Deploy` workflow builds and
+publishes every push to the default branch).
+
 Guitar Trainer is built iPhone-first as an installable web app: open it in Safari, tap
 **Share → Add to Home Screen**, and it runs full screen, offline, with your songs saved on
 the device. Plug a guitar in through a class-compliant interface or use wired headphones

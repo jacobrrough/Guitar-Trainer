@@ -2,7 +2,7 @@ name: CI & Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'claude/**']
   pull_request:
   workflow_dispatch:
 
@@ -31,18 +31,23 @@ jobs:
         env:
           BASE_PATH: /${{ github.event.repository.name }}/
       - uses: actions/upload-pages-artifact@v3
-        if: github.ref == 'refs/heads/main'
+        if: github.ref_name == github.event.repository.default_branch
         with:
           path: dist
 
   deploy:
-    # Publishes to GitHub Pages. Enable it once under Settings → Pages → Source: GitHub Actions.
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # Publishes the default branch to GitHub Pages at https://<owner>.github.io/<repo>/.
+    # configure-pages switches Pages on by itself when it can; otherwise enable it once under
+    # Settings → Pages → Source: GitHub Actions and re-run the workflow.
+    if: github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - id: deployment
         uses: actions/deploy-pages@v4

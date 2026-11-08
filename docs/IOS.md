@@ -10,6 +10,8 @@ Store is prepared with Capacitor (see the end of this page).
 
 ## Install on an iPhone
 
+The hosted build lives at <https://jacobrrough.github.io/Guitar-Trainer/>.
+
 1. Open the site in **Safari**. Chrome, Edge and Firefox on iOS 16.4+ can also add a home-screen
    web app, but in-app browsers (Instagram, Facebook, Mail links...) cannot.
 2. Tap **Share** → **Add to Home Screen** → **Add**.
