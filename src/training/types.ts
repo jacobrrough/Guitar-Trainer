@@ -152,6 +152,7 @@ export interface SongItemState {
   /** `${songId}:${level}` */
   key: string
   songId: number
+  /** 0-based index into generateLevels(chart) (0 = Level 1 … 5 = Full). Used throughout the training layer. */
   level: number
   bestAccuracy: number | null
   lastAt: number | null
@@ -220,6 +221,7 @@ export interface SongBlock {
   status: BlockStatus
   minutes: number
   songId: number
+  /** 0-based level index (see SongItemState.level). */
   level: number
   speed: number
   /** Inclusive bar range to loop for the first half of the block. */

@@ -14,6 +14,8 @@ export interface AppSettings {
   inputDeviceId: string
   /** Total round-trip latency compensation applied when scoring, in milliseconds. */
   latencyMs: number
+  /** When the latency was last measured with the wizard (ms since epoch); undefined = never. */
+  calibratedAt?: number
   a4: number
   tunerTuningId: string
   defaultTuningId: string

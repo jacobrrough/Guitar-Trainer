@@ -97,10 +97,11 @@ export function SettingsPage() {
             <Button variant="primary" onClick={() => setCalibrating(true)}>
               Calibrate…
             </Button>
-            <Button variant="ghost" onClick={() => updateSettings({ latencyMs: DEFAULT_SETTINGS.latencyMs })}>
+            <Button variant="ghost" onClick={() => updateSettings({ latencyMs: DEFAULT_SETTINGS.latencyMs, calibratedAt: undefined })}>
               Reset
             </Button>
           </div>
+          {settings.calibratedAt && <p className="mt-2 text-xs text-muted">Last calibrated {new Date(settings.calibratedAt).toLocaleDateString()}.</p>}
           <Field label={`Highway look-ahead: ${settings.visibleSeconds.toFixed(1)} s`} hint="How far ahead notes are visible. Shorter = faster scrolling." className="mt-6">
             <input type="range" min={1.5} max={6} step={0.5} value={settings.visibleSeconds} onChange={(e) => updateSettings({ visibleSeconds: Number(e.target.value) })} />
           </Field>
@@ -137,7 +138,7 @@ export function SettingsPage() {
           </p>
         </Card>
       </div>
-      {calibrating && <CalibrationDialog deviceId={settings.inputDeviceId || undefined} onClose={() => setCalibrating(false)} onResult={(ms) => updateSettings({ latencyMs: ms })} />}
+      {calibrating && <CalibrationDialog deviceId={settings.inputDeviceId || undefined} onClose={() => setCalibrating(false)} onResult={(ms) => updateSettings({ latencyMs: ms, calibratedAt: Date.now() })} />}
     </div>
   )
 }

@@ -177,7 +177,7 @@ distribution of hit timing errors and per-bar accuracy.
 acc = (perfects + 0.8·goods) / total
 tim = clamp(1 − σ_timing / 80 ms, 0, 1)        // σ of hit deltas after removing the median bias
                                                  // (fewer than 8 hits → tim = acc)
-tmp = clamp(playedTempo / targetTempo, 0.5, 1.1) / 1.1
+tmp = clamp(playedTempo / targetTempo, 0.5, 1)          // full credit at the target tempo
 p   = 0.6·acc + 0.25·tim + 0.15·tmp              // performance, 0..1
 ```
 

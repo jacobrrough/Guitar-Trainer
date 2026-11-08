@@ -1,6 +1,9 @@
 import type { OctaveTolerance } from '../../app/settings'
 import { groupNotes, type NoteGroup } from '../../chart/events'
-import type { ChartNote } from '../../chart/types'
+import type { Beat, ChartNote } from '../../chart/types'
+import { findBeatIndex } from '../../chart/timing'
+import { WEAK_BAR_ACCURACY } from '../../training/constants'
+import type { AttemptResult } from '../../training/types'
 
 /** Timing windows in seconds of real time (scaled by playback speed into song time). */
 export interface HitWindow {
@@ -48,6 +51,8 @@ export interface ScoreOptions {
   octaveTolerance?: OctaveTolerance
   /** Pitch tolerance in cents. */
   centsTolerance?: number
+  /** Beat grid; enables per-bar statistics. */
+  beats?: Beat[]
 }
 
 export function pitchMatches(detected: number, target: number, toleranceSemis: number, allowOctave: boolean): boolean {
@@ -64,6 +69,12 @@ export class ScoreTracker {
   private readonly tolerance: number
   private speed = 1
   private cursor = 0
+  /** Bar index per group (parallel to groups); empty when no beats were given. */
+  private readonly groupBars: number[] = []
+  private readonly hasBeats: boolean
+  private covCursor = 0
+  private expectedFrames = 0
+  private heardFrames = 0
   private lastHit: { midi: number; time: number } | null = null
   /** True once a new pick (attack), silence or a different pitch has been heard since the last hit. */
   private armed = true
@@ -80,6 +91,14 @@ export class ScoreTracker {
     this.baseWindow = { ...DEFAULT_WINDOW, ...opts.window }
     this.octave = opts.octaveTolerance ?? 'chords'
     this.tolerance = (opts.centsTolerance ?? 60) / 100
+    const beats = opts.beats
+    this.hasBeats = !!beats && beats.length > 0
+    if (beats && this.hasBeats) {
+      for (const g of this.groups) {
+        const idx = findBeatIndex(beats, g.group.time)
+        this.groupBars.push(idx < 0 ? 0 : beats[idx].bar)
+      }
+    }
   }
 
   /** Playback speed (1 = normal). Windows shrink in song time when playing slower. */
@@ -108,6 +127,9 @@ export class ScoreTracker {
       delete g.hitAt
     }
     this.cursor = 0
+    this.covCursor = 0
+    this.expectedFrames = 0
+    this.heardFrames = 0
     this.lastHit = null
     this.armed = true
     this.score = 0
@@ -218,6 +240,103 @@ export class ScoreTracker {
       judged,
       accuracy: judged > 0 ? hits / judged : 0,
     }
+  }
+
+  /** Signed timing errors (seconds) of all hit groups, in time order. */
+  hitDeltas(): number[] {
+    const out: number[] = []
+    for (const g of this.groups) if (g.status === 'hit' && g.delta !== undefined) out.push(g.delta)
+    return out
+  }
+
+  /** Median of hit deltas (ms) and population stdev of (delta - median) (ms); null with fewer than 8 hits. */
+  timingStats(): { medianMs: number | null; stdevMs: number | null } {
+    const d = this.hitDeltas()
+    if (d.length < 8) return { medianMs: null, stdevMs: null }
+    const sorted = d.map((x) => x * 1000).sort((a, b) => a - b)
+    const mid = sorted.length >> 1
+    const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+    let sq = 0
+    for (const x of sorted) sq += (x - median) ** 2
+    return { medianMs: median, stdevMs: Math.sqrt(sq / sorted.length) }
+  }
+
+  /** Accuracy per bar (hits / resolved); -1 where a bar has no resolved groups. Empty without beats. */
+  perBarAccuracy(): number[] {
+    if (!this.hasBeats || this.groups.length === 0) return []
+    const hits: number[] = []
+    const resolved: number[] = []
+    this.groups.forEach((g, i) => {
+      if (g.status !== 'hit' && g.status !== 'miss') return
+      const bar = this.groupBars[i]
+      while (resolved.length <= bar) {
+        hits.push(0)
+        resolved.push(0)
+      }
+      resolved[bar]++
+      if (g.status === 'hit') hits[bar]++
+    })
+    let last = 0
+    for (let i = 0; i < this.groupBars.length; i++) last = Math.max(last, this.groupBars[i])
+    const out: number[] = []
+    for (let b = 0; b <= last; b++) out.push(resolved[b] ? hits[b] / resolved[b] : -1)
+    return out
+  }
+
+  /** Bar indices with accuracy in [0, threshold). */
+  weakBars(threshold = WEAK_BAR_ACCURACY): number[] {
+    const out: number[] = []
+    this.perBarAccuracy().forEach((a, b) => {
+      if (a >= 0 && a < threshold) out.push(b)
+    })
+    return out
+  }
+
+  /** Call once per detector frame; heard = a clear pitch was reported. */
+  observe(songTime: number, heard: boolean): void {
+    const w = this.window
+    // Skip groups whose window has certainly ended (cursor only blocks on long earlier groups, which is conservative).
+    while (this.covCursor < this.groups.length && this.groupEnd(this.groups[this.covCursor], w) < songTime) this.covCursor++
+    for (let i = this.covCursor; i < this.groups.length; i++) {
+      const g = this.groups[i]
+      if (g.group.time - w.early > songTime) break
+      if (g.status === 'skipped') continue
+      if (songTime <= this.groupEnd(g, w)) {
+        this.expectedFrames++
+        if (heard) this.heardFrames++
+        return
+      }
+    }
+  }
+
+  private groupEnd(g: GroupState, w: HitWindow): number {
+    let dur = 0
+    for (const n of g.group.notes) if (n.duration > dur) dur = n.duration
+    return g.group.time + Math.max(w.late, Math.min(dur, 1.0))
+  }
+
+  /** Fraction of expected frames in which a pitch was heard; 1 when none were expected yet. */
+  coverage(): number {
+    return this.expectedFrames > 0 ? this.heardFrames / this.expectedFrames : 1
+  }
+
+  toAttemptResult(opts: { playedTempo: number; targetTempo: number; speed: number; durationSec: number }): AttemptResult {
+    const { medianMs, stdevMs } = this.timingStats()
+    const result: AttemptResult = {
+      perfects: this.perfects,
+      goods: this.goods,
+      misses: this.misses,
+      total: this.perfects + this.goods + this.misses,
+      timingMedianMs: medianMs,
+      timingStdevMs: stdevMs,
+      coverage: this.coverage(),
+      durationSec: opts.durationSec,
+      playedTempo: opts.playedTempo,
+      targetTempo: opts.targetTempo,
+      speed: opts.speed,
+    }
+    if (this.hasBeats) result.perBar = this.perBarAccuracy().map((a) => (a < 0 ? 1 : a))
+    return result
   }
 
   get finished(): boolean {
