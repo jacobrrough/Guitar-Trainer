@@ -13,7 +13,8 @@ src/
 │   ├── pitch/fft.ts           radix-2 FFT
 │   ├── pitch/mpm.ts           McLeod Pitch Method (NSDF via FFT autocorrelation)
 │   ├── pitch/pitch-processor  AudioWorkletProcessor posting {freq, clarity, rms, chroma}
-│   ├── synth.ts               offline guitar: extended Karplus–Strong strings, body resonator, click track
+│   ├── synth.ts               offline guitar: two-polarisation Karplus–Strong strings, pick, body, room, click track
+│   ├── renderBacking.ts       renders a chart in synth.worker.ts (Web Worker), inline fallback
 │   └── metronome/             pure lookahead scheduler + click synthesis
 ├── music/          pitch math, tunings, string colours, string/fret assignment (Viterbi)
 ├── chart/          the app's own chart model + importers + difficulty generator

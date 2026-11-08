@@ -428,6 +428,8 @@ try {
     await p2.goto(`${base}/#/songs`)
     await p2.waitForSelector('text=Ode to Joy', { timeout: 15000 })
     check(true, 'starter songs are in the library')
+    const workerUsed = await p2.evaluate(() => performance.getEntriesByType('resource').some((r) => /synth\.worker/.test(r.name)))
+    check(workerUsed, 'bundled songs were rendered in the synth worker')
     await ctx2.close()
   }
 

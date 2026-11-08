@@ -1,5 +1,6 @@
 import type { Chart } from '../chart/types'
 import { addSong, db, type SongRecord, updateSong } from '../db/db'
+import { renderChartBackingAsync } from '../audio/renderBacking'
 import { SYNTH_SAMPLE_RATE, encodeWav, renderChartBacking, synthAudioName } from '../audio/synth'
 import { amazingGrace } from './tunes/amazingGrace'
 import { dAGroove } from './tunes/dAGroove'
@@ -62,7 +63,7 @@ function install(song: BuiltInSong): Promise<SongRecord> {
   const job = (async () => {
     const existing = await findRecord(song.id)
     if (existing) return existing
-    const samples = renderChartBacking(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
+    const samples = await renderChartBackingAsync(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
     const key = await addSong({
       title: song.title,
       artist: song.artist,
@@ -98,7 +99,7 @@ export function hasStaleAudio(record: Pick<SongRecord, 'builtinId' | 'audioName'
 export async function rerenderBuiltIn(record: SongRecord): Promise<SongRecord> {
   const song = record.builtinId ? builtInSong(record.builtinId) : undefined
   if (!song) return record
-  const samples = renderChartBacking(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
+  const samples = await renderChartBackingAsync(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
   const audioData = await encodeWav(samples, SYNTH_SAMPLE_RATE).arrayBuffer()
   await updateSong(record.id, { audioData, audio: undefined, audioType: 'audio/wav', audioName: synthAudioName(song.id) })
   return (await db.songs.get(record.id)) ?? record
@@ -114,9 +115,9 @@ export async function builtInSongRecord(id: string): Promise<SongRecord> {
 }
 
 /**
- * Drums and click only (no plucks) at 44.1 kHz: what plays while the microphone scores.
- * The synth normalises each render to the same peak, so the drums are rescaled to the level
- * they have inside the full mix; otherwise the backing would be louder than the reference track.
+ * Drums and click only (no plucks) at 44.1 kHz: what plays while the microphone scores. The synth
+ * levels every stem with the gain of the full mix, so this is exactly as loud as the drums are under
+ * the strings. Cached per song for the session.
  */
 const backingCache = new Map<string, Float32Array>()
 
@@ -126,15 +127,6 @@ export function builtInBacking(id: string): Float32Array | null {
   const cached = backingCache.get(id)
   if (cached) return cached
   const drums = renderChartBacking(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: false })
-  const full = renderChartBacking(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
-  let dot = 0
-  let norm = 0
-  for (let i = 0; i < drums.length; i++) {
-    dot += drums[i] * full[i]
-    norm += drums[i] * drums[i]
-  }
-  const gain = norm > 0 ? Math.min(1, Math.max(0.1, dot / norm)) : 1
-  for (let i = 0; i < drums.length; i++) drums[i] *= gain
   backingCache.set(id, drums)
   return drums
 }

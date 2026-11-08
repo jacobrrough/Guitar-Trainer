@@ -1,6 +1,6 @@
 import { encodeWav } from '../audio/synth'
 import { db, updateSong } from '../db/db'
-import { DEMO_AUDIO_NAME, renderDemoAudio } from '../features/library/demoSong'
+import { DEMO_AUDIO_NAME, renderDemoAudioAsync } from '../features/library/demoSong'
 import { hasStaleAudio, rerenderBuiltIn } from './index'
 
 let running: Promise<number> | null = null
@@ -20,7 +20,7 @@ export function refreshSynthesisedAudio(): Promise<number> {
         await rerenderBuiltIn(song)
         count++
       } else if (song.source === 'demo' && song.audioName !== DEMO_AUDIO_NAME) {
-        const audioData = await encodeWav(renderDemoAudio()).arrayBuffer()
+        const audioData = await encodeWav(await renderDemoAudioAsync()).arrayBuffer()
         await updateSong(song.id, { audioData, audio: undefined, audioType: 'audio/wav', audioName: DEMO_AUDIO_NAME })
         count++
       }

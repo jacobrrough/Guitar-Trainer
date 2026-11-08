@@ -1,6 +1,7 @@
 import { constantBeatGrid } from '../../chart/timing'
 import type { Chart, ChartNote } from '../../chart/types'
 import type { NewSong } from '../../db/db'
+import { renderChartBackingAsync } from '../../audio/renderBacking'
 import { encodeWav, renderChartBacking, synthAudioName } from '../../audio/synth'
 
 const TUNING = [40, 45, 50, 55, 59, 64]
@@ -73,6 +74,11 @@ export function demoChart(): Chart {
 
 export function renderDemoAudio(): Float32Array {
   return renderChartBacking(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000 })
+}
+
+/** `renderDemoAudio` off the main thread when possible. */
+export function renderDemoAudioAsync(): Promise<Float32Array> {
+  return renderChartBackingAsync(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000 })
 }
 
 /** The demo's drums and click without the riff: what plays while the microphone scores. */
