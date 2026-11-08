@@ -13,13 +13,18 @@
 - Synthesised demo song for instant onboarding
 - iPhone-ready PWA: install banner, offline service worker, iOS audio unlock and
   audio session handling, wake lock, phone layout; Capacitor config for a native build
+- Coach (Phases 0–2 of ADAPTIVE_TRAINING.md): Today page with planned sessions,
+  generated exercises with synthesised backing, learner model and progress page,
+  placement / checkpoint / monthly skill checks, recommendations, plateau detection
 
 ## Next
 
-0. **Adaptive training ("Coach")** – daily recommended sessions, periodic skill
-   checks, and recommendations driven by measured progress. Full design in
-   [ADAPTIVE_TRAINING.md](ADAPTIVE_TRAINING.md); its Phase 0 covers items 1 and 5 below.
-1. **Section practice** – loop a bar range, auto-slowdown until clean, then speed up.
+0. **Coach Phase 3** – dedicated generators for legato, slides, bends and ear
+   training (today aliased to melodic generators), chroma-based chord scoring so
+   chord skills leave the provisional cap, milestones, reminders. See
+   [ADAPTIVE_TRAINING.md](ADAPTIVE_TRAINING.md) §13.
+1. **Section practice** – loop a bar range, auto-slowdown until clean, then speed up
+   (looping exists inside sessions; expose it in the song player).
 2. **Tab view** – render the real tablature with alphaTab under/instead of the
    highway, with a synced cursor; print/export.
 3. **Better transcription** – stem separation in the browser with

@@ -22,9 +22,12 @@ src/
 │   └── importers/             guitarpro.ts (alphaTab), midi.ts (@tonejs/midi),
 │                              transcribe.ts + transcribe.worker.ts (Basic Pitch),
 │                              tempo-estimate.ts
-├── db/             Dexie database (songs table) and React hooks
-└── features/       UI: library (+ import dialog, demo song), play (highway, scoring),
-                    tuner, metronome, settings (+ latency calibration)
+├── db/             Dexie database (songs + training tables) and React hooks
+├── training/       the Coach: skills graph, learner model, exercise generators,
+│                   session planner, tests, recommendations, store, orchestration
+└── features/       UI: today (session + block runner), progress, test flow,
+                    library (+ import dialog, demo song), play (Player engine,
+                    highway, scoring), tuner, metronome, settings
 ```
 
 ## Data flow
@@ -63,6 +66,27 @@ src/
    The latency setting shifts the scoring clock to compensate for audio I/O delay;
    the Settings page measures it with a click-and-strum calibration.
 
+## Training layer (Coach)
+
+Design: `ADAPTIVE_TRAINING.md`. The code mirrors its sections and is pure apart from
+`store.ts` and `coach.ts`:
+
+| Module | Role |
+|---|---|
+| `types.ts`, `constants.ts` | contracts and every tunable number |
+| `skills.ts` | 25-skill prerequisite graph with tips and generator ids |
+| `performance.ts`, `learner.ts`, `review.ts` | attempt performance and reliability, Elo-style rating update, tempo ceiling, rust, bands, review scheduling, song items |
+| `exercises/` | `ChartBuilder` (beats → chart), nine generators, registry with aliases, backing audio via `audio/synth.ts` |
+| `planner.ts` | session templates, focus selection, song level targeting, test insertion, in-session tempo adaptation |
+| `assessment.ts`, `recommend.ts`, `plateau.ts` | placement ladder, checkpoint and monthly tests, test scheduling, rule-based recommendations, plateau detection |
+| `store.ts`, `useTraining.ts` | Dexie v2 tables, streaks, export/import, read-only live-query hooks |
+| `coach.ts` | orchestration: plan today → build exercise → record attempt → update model → adapt plan; song plays; tests |
+
+The play engine was split into a reusable `Player` (song / exercise / test modes,
+section looping, count-in, mic scoring) that `PlayPage`, the block runner and the
+test flow wrap. `ScoreTracker` reports timing statistics, per-bar accuracy and
+detection coverage, which become the `AttemptResult` the learner model consumes.
+
 ## iOS / PWA layer
 
 - `vite-plugin-pwa` generates the manifest and a Workbox service worker that precaches
@@ -99,8 +123,9 @@ src/
   with the TensorFlow.js CPU backend (~10 s).
 - `npm run test:e2e` – Playwright smoke test against the production build using
   Chromium's fake microphone: navigation, metronome, tuner, demo song play-through
-  to the results screen, persistence, and an end-to-end AI transcription of a
-  synthetic WAV. `BASE_URL=http://localhost:5173 SKIP_TRANSCRIBE=1` runs the fast
+  to the results screen, persistence, an end-to-end AI transcription of a
+  synthetic WAV, and the Coach flow (setup → today's plan → first block → stored
+  attempts). `BASE_URL=http://localhost:5173 SKIP_TRANSCRIBE=1` runs the fast
   subset against a dev server.
 
 Note on TensorFlow.js: Basic Pitch declares `@tensorflow/tfjs ^3`, but 3.21 crashes

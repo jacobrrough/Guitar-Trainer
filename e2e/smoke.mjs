@@ -112,8 +112,13 @@ page.on('console', (msg) => {
 page.on('pageerror', (err) => consoleErrors.push(`pageerror: ${err.message}`))
 
 try {
-  // Library (empty state)
+  // Today (Coach) — first run shows the setup card
   await page.goto(`${base}/#/`)
+  await page.waitForSelector('[data-testid="setup-card"]', { timeout: 15000 })
+  check(true, 'today page shows the setup card on first run')
+
+  // Library (empty state)
+  await page.goto(`${base}/#/songs`)
   await page.waitForSelector('text=Add your first song', { timeout: 15000 })
   check(true, 'library renders the empty state')
   const bannerCount = await page.getByTestId('install-banner').count()
@@ -147,7 +152,7 @@ try {
   await page.screenshot({ path: path.join(OUT, `tuner${SUFFIX}.png`) })
 
   // Demo song → play page
-  await page.goto(`${base}/#/`)
+  await page.goto(`${base}/#/songs`)
   await page.getByTestId('add-demo').click()
   await page.waitForURL(/#\/play\/\d+/, { timeout: 20000 })
   await page.waitForSelector('[data-testid="start"]', { timeout: 15000 })
@@ -205,9 +210,47 @@ try {
   await page.screenshot({ path: path.join(OUT, `results${SUFFIX}.png`) })
 
   // Back to the library: best-score indicator and play count persisted
-  await page.goto(`${base}/#/`)
+  await page.goto(`${base}/#/songs`)
   await page.waitForSelector('text=Demo riff in E minor', { timeout: 10000 })
   check((await page.locator('text=/1 plays/').count()) === 1, 'play count persisted to IndexedDB')
+
+  // Coach: skip placement, get a plan, run the first (warm-up) block to its result
+  await page.goto(`${base}/#/`)
+  await page.waitForSelector('[data-testid="setup-card"]', { timeout: 15000 })
+  await page.getByTestId('setup-skip').click()
+  await page.waitForSelector('[data-testid="plan-block"]', { timeout: 20000 })
+  const blockCount = await page.getByTestId('plan-block').count()
+  check(blockCount >= 3, `today's plan has ${blockCount} blocks`)
+  await page.getByTestId('block-start').first().click()
+  await page.waitForSelector('[data-testid="block-runner"]', { timeout: 15000 })
+  await page.waitForSelector('[data-testid="start"]', { timeout: 15000 })
+  await page.getByTestId('start').click()
+  await page.waitForSelector('[data-testid="countdown"]', { timeout: 10000 })
+  await page.waitForSelector('[data-testid="countdown"]', { state: 'detached', timeout: 15000 })
+  check(await page.evaluate(() => { const el = document.querySelector('audio'); return !!el && !el.paused }), 'exercise backing audio is playing')
+  await page.waitForSelector('[data-testid="rep-card"], [data-testid="block-result"]', { timeout: 90000 })
+  const repCards = await page.getByTestId('rep-card').count()
+  if (repCards > 0) {
+    check(true, 'rep card shown after the first rep')
+    // Finish early so the smoke test stays short
+    const finishEarly = page.getByRole('button', { name: /finish early/i })
+    if (await finishEarly.count()) await finishEarly.click()
+    else await page.getByTestId('next-rep').click()
+    await page.waitForSelector('[data-testid="block-result"]', { timeout: 90000 })
+  }
+  check(true, 'block result shown')
+  await page.goto(`${base}/#/`)
+  await page.waitForSelector('[data-testid="plan-block"]', { timeout: 15000 })
+  const doneRows = await page.locator('[data-testid="plan-block"]:has-text("done")').count()
+  check(doneRows >= 1, `today's plan shows ${doneRows} done block(s)`)
+  const trainingRows = await page.evaluate(async () => {
+    const req = indexedDB.open('guitar-trainer')
+    const dbi = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error) })
+    const count = (store) => new Promise((res, rej) => { const r = dbi.transaction(store, 'readonly').objectStore(store).count(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error) })
+    return { attempts: await count('attempts'), skillStates: await count('skillStates'), sessions: await count('sessions') }
+  })
+  check(trainingRows.attempts >= 1 && trainingRows.skillStates >= 1 && trainingRows.sessions === 1, `training data persisted (${JSON.stringify(trainingRows)})`)
+  await page.screenshot({ path: path.join(OUT, `today${SUFFIX}.png`) })
 
   // Import with AI transcription of a synthetic 4-note WAV (slow on CPU; SKIP_TRANSCRIBE=1 to skip)
   if (process.env.SKIP_TRANSCRIBE) throw new SkipRest()

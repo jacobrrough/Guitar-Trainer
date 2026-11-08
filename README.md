@@ -9,6 +9,12 @@ subscription, no servers: your audio and progress never leave your device.
 
 ## Features
 
+- **Daily coach** – open the app and get today's session: warm-up, a focused technique
+  exercise at the right tempo, your song at the right level, a review of earlier
+  material, and a skill check when one is due. Every block is scored and feeds a per-skill
+  rating; tempos adapt rep by rep; weekly checkpoints and monthly assessments keep the
+  plan honest. Progress page with a skill map and rating history. Design:
+  [docs/ADAPTIVE_TRAINING.md](docs/ADAPTIVE_TRAINING.md).
 - **Play along with difficulty levels** – every song gets six auto-generated levels, from a
   sparse "one note per bar" skeleton up to the full transcription. Low levels keep the
   structurally important notes (downbeats, long notes, phrase starts) and simplify chords
@@ -68,11 +74,13 @@ Source: GitHub Actions*). For hosting under a sub-path, build with `BASE_PATH=/y
 
 1. **Settings** – choose your input (audio interface or microphone) and run *Calibrate* once
    with the speakers/headphones you practise with.
-2. **Songs → Add song** – pick the recording, then the chart source. Fix the title/artist, pick
+2. **Today** – pick your goals and daily minutes, take the placement test (or start as a
+   beginner), then do the session the coach lays out. One block a day keeps the streak.
+3. **Songs → Add song** – pick the recording, then the chart source. Fix the title/artist, pick
    the track for Guitar Pro/MIDI files, set a chart offset if the recording has a count-in.
-3. **Play** – start at the suggested level. 90 %+ accuracy unlocks a "level up" suggestion;
+4. **Play** – start at the suggested level. 90 %+ accuracy unlocks a "level up" suggestion;
    under 60 % the game suggests an easier level or a slower speed.
-4. **Tuner / Metronome** – available any time from the sidebar.
+5. **Progress / Tuner / Metronome** – available any time from the sidebar.
 
 Plug the guitar in through an audio interface for the cleanest detection; a laptop microphone
 works for acoustic and clean tones. Distorted tones: lower *Detection sensitivity* in Settings.
@@ -100,10 +108,8 @@ the choices, including projects we deliberately do not depend on, is in
 
 ## Where it's going
 
-An adaptive daily training system (recommended sessions, periodic skill checks,
-progress-driven recommendations) is designed in
-[docs/ADAPTIVE_TRAINING.md](docs/ADAPTIVE_TRAINING.md); the wider list is in
-[docs/ROADMAP.md](docs/ROADMAP.md).
+See [docs/ROADMAP.md](docs/ROADMAP.md); the Coach's remaining phases are in
+[docs/ADAPTIVE_TRAINING.md](docs/ADAPTIVE_TRAINING.md) §13.
 
 ## Architecture
 
