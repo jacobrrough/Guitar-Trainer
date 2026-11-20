@@ -4,13 +4,11 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { LEVELS, generateLevels, suggestedLevel } from '../../chart/difficulty'
 import { chartBpm } from '../../chart/types'
 import { Button, Select, cx } from '../../components/ui'
-import { recordResult, songAudioBlob, type SongRecord } from '../../db/db'
+import { recordResult, type SongRecord } from '../../db/db'
 import { useSong } from '../../db/useSongs'
 import { tuningLabel } from '../../music/tunings'
 import { getSettings, useSettings } from '../../app/settings'
-import { encodeWav } from '../../audio/synth'
-import { renderDemoBacking } from '../library/demoSong'
-import { builtInBacking } from '../../songs'
+import { songPlayback } from '../../songs/playback'
 import { recordSongPlay } from '../../training/coach'
 import type { AttemptResult } from '../../training/types'
 import { Player, type PlayerHandle } from './Player'
@@ -147,16 +145,9 @@ export function PlayPage() {
   const songQuery = useSong(Number.isFinite(id) ? id : null)
   const song: SongRecord | null = songQuery === 'loading' ? null : songQuery
   const levels = useMemo(() => (song ? generateLevels(song.chart) : null), [song])
-  const audio = useMemo(() => (song ? songAudioBlob(song) : null), [song])
-  // The demo's stored WAV plays the riff itself; while the microphone scores we play drums only, so a phone speaker cannot score itself.
-  const demoBacking = useMemo(() => {
-    if (song?.source === 'demo') return encodeWav(renderDemoBacking())
-    if (song?.source === 'builtin' && song.builtinId) {
-      const pcm = builtInBacking(song.builtinId)
-      return pcm ? encodeWav(pcm) : null
-    }
-    return null
-  }, [song])
+  // The app's own songs store the guitar part itself; while the microphone scores only their click track plays (see songPlayback).
+  const playback = useMemo(() => (song ? songPlayback(song) : null), [song])
+  const audio = playback?.audio ?? null
   const chart = useMemo(() => (song ? { ...song.chart, duration: Math.max(song.chart.duration, song.duration) } : null), [song])
   const [levelIdx, setLevelIdx] = useState<number | null>(null)
   const [speed, setSpeed] = useState(1)
@@ -353,8 +344,9 @@ export function PlayPage() {
       subtitle={`${song.artist || 'Unknown artist'} · ${tuningLabel(chart.tuning)}${chart.capo ? ` · capo ${chart.capo}` : ''} · ${Math.round(chartBpm(chart))} bpm`}
       chart={chart}
       notes={levels[li].notes}
-      audio={demoBacking ?? audio}
-      guideAudio={demoBacking ? audio : null}
+      audio={audio}
+      guideAudio={playback?.guide ?? null}
+      backingIsClick={playback?.clickOnly ?? false}
       mode="song"
       speed={speed}
       playedTempo={chartBpm(chart) * speed}

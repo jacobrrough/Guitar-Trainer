@@ -123,6 +123,7 @@ the choices, including projects we deliberately do not depend on, is in
 | MIDI parsing | [@tonejs/midi] (MIT) |
 | Music theory | [tonal] (MIT) |
 | Local storage | [Dexie] (Apache-2.0) |
+| The guitar you hear | recordings of a steel-string guitar from the [University of Iowa Musical Instrument Samples], as edited in [tonejs-instruments] (CC BY 3.0) |
 | Pitch detection, metronome, difficulty, highway, scoring | our own code (MIT) |
 
 [alphaTab]: https://github.com/coderline/alphaTab
@@ -130,6 +131,8 @@ the choices, including projects we deliberately do not depend on, is in
 [@tonejs/midi]: https://github.com/Tonejs/Midi
 [tonal]: https://github.com/tonaljs/tonal
 [Dexie]: https://dexie.org
+[University of Iowa Musical Instrument Samples]: http://theremin.music.uiowa.edu/
+[tonejs-instruments]: https://github.com/nbrosowsky/tonejs-instruments
 
 ## Where it's going
 
@@ -158,4 +161,5 @@ never commit copyrighted audio or tabs.
 ## License
 
 MIT – see [LICENSE](LICENSE). Bundled model weights for Basic Pitch are Apache-2.0
-(`public/models/basic-pitch/LICENSE`).
+(`public/models/basic-pitch/LICENSE`). The guitar samples are CC BY 3.0
+(`public/samples/CREDITS.txt` names the source and the changes made).

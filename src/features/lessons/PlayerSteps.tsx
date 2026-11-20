@@ -5,10 +5,12 @@ import { LEVELS, generateLevels } from '../../chart/difficulty'
 import { chartBpm } from '../../chart/types'
 import { ChordBox } from '../../components/diagrams'
 import { Badge, Button } from '../../components/ui'
-import { recordResult, songAudioBlob, type SongRecord } from '../../db/db'
+import { recordResult, type SongRecord } from '../../db/db'
 import type { Lesson, LessonDrill, LessonPlay } from '../../lessons/types'
 import { getTuning } from '../../music/tunings'
-import { builtInBacking, builtInSong, builtInSongRecord } from '../../songs'
+import { builtInSong, builtInSongRecord } from '../../songs'
+import { songPlayback } from '../../songs/playback'
+import { useExerciseGuide } from '../play/useExerciseGuide'
 import { recordLessonDrill, recordSongPlay } from '../../training/coach'
 import { exerciseParams, generateExercise } from '../../training/exercises'
 import { renderExerciseBacking } from '../../training/exercises/backing'
@@ -112,7 +114,7 @@ export function TryStep({ lesson, drill, onExit, onContinue }: { lesson: Lesson;
   }, [lesson.id, tuningKey])
   const exercise = built.exercise
   const audio = useMemo(() => (exercise?.backing ? encodeWav(exercise.backing, exercise.backingSampleRate) : null), [exercise])
-  const guideAudio = useMemo(() => (exercise?.guide ? encodeWav(exercise.guide, exercise.backingSampleRate) : null), [exercise])
+  const { guide: guideAudio, ready: guideReady } = useExerciseGuide(exercise)
 
   if (!exercise || !audio) {
     return (
@@ -151,6 +153,8 @@ export function TryStep({ lesson, drill, onExit, onContinue }: { lesson: Lesson;
     ? 'That is enough to move on. You can go again if you want more practice.'
     : 'Listen first, then go again. Each try gets a little easier.'
 
+  if (!guideReady) return <div className="flex h-dvh items-center justify-center text-muted" data-testid="lesson-try-loading">Getting your practice ready…</div>
+
   return (
     <div data-testid="lesson-try" className="h-dvh">
       <Player
@@ -162,6 +166,7 @@ export function TryStep({ lesson, drill, onExit, onContinue }: { lesson: Lesson;
         notes={exercise.chart.notes}
         audio={audio}
         guideAudio={guideAudio}
+        backingIsClick
         playedTempo={drill.tempo}
         targetTempo={drill.tempo}
         readyHint={exercise.instructions}
@@ -199,11 +204,9 @@ export function PlayStep({ lesson, play, onExit, onContinue }: { lesson: Lesson;
     if (!record) return null
     const levels = generateLevels(record.chart)
     const level = Math.max(0, Math.min(levels.length - 1, play.level))
-    const guide = songAudioBlob(record)
-    const drums = builtInBacking(play.songId)
-    const audio = drums ? encodeWav(drums) : guide
+    const { audio, guide, clickOnly } = songPlayback(record)
     if (!audio) return null
-    return { level, notes: levels[level].notes, audio, guide: drums ? guide : null, chart: { ...record.chart, duration: Math.max(record.chart.duration, record.duration) } }
+    return { level, notes: levels[level].notes, audio, guide, clickOnly, chart: { ...record.chart, duration: Math.max(record.chart.duration, record.duration) } }
   }, [record, play.songId, play.level])
 
   if (error || (record && !prepared)) {
@@ -271,6 +274,7 @@ export function PlayStep({ lesson, play, onExit, onContinue }: { lesson: Lesson;
         notes={prepared.notes}
         audio={prepared.audio}
         guideAudio={prepared.guide}
+        backingIsClick={prepared.clickOnly}
         speed={play.speed}
         playedTempo={bpm * play.speed}
         targetTempo={bpm}

@@ -5,8 +5,11 @@ export interface PitchFrame {
   freq: number
   clarity: number
   rms: number
-  /** 12-bin pitch-class energy (C = 0), max-normalised; present only while chroma analysis is enabled. */
-  chroma?: Float32Array
+  /** Spectral peaks of the last ~90 ms as [freq, amp, ...] pairs; present only while spectrum analysis is enabled (a run is being scored). */
+  peaks?: Float32Array
+  /** Attack strength of the last hop, wide-band and in the 600 Hz - 4 kHz band (see FrameAnalyzer); present only while spectrum analysis is enabled. */
+  flux?: number
+  fluxBand?: number
   /** AudioContext time at which the frame was analysed. */
   time: number
 }
@@ -41,8 +44,13 @@ class AudioEngine {
   private _micActive = false
   private _micDeviceId: string | undefined
   private unlocked = false
-  private chromaEnabled = false
+  private spectrumEnabled = false
   private lastMicOptions: MicOptions = {}
+  /** Bumped by every startMic and stopMic: a start that was overtaken while it awaited gives its stream back. */
+  private micGeneration = 0
+  private micStarts = 0
+  private releaseTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly micListeners = new Set<() => void>()
 
   get context(): AudioContext {
     if (!this.ctx) {
@@ -154,7 +162,7 @@ class AudioEngine {
 
   /** After backgrounding or a call iOS leaves the mic track muted/ended; reopen it. */
   private async recoverMic(): Promise<void> {
-    if (!this._micActive) return
+    if (!this._micActive || this.micStarts > 0) return
     const track = this.stream?.getAudioTracks()[0]
     if (track && track.readyState === 'live' && !track.muted) return
     try {
@@ -164,15 +172,45 @@ class AudioEngine {
     }
   }
 
+  /**
+   * Opens the microphone and starts the detector. Calls are safe to overlap (a second tap while the
+   * permission prompt is up, a recovery racing a start): the latest call wins and an overtaken one
+   * closes the stream it opened, so no microphone is ever left running without an owner.
+   */
   async startMic(options: MicOptions = {}): Promise<void> {
-    await this.resume()
-    this.stopMic()
+    const generation = ++this.micGeneration
+    const overtaken = () => generation !== this.micGeneration
+    this.cancelRelease()
+    this.micStarts++
+    let stream: MediaStream | null = null
+    try {
+      await this.resume()
+      if (overtaken()) return
+      this.teardownMic()
+      this.lastMicOptions = options
+      // iOS: ask for a session that records and plays through the speaker at full volume.
+      setAudioSessionType('play-and-record')
+      stream = await this.openMicStream(options)
+      if (!overtaken()) await this.ensureWorklet()
+      if (overtaken()) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
+      this.installMic(stream, options)
+    } catch (err) {
+      stream?.getTracks().forEach((t) => t.stop())
+      if (!overtaken()) {
+        this.teardownMic()
+        setAudioSessionType('playback')
+      }
+      throw err
+    } finally {
+      this.micStarts--
+    }
+  }
+
+  private installMic(stream: MediaStream, options: MicOptions): void {
     const ctx = this.context
-    this.lastMicOptions = options
-    // iOS: ask for a session that records and plays through the speaker at full volume.
-    setAudioSessionType('play-and-record')
-    const stream = await this.openMicStream(options)
-    await this.ensureWorklet()
     this.stream = stream
     this.source = ctx.createMediaStreamSource(stream)
     this.worklet = new AudioWorkletNode(ctx, 'pitch-processor', {
@@ -181,7 +219,7 @@ class AudioEngine {
       channelCount: 1,
       processorOptions: {
         windowSize: 2048,
-        chromaWindow: 4096,
+        spectrumWindow: 4096,
         hop: 512,
         minFreq: options.minFreq ?? 55,
         maxFreq: options.maxFreq ?? 1500,
@@ -191,38 +229,51 @@ class AudioEngine {
     this.worklet.port.onmessage = (e: MessageEvent) => {
       const d = e.data
       if (d?.type === 'pitch') {
-        const frame: PitchFrame = { freq: d.freq, clarity: d.clarity, rms: d.rms, time: d.time, chroma: d.chroma }
+        const frame: PitchFrame = { freq: d.freq, clarity: d.clarity, rms: d.rms, time: d.time, peaks: d.peaks, flux: d.flux, fluxBand: d.fluxBand }
         for (const l of this.listeners) l(frame)
       }
     }
-    if (this.chromaEnabled) this.worklet.port.postMessage({ type: 'configure', chroma: true })
+    if (this.spectrumEnabled) this.worklet.port.postMessage({ type: 'configure', spectrum: true })
     // A silent sink guarantees the graph is pulled by the destination.
     this.sink = ctx.createGain()
     this.sink.gain.value = 0
     this.source.connect(this.worklet)
     this.worklet.connect(this.sink)
     this.sink.connect(ctx.destination)
-    this._micActive = true
     stream.getAudioTracks()[0]?.addEventListener('unmute', () => void this.recoverMic())
     this._micDeviceId = stream.getAudioTracks()[0]?.getSettings().deviceId ?? options.deviceId
+    this.setMicActive(true)
   }
 
-  configureDetector(opts: { minFreq?: number; maxFreq?: number; threshold?: number; chroma?: boolean }): void {
-    if (opts.chroma !== undefined) this.chromaEnabled = opts.chroma
+  private setMicActive(active: boolean): void {
+    if (this._micActive === active) return
+    this._micActive = active
+    for (const l of this.micListeners) l()
+  }
+
+  /** Calls `listener` whenever the microphone goes on or off (for `useSyncExternalStore`). */
+  subscribeMic(listener: () => void): () => void {
+    this.micListeners.add(listener)
+    return () => {
+      this.micListeners.delete(listener)
+    }
+  }
+
+  configureDetector(opts: { minFreq?: number; maxFreq?: number; threshold?: number }): void {
     this.worklet?.port.postMessage({ type: 'configure', ...opts })
   }
 
   /**
-   * Turns per-frame chroma analysis on or off (used for chord scoring). The flag
+   * Turns per-frame spectrum analysis on or off (the scorer needs it; the tuner does not). The flag
    * survives mic restarts, so it can be set before `startMic`.
    */
-  setChroma(enabled: boolean): void {
-    if (this.chromaEnabled === enabled) return
-    this.chromaEnabled = enabled
-    this.worklet?.port.postMessage({ type: 'configure', chroma: enabled })
+  setSpectrum(enabled: boolean): void {
+    if (this.spectrumEnabled === enabled) return
+    this.spectrumEnabled = enabled
+    this.worklet?.port.postMessage({ type: 'configure', spectrum: enabled })
   }
 
-  stopMic(): void {
+  private teardownMic(): void {
     this.worklet?.port.close()
     this.worklet?.disconnect()
     this.source?.disconnect()
@@ -232,8 +283,40 @@ class AudioEngine {
     this.source = null
     this.sink = null
     this.stream = null
+  }
+
+  private cancelRelease(): void {
+    if (this.releaseTimer !== null) clearTimeout(this.releaseTimer)
+    this.releaseTimer = null
+  }
+
+  /** Closes the microphone now (and cancels a start that is still under way). */
+  stopMic(): void {
+    this.micGeneration++
+    this.cancelRelease()
+    this.teardownMic()
     if (this._micActive) setAudioSessionType('playback')
-    this._micActive = false
+    this.setMicActive(false)
+  }
+
+  /**
+   * For a screen that is going away: closes the microphone in a moment, unless the screen replacing
+   * it claims it first (`claimMic`) or starts it again. Stopping at once would cut the microphone from
+   * under the next screen, whose own start then races the stop.
+   */
+  releaseMic(): void {
+    this.cancelRelease()
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = null
+      this.stopMic()
+    }, 250)
+  }
+
+  /** Takes over a running microphone from the screen before (cancelling its `releaseMic`). Returns whether one is running. */
+  claimMic(): boolean {
+    if (!this._micActive) return false
+    this.cancelRelease()
+    return true
   }
 
   subscribe(listener: PitchListener): () => void {

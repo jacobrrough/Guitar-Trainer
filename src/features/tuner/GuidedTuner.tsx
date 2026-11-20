@@ -2,7 +2,9 @@ import { ArrowLeft, Check, Mic } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useSettings } from "../../app/settings";
+import { useWakeLock } from "../../app/useWakeLock";
 import { audioEngine } from "../../audio/AudioEngine";
+import { useMicActive } from "../../audio/useMicActive";
 import { Illustration } from "../../components/diagrams";
 import { Button, Card, PageHeader, cx } from "../../components/ui";
 import { centsOff } from "../../music/pitch";
@@ -43,9 +45,8 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
   const settings = useSettings();
   const tuning = getTuning(settings.tunerTuningId);
   const total = tuning.strings.length;
-  const [listening, setListening] = useState(
-    () => !!autoStart && audioEngine.micActive,
-  );
+  // Follows the audio engine, so a microphone that another screen closed never shows as listening.
+  const listening = useMicActive();
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [ticked, setTicked] = useState(false);
@@ -73,13 +74,18 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
     latest.current.cents = cents;
   }, [cents]);
 
-  useEffect(
-    () => () => {
-      audioEngine.stopMic();
+  useWakeLock(listening);
+
+  // Take over the microphone from the screen before (the wizard's mic check, the tuner), or open it:
+  // permission was given there, so no tap is needed.
+  const startRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    if (autoStart && !audioEngine.claimMic()) void startRef.current();
+    return () => {
+      audioEngine.releaseMic();
       if (advanceTimer.current) clearTimeout(advanceTimer.current);
-    },
-    [],
-  );
+    };
+  }, [autoStart]);
 
   const goTo = useCallback((i: number) => {
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
@@ -129,14 +135,13 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
         threshold: 0.93,
         echoCancellation: settings.echoCancellation,
       });
-      setListening(true);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not access the microphone",
       );
-      setListening(false);
     }
   };
+  startRef.current = start;
 
   const header = (
     <PageHeader

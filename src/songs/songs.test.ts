@@ -2,10 +2,12 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../db/db'
 import { BUILT_IN_SONGS, builtInBacking, builtInSong, builtInSongRecord, installBuiltInSongs } from './index'
-import { renderChartBacking, synthAudioName } from '../audio/synth'
+import { setGuitarBankForTests } from '../audio/guitar'
+import { loadRealBank } from '../audio/instrument/realBank.testutil'
+import { renderChartBacking, renderDrums, synthAudioName } from '../audio/synth'
 import { addSong } from '../db/db'
-import { createDemoSong, DEMO_AUDIO_NAME } from '../features/library/demoSong'
-import { refreshSynthesisedAudio } from './refresh'
+import { createDemoSong, DEMO_AUDIO_BASE } from '../features/library/demoSong'
+import { refreshRenderedAudio } from './refresh'
 
 const IDS = [
   'open-strings-groove', 'ode-to-joy', 'twinkle-twinkle', 'happy-birthday', 'jingle-bells', 'first-riff',
@@ -66,22 +68,50 @@ describe('built-in songs', () => {
       expect(rows.every((r) => r.source === 'builtin')).toBe(true)
     }, 60_000)
 
-    it('renders audio again for songs stored by an older synth, keeping scores', async () => {
+    it('renders audio again for songs stored by an older renderer, keeping scores', async () => {
       const rec = await builtInSongRecord('ode-to-joy')
-      expect(rec.audioName).toBe(synthAudioName('ode-to-joy'))
-      await db.songs.update(rec.id, { audioName: 'ode-to-joy.wav', playCount: 3 })
-      const demoId = await addSong(createDemoSong())
+      expect(rec.audioName).toBe(synthAudioName('ode-to-joy', null))
+      await db.songs.update(rec.id, { audioName: 'ode-to-joy.v3.wav', playCount: 3 })
+      const demoId = await addSong(await createDemoSong())
       await db.songs.update(demoId, { audioName: 'demo-riff.wav' })
-      expect(await refreshSynthesisedAudio()).toBe(2)
+      expect(await refreshRenderedAudio()).toBe(2)
       const fresh = await db.songs.get(rec.id)
-      expect(fresh?.audioName).toBe(synthAudioName('ode-to-joy'))
+      expect(fresh?.audioName).toBe(synthAudioName('ode-to-joy', null))
       expect(fresh?.playCount).toBe(3)
       expect(fresh?.audioData?.byteLength).toBeGreaterThan(1000)
-      expect((await db.songs.get(demoId))?.audioName).toBe(DEMO_AUDIO_NAME)
-      expect(await refreshSynthesisedAudio()).toBe(0)
+      expect((await db.songs.get(demoId))?.audioName).toBe(synthAudioName(DEMO_AUDIO_BASE, null))
+      expect(await refreshRenderedAudio()).toBe(0)
       // builtInSongRecord refreshes on its own too
       await db.songs.update(rec.id, { audioName: 'ode-to-joy.wav' })
-      expect((await builtInSongRecord('ode-to-joy')).audioName).toBe(synthAudioName('ode-to-joy'))
+      expect((await builtInSongRecord('ode-to-joy')).audioName).toBe(synthAudioName('ode-to-joy', null))
+    }, 30_000)
+
+    it('upgrades songs rendered by the string model once the recorded guitar is available, and never the other way', async () => {
+      const rec = await builtInSongRecord('ode-to-joy')
+      expect(rec.audioName).toBe(synthAudioName('ode-to-joy', null))
+      const bank = await loadRealBank()
+      setGuitarBankForTests(bank)
+      try {
+        expect(await refreshRenderedAudio()).toBe(1)
+        const sampled = await db.songs.get(rec.id)
+        expect(sampled?.audioName).toBe(synthAudioName('ode-to-joy', bank.version))
+        expect(sampled?.audioData?.byteLength).not.toBe(rec.audioData?.byteLength === undefined ? -1 : 0)
+        // Samples unavailable again (offline before they were cached): the sampled render stays.
+        setGuitarBankForTests(null)
+        expect(await refreshRenderedAudio()).toBe(0)
+        expect((await db.songs.get(rec.id))?.audioName).toBe(synthAudioName('ode-to-joy', bank.version))
+      } finally {
+        setGuitarBankForTests(null)
+      }
+    }, 30_000)
+
+    it('a song deleted while its audio renders is not brought back', async () => {
+      const rec = await builtInSongRecord('ode-to-joy')
+      await db.songs.update(rec.id, { audioName: 'ode-to-joy.wav' })
+      const refreshing = refreshRenderedAudio()
+      await db.songs.delete(rec.id)
+      await refreshing
+      expect(await db.songs.count()).toBe(0)
     }, 30_000)
 
     it('builtInSongRecord installs a single song', async () => {
@@ -93,11 +123,13 @@ describe('built-in songs', () => {
     })
   })
 
-  it('backing is drums only: same length, less energy where the melody plays', () => {
+  it('the scoring backing is the click track alone: same length as the song, no guitar in it', () => {
     const song = builtInSong('ode-to-joy')!
     const full = renderChartBacking(song.chart, { plucks: true, click: true, seed: 1000 })
     const backing = builtInBacking('ode-to-joy')!
     expect(backing.length).toBe(full.length)
+    expect(backing).toEqual(renderDrums(song.chart))
+    expect(builtInBacking('ode-to-joy')).toBe(backing)
     const bar = Math.round(4 * (60 / song.bpm) * 44100)
     const rms = (a: Float32Array) => {
       let s = 0

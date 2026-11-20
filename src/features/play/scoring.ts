@@ -2,9 +2,10 @@ import type { OctaveTolerance } from '../../app/settings'
 import { groupNotes, type NoteGroup } from '../../chart/events'
 import type { Beat, ChartNote } from '../../chart/types'
 import { findBeatIndex } from '../../chart/timing'
-import { chordMatch } from '../../audio/pitch/chroma'
+import { midiToFreq } from '../../music/pitch'
 import { BEND_TOLERANCE_SEMIS, WEAK_BAR_ACCURACY } from '../../training/constants'
 import type { AttemptResult } from '../../training/types'
+import { HARMONIC_TOLERANCE_CENTS, RISE, freshNote, noteEvidence, peakNear, strongestPeak, type NoteEvidence } from './noteEvidence'
 
 /** Timing windows in seconds of real time (scaled by playback speed into song time). */
 export interface HitWindow {
@@ -27,7 +28,7 @@ export interface GroupState {
   judgement?: Judgement
   /** Signed timing error in seconds (positive = late). */
   delta?: number
-  /** Song time at which the group was hit. */
+  /** Song time at which the group was recognised. */
   hitAt?: number
 }
 
@@ -39,7 +40,7 @@ export interface ScoreSummary {
   perfects: number
   goods: number
   misses: number
-  /** Groups that count (not skipped). */
+  /** Groups that count (not skipped), over every pass of a loop. */
   total: number
   /** Groups resolved so far. */
   judged: number
@@ -50,15 +51,12 @@ export interface ScoreSummary {
 export interface ScoreOptions {
   window?: Partial<HitWindow>
   octaveTolerance?: OctaveTolerance
-  /** Pitch tolerance in cents. */
-  centsTolerance?: number
+  /** Reference pitch of A4 in Hz. */
+  a4?: number
   /** Beat grid; enables per-bar statistics. */
   beats?: Beat[]
-  /**
-   * How chord groups are judged: 'pitch' (default) matches any single detected pitch of the chord;
-   * 'chroma' judges them from accumulated pitch-class energy fed through `onChroma`.
-   */
-  chordScoring?: 'pitch' | 'chroma'
+  /** Overrides of the recognition thresholds (for tuning and tests). */
+  recognition?: Partial<Record<keyof typeof RECOGNITION, number>>
 }
 
 export function pitchMatches(detected: number, target: number, toleranceSemis: number, allowOctave: boolean): boolean {
@@ -67,38 +65,149 @@ export function pitchMatches(detected: number, target: number, toleranceSemis: n
   return allowOctave && (Math.abs(d - 12) <= toleranceSemis || Math.abs(d + 12) <= toleranceSemis)
 }
 
-/** True when a chord group (same chordId, >= 2 notes) spans at least two distinct pitch classes. */
-function isChromaChord(notes: ChartNote[]): boolean {
-  if (notes.length < 2) return false
-  const first = ((Math.round(notes[0].midi) % 12) + 12) % 12
-  return notes.some((n) => ((Math.round(n.midi) % 12) + 12) % 12 !== first)
+/**
+ * How a note is recognised. All durations are real time; the tracker scales them by playback speed.
+ * The values were tuned against the recorded guitar (see scoring.sim.test.ts): every lesson drill,
+ * bundled song and exercise played exactly scores in full, and silence, the click track, strings
+ * left ringing and wrong notes do not score.
+ */
+export const RECOGNITION = {
+  /** Harmonics that must have risen for a single note (two above 700 Hz, where fewer fit under the analyser's top). */
+  minRisen: 3,
+  minRisenHigh: 2,
+  /** Smallest combined rise that counts: quieter is noise. */
+  minStrength: 0.002,
+  /** Share of the rise that must sit on the fundamental, third or fifth harmonic; the octave above only raises the even ones. */
+  oddShare: 0.12,
+  /** A rise at 0.5x, 1.5x, 2.5x the fundamental this large (relative to the note's own) means the octave below was played. */
+  belowRatio: 0.3,
+  /** Share of a chord's notes that must have been struck (and every pitch class at least once). */
+  chordShare: 0.6,
+  /** A chord note this much weaker than the chord's strongest is a stray peak, not a struck string. */
+  chordFloor: 0.12,
+  /**
+   * More than this share of the stroke's energy outside the chord's own harmonics means another chord
+   * was played. At 0.3 every open chord passes, also with one extra open string caught by the strum,
+   * and its relative chord (A minor for C) does not.
+   */
+  foreign: 0.3,
+  /** A strum takes up to 70 ms to cross the strings: a chord is judged this long after its first stroke. */
+  settleChord: 0.15,
+  /** ...and its look-back for the moment before the attack reaches further. */
+  lookFromChord: 0.3,
+  /** The moment before the attack is looked for between these many seconds ago. */
+  lookFrom: 0.2,
+  lookTo: 0.035,
+  /** Consecutive frames that must agree. */
+  confirm: 2,
+  /**
+   * Seconds after the attack before a note is accepted: until the new note fills enough of the
+   * analysis window its partials cannot be placed to the semitone. Low notes need longest.
+   */
+  settleLow: 0.085,
+  settleMid: 0.07,
+  settleHigh: 0.045,
+  /** How long after a note's window closes a late attack inside it can still be confirmed. */
+  verifyFor: 0.25,
+  /** Typical delay between an attack and the first frame that confirms it. */
+  attackLag: 0.045,
+  /** An attack shows as attack strength this many times its calm level, most of it gained in one hop. */
+  fluxBump: 1.3,
+  /** Two confirmations this close together are the same stroke. */
+  sameAttack: 0.06,
+  /** Without a visible stroke, a rise this deep from the moment before (a string struck again after dying down) still counts. */
+  deepRise: 1.6,
+  /** After a stroke, the same pitch is compared with frames at least this much later: by then the stroke fills the analysis window. */
+  refill: 0.08,
+  /** The attack-strength rise lags the stroke by about half an analysis hop. */
+  onsetLag: 0.006,
+  /** A frame counts as sound for coverage when its strongest partial reaches this amplitude. */
+  heard: 0.003,
+} as const
+
+interface SpectralFrame {
+  /** Song time of the frame. */
+  t: number
+  peaks: Float32Array
+  /** Attack strength, wide-band and band-limited. */
+  flux: number
+  fluxBand: number
+  strongest: number
 }
 
-/** True when any chord in the chart spans >= 2 distinct pitch classes (so chroma scoring is meaningful). */
-export function hasChordGroups(notes: ChartNote[]): boolean {
-  return groupNotes(notes).some((g) => isChromaChord(g.notes))
+interface Tracked extends GroupState {
+  freqs: number[]
+  /** Consecutive frames that have confirmed this group, and when that run began. */
+  streak: number
+  since: number
+  midis: number[]
+  /** Seconds a stroke needs before this group's pitches can be told to the semitone. */
+  settle: number
+  /** Notes that may arrive without a pick stroke at their own time (bends, slides, hammer-ons, pull-offs). */
+  legato: boolean
+  inRange: boolean
+  /** The microphone picked up sound during this group's window. */
+  heard: boolean
 }
 
+interface Carried {
+  perfects: number
+  goods: number
+  misses: number
+  score: number
+  deltas: number[]
+  passes: number
+  /** Coverage counts of earlier passes. */
+  heard: number
+  resolved: number
+}
+
+const EMPTY_PEAKS = new Float32Array(0)
+
+/** What the sound was like before a possible stroke. */
+interface Before {
+  /** A note's harmonics then (null: nothing was sounding). */
+  evidence(freq: number, cents: number): NoteEvidence | null
+  /** Amplitude of the partial at `freq` then. */
+  amp(freq: number): number
+}
+
+const SILENCE: Before = { evidence: () => null, amp: () => 0 }
+
+function settleFor(lowestFreq: number): number {
+  return lowestFreq < 150 ? RECOGNITION.settleLow : lowestFreq < 300 ? RECOGNITION.settleMid : RECOGNITION.settleHigh
+}
+const HISTORY_SECONDS = 0.6
+
+/**
+ * Scores what the microphone hears against the notes of a chart.
+ *
+ * Every analysis frame carries the spectral peaks of the last ~90 ms and the attack strength of the
+ * last hop. A note (or chord) is hit when its own harmonics have risen from where they were a moment
+ * ago, which is what a fresh stroke does and what a string that is merely still ringing, a drum, or
+ * a different note does not, and the hit is timed from the attack itself, not from when the pitch
+ * became clear. That keeps timing accurate to a few milliseconds whatever the pitch and makes
+ * recognition work while other strings ring.
+ */
 export class ScoreTracker {
   readonly groups: GroupState[]
-  private readonly byNote = new Map<number, GroupState>()
+  private readonly tracked: Tracked[]
+  private readonly byNote = new Map<number, Tracked>()
   private readonly baseWindow: HitWindow
   private readonly octave: OctaveTolerance
-  private readonly tolerance: number
+  private readonly foreign: number
   private speed = 1
   private cursor = 0
   /** Bar index per group (parallel to groups); empty when no beats were given. */
   private readonly groupBars: number[] = []
   private readonly hasBeats: boolean
   private covCursor = 0
-  private expectedFrames = 0
-  private heardFrames = 0
-  private lastHit: { midi: number; time: number } | null = null
-  /** True once a new pick (attack), silence or a different pitch has been heard since the last hit. */
-  private armed = true
-  private readonly mode: 'pitch' | 'chroma'
-  /** Per-group accumulated chroma (chroma mode), keyed by group; dropped when the group resolves. */
-  private readonly chromaAcc = new Map<GroupState, { sum: Float32Array; first: number }>()
+  private history: SpectralFrame[] = []
+  /** Strokes that have scored a group, and the pitches they scored (a stroke scores a pitch once). */
+  private usedAttacks: { t: number; midis: number[] }[] = []
+  /** When each pitch (rounded MIDI) was last struck and scored. */
+  private lastStruck = new Map<number, number>()
+  private carried: Carried = { perfects: 0, goods: 0, misses: 0, score: 0, deltas: [], passes: 0, heard: 0, resolved: 0 }
   score = 0
   streak = 0
   maxStreak = 0
@@ -107,12 +216,24 @@ export class ScoreTracker {
   misses = 0
 
   constructor(notes: ChartNote[], opts: ScoreOptions = {}) {
-    this.groups = groupNotes(notes).map((group) => ({ group, status: 'pending' as GroupStatus }))
-    for (const g of this.groups) for (const n of g.group.notes) this.byNote.set(n.id, g)
-    this.mode = opts.chordScoring ?? 'pitch'
+    const a4 = opts.a4 ?? 440
+    this.tracked = groupNotes(notes).map((group) => ({
+      group,
+      status: 'pending' as GroupStatus,
+      freqs: group.notes.map((n) => midiToFreq(n.midi, a4)),
+      streak: 0,
+      since: 0,
+      midis: group.notes.map((n) => Math.round(n.midi)),
+      settle: group.notes.length > 1 ? RECOGNITION.settleChord : settleFor(Math.min(...group.notes.map((n) => midiToFreq(n.midi, a4)))),
+      heard: false,
+      legato: group.notes.some((n) => !!n.tech && (!!n.tech.bend || !!n.tech.slideIn || !!n.tech.hammerOn || !!n.tech.pullOff)),
+      inRange: true,
+    }))
+    this.groups = this.tracked
+    for (const g of this.tracked) for (const n of g.group.notes) this.byNote.set(n.id, g)
     this.baseWindow = { ...DEFAULT_WINDOW, ...opts.window }
     this.octave = opts.octaveTolerance ?? 'chords'
-    this.tolerance = (opts.centsTolerance ?? 60) / 100
+    this.foreign = opts.recognition?.foreign ?? RECOGNITION.foreign
     const beats = opts.beats
     this.hasBeats = !!beats && beats.length > 0
     if (beats && this.hasBeats) {
@@ -133,11 +254,6 @@ export class ScoreTracker {
     return { perfect: this.baseWindow.perfect * s, good: this.baseWindow.good * s, early: this.baseWindow.early * s, late: this.baseWindow.late * s }
   }
 
-  /** Chord scoring mode this tracker was created with. */
-  get chordScoring(): 'pitch' | 'chroma' {
-    return this.mode
-  }
-
   get multiplier(): number {
     return 1 + Math.min(3, Math.floor(this.streak / 10))
   }
@@ -146,47 +262,89 @@ export class ScoreTracker {
     return this.byNote.get(noteId)
   }
 
-  reset(): void {
-    for (const g of this.groups) {
-      g.status = 'pending'
+  private clearPass(): void {
+    for (const g of this.tracked) {
+      g.status = g.inRange ? 'pending' : 'skipped'
+      g.streak = 0
+      g.heard = false
       delete g.judgement
       delete g.delta
       delete g.hitAt
     }
-    this.chromaAcc.clear()
     this.cursor = 0
     this.covCursor = 0
-    this.expectedFrames = 0
-    this.heardFrames = 0
-    this.lastHit = null
-    this.armed = true
+    this.history = []
+    this.usedAttacks = []
+    this.lastStruck = new Map()
     this.score = 0
-    this.streak = 0
-    this.maxStreak = 0
     this.perfects = 0
     this.goods = 0
     this.misses = 0
   }
 
+  reset(): void {
+    for (const g of this.tracked) g.inRange = true
+    this.clearPass()
+    this.carried = { perfects: 0, goods: 0, misses: 0, score: 0, deltas: [], passes: 0, heard: 0, resolved: 0 }
+    this.streak = 0
+    this.maxStreak = 0
+  }
+
   /** Resets and marks everything before `songTime` as skipped (not counted). */
   seek(songTime: number): void {
     this.reset()
-    while (this.cursor < this.groups.length && this.groups[this.cursor].group.time < songTime - this.window.late) {
-      this.groups[this.cursor].status = 'skipped'
+    while (this.cursor < this.tracked.length && this.tracked[this.cursor].group.time < songTime - this.window.late) {
+      this.tracked[this.cursor].status = 'skipped'
+      this.tracked[this.cursor].inRange = false
       this.cursor++
     }
   }
 
-  /** Resolves groups whose window has closed. Returns the newly missed groups. */
+  /**
+   * Restricts scoring to the groups that start in [from, to) of song time (a section loop): the rest
+   * is skipped, not missed. Call after `reset` or `seek`.
+   */
+  setRange(from: number, to: number): void {
+    for (const g of this.tracked) {
+      g.inRange = g.group.time >= from - 1e-6 && g.group.time < to - 1e-6
+      if (!g.inRange) g.status = 'skipped'
+      else if (g.status === 'skipped') g.status = 'pending'
+    }
+  }
+
+  /** Starts another pass over the range (the loop wrapped): what is still pending is missed, totals carry on. */
+  nextPass(): void {
+    this.advance(Number.POSITIVE_INFINITY)
+    this.carried.perfects += this.perfects
+    this.carried.goods += this.goods
+    this.carried.misses += this.misses
+    this.carried.score += this.score
+    this.carried.deltas.push(...this.passDeltas())
+    this.carried.passes++
+    const [heard, resolved] = this.passCoverage()
+    this.carried.heard += heard
+    this.carried.resolved += resolved
+    this.clearPass()
+  }
+
+  /** Marks the whole run as not scored (no microphone): nothing counts, so `summary().total` is 0. */
+  markUnscored(): void {
+    this.reset()
+    for (const g of this.tracked) {
+      g.inRange = false
+      g.status = 'skipped'
+    }
+  }
+
+  /** Resolves groups whose window, plus the time a late attack needs to be confirmed, has passed. Returns the newly missed groups. */
   advance(songTime: number): GroupState[] {
     const missed: GroupState[] = []
-    const late = this.window.late
-    while (this.cursor < this.groups.length) {
-      const g = this.groups[this.cursor]
-      if (g.group.time >= songTime - late) break
+    const limit = (this.baseWindow.late + RECOGNITION.verifyFor) * this.speed
+    while (this.cursor < this.tracked.length) {
+      const g = this.tracked[this.cursor]
+      if (g.group.time >= songTime - limit) break
       if (g.status === 'pending') {
         g.status = 'miss'
-        this.chromaAcc.delete(g)
         this.misses++
         this.streak = 0
         missed.push(g)
@@ -196,65 +354,301 @@ export class ScoreTracker {
     return missed
   }
 
-  /** True when the detected pitch belongs to a pending note inside the window (used for feedback only). */
+  /** True when the detected pitch belongs to a pending note inside the window (used for the on-screen indicator only). */
   isUpcomingPitch(midi: number, songTime: number): boolean {
     const w = this.window
-    for (let i = this.cursor; i < this.groups.length; i++) {
-      const g = this.groups[i]
+    for (let i = this.cursor; i < this.tracked.length; i++) {
+      const g = this.tracked[i]
       if (g.group.time > songTime + w.early) break
       if (g.status !== 'pending' || songTime - g.group.time > w.late) continue
-      if (this.matches(g, midi)) return true
+      const allowOctave = this.octave === 'all' || (this.octave === 'chords' && g.group.notes.length > 1)
+      if (g.group.notes.some((n) => pitchMatches(midi, n.midi, n.tech?.bend ? BEND_TOLERANCE_SEMIS : 0.6, !n.tech?.bend && allowOctave))) return true
     }
     return false
   }
 
-  private matches(g: GroupState, midi: number): boolean {
-    const isChord = g.group.notes.length > 1
-    const allowOctave = this.octave === 'all' || (this.octave === 'chords' && isChord)
-    return g.group.notes.some((n) =>
-      n.tech?.bend
-        ? pitchMatches(midi, n.midi, BEND_TOLERANCE_SEMIS, false)
-        : pitchMatches(midi, n.midi, this.tolerance, allowOctave),
-    )
+  private evidence(frame: SpectralFrame, freq: number, cents: number): NoteEvidence {
+    return noteEvidence(frame.peaks, freq, frame.strongest, cents)
   }
 
-  /** Call when the detector hears nothing: the next note of the same pitch counts as a fresh pick. */
-  release(): void {
-    this.armed = true
+  /** The frame in the look-back span where the group's notes were weakest: the moment before the attack. */
+  private trough(g: Tracked, t: number): SpectralFrame | null | 'wait' {
+    const s = this.speed
+    // A pitch that was just struck and scored is only compared with frames from after that stroke had
+    // filled the analysis window; otherwise the same stroke would look like a rise again.
+    let from = t - (g.group.notes.length > 1 ? RECOGNITION.lookFromChord : RECOGNITION.lookFrom) * s
+    let bounded = false
+    for (const m of g.midis) {
+      const last = this.lastStruck.get(m)
+      if (last !== undefined && last + RECOGNITION.refill * s > from) {
+        from = last + RECOGNITION.refill * s
+        bounded = true
+      }
+    }
+    let best: SpectralFrame | null = null
+    let bestSal = Infinity
+    for (let k = this.history.length - 2; k >= 0; k--) {
+      const h = this.history[k]
+      if (h.t > t - RECOGNITION.lookTo * s) continue
+      if (h.t < from) break
+      let sal = 0
+      for (const f of g.freqs) sal += this.evidence(h, f, HARMONIC_TOLERANCE_CENTS).salience
+      if (sal < bestSal) {
+        bestSal = sal
+        best = h
+      }
+    }
+    return best === null && bounded ? 'wait' : best
   }
 
   /**
-   * Feed a detected pitch (fractional MIDI). `isAttack` marks a fresh pick so a
-   * sustained note cannot silently satisfy a run of repeated notes: after a hit,
-   * the same pitch is ignored until an attack, silence or a different pitch occurs.
+   * The strongest each harmonic of a note has been between 0.5 s and 0.2 s ago: the level a rise has to
+   * clear to be more than partials of ringing strings beating against each other.
    */
-  onPitch(midi: number, songTime: number, isAttack: boolean): GroupState | null {
-    if (isAttack || (this.lastHit && Math.abs(this.lastHit.midi - midi) >= 0.6)) this.armed = true
-    const w = this.window
-    for (let i = this.cursor; i < this.groups.length; i++) {
-      const g = this.groups[i]
-      if (g.group.time > songTime + w.early) break
-      if (g.status !== 'pending') continue
-      if (songTime - g.group.time > w.late) continue
-      if (this.mode === 'chroma' && isChromaChord(g.group.notes)) continue
-      if (!this.matches(g, midi)) continue
-      if (!this.armed && this.lastHit && Math.abs(this.lastHit.midi - midi) < 0.6) continue
-      this.registerHit(g, songTime - g.group.time, songTime)
-      this.lastHit = { midi, time: songTime }
-      this.armed = false
-      return g
+  private crest(t: number): Before {
+    const s = this.speed
+    const frames = this.history.filter((h) => h.t >= t - 0.5 * s && h.t <= t - RECOGNITION.lookFrom * s)
+    return {
+      evidence: (freq, cents) => {
+        let out: NoteEvidence | null = null
+        for (const h of frames) {
+          const ev = this.evidence(h, freq, cents)
+          if (!out) {
+            out = { harmonics: [...ev.harmonics], salience: ev.salience, below: [...ev.below] }
+            continue
+          }
+          const acc = out
+          ev.harmonics.forEach((a, i) => (acc.harmonics[i] = Math.max(acc.harmonics[i], a)))
+          ev.below.forEach((a, i) => (acc.below[i] = Math.max(acc.below[i], a)))
+          acc.salience = Math.max(acc.salience, ev.salience)
+        }
+        return out
+      },
+      amp: (freq) => frames.reduce((m, h) => Math.max(m, peakNear(h.peaks, freq)), 0),
     }
-    return null
   }
 
-  /** Marks a group hit and updates score, streak and counters (shared by pitch and chroma judging). */
-  private registerHit(g: GroupState, delta: number, songTime: number): void {
+  private frameBefore(base: SpectralFrame | null): Before {
+    return base ? { evidence: (f, c) => this.evidence(base, f, c), amp: (f) => peakNear(base.peaks, f) } : SILENCE
+  }
+
+  /** Did a fresh stroke of this single note show up between `before` and `now`? */
+  private singleStruck(freq: number, cents: number, now: SpectralFrame, before: Before, factor: number): boolean {
+    const fresh = freshNote(this.evidence(now, freq, cents), before.evidence(freq, cents), factor)
+    if (fresh.risen < (freq > 700 ? RECOGNITION.minRisenHigh : RECOGNITION.minRisen) || fresh.strength < RECOGNITION.minStrength) return false
+    if (fresh.oddStrength < RECOGNITION.oddShare * fresh.strength) return false
+    return fresh.belowRise <= RECOGNITION.belowRatio * fresh.strength
+  }
+
+  private struck(g: Tracked, now: SpectralFrame, before: Before, factor: number = RISE): boolean {
+    if (g.group.notes.length === 1) {
+      const n = g.group.notes[0]
+      const cents = n.tech?.bend ? BEND_TOLERANCE_SEMIS * 100 : HARMONIC_TOLERANCE_CENTS
+      const f = g.freqs[0]
+      if (this.singleStruck(f, cents, now, before, factor)) return true
+      // With octave tolerance for single notes, the same note an octave up or down also counts.
+      return this.octave === 'all' && !n.tech?.bend && (this.singleStruck(f * 2, cents, now, before, factor) || this.singleStruck(f / 2, cents, now, before, factor))
+    }
+    // A chord: enough of its notes were struck, and its pitch classes are there. A note counts by its
+    // fundamental (below 150 Hz, where a small microphone hears little, by its second and third
+    // harmonic instead), and only if that is not dwarfed by the rest of the chord: stray peaks are not notes.
+    const cores = g.group.notes.map((_, i) => this.chordCore(g.freqs[i], now, before, factor))
+    const strongest = Math.max(...cores)
+    if (strongest < RECOGNITION.minStrength) return false
+    const ok = cores.map((c) => c >= Math.max(RECOGNITION.minStrength, RECOGNITION.chordFloor * strongest))
+    const struck = ok.filter(Boolean).length
+    if (struck < Math.max(2, Math.ceil(RECOGNITION.chordShare * g.group.notes.length))) return false
+    if (this.foreignShare(g, now, before, factor) > this.foreign) return false
+    const classOf = (i: number) => ((Math.round(g.group.notes[i].midi) % 12) + 12) % 12
+    const covered = new Set<number>()
+    ok.forEach((v, i) => v && covered.add(classOf(i)))
+    const silent = [...new Set(g.group.notes.map((_, i) => classOf(i)))].filter((pc) => !covered.has(pc))
+    if (silent.length === 0) return true
+    // One pitch class may be silent (a muted string), but not the bass note's, and not replaced: if the
+    // note a fret away sounds instead, as loud as the chord's own notes, this is a different chord
+    // (E for E minor).
+    let lowest = 0
+    g.freqs.forEach((f, i) => {
+      if (f < g.freqs[lowest]) lowest = i
+    })
+    if (silent.length > 1 || silent[0] === classOf(lowest)) return false
+    const sounding = cores.filter((_, i) => ok[i]).sort((x, y) => x - y)
+    const typical = sounding[sounding.length >> 1]
+    for (let i = 0; i < g.group.notes.length; i++) {
+      if (classOf(i) !== silent[0]) continue
+      for (const step of [-1, 1]) if (this.chordCore(g.freqs[i] * 2 ** (step / 12), now, before, factor) >= 0.4 * typical) return false
+    }
+    return true
+  }
+
+  /**
+   * Of everything that rose with the stroke (70 Hz - 1.5 kHz), the share of energy that is not a
+   * harmonic of any note of the chord, in any octave. A different chord can contain enough of this
+   * one's notes to pass for it (G holds D and, as a harmonic, F sharp); what gives it away is all the
+   * sound that does not belong.
+   */
+  private foreignShare(g: Tracked, now: SpectralFrame, before: Before, factor: number): number {
+    const tolerance = 2 ** (HARMONIC_TOLERANCE_CENTS / 1200)
+    let own = 0
+    let foreign = 0
+    for (let i = 0; i < now.peaks.length; i += 2) {
+      const f = now.peaks[i]
+      if (f < 70) continue
+      if (f > 1500) break
+      const a = now.peaks[i + 1]
+      const was = before.amp(f)
+      if (a < factor * was + 4e-4) continue
+      const energy = (a - was) * (a - was)
+      let belongs = false
+      for (const f0 of g.freqs) {
+        for (const octave of [0.5, 1, 2]) {
+          const base = f0 * octave
+          const h = Math.round(f / base)
+          if (h >= 1 && h <= 8 && f <= base * h * tolerance && f >= (base * h) / tolerance) belongs = true
+        }
+        if (belongs) break
+      }
+      if (belongs) own += energy
+      else foreign += energy
+    }
+    return own + foreign > 0 ? foreign / (own + foreign) : 0
+  }
+
+  /** How much a chord note's defining partial rose: the fundamental, or below 150 Hz the weaker of its second and third harmonic if that is more. */
+  private chordCore(freq: number, now: SpectralFrame, before: Before, factor: number): number {
+    const fresh = freshNote(this.evidence(now, freq, HARMONIC_TOLERANCE_CENTS), before.evidence(freq, HARMONIC_TOLERANCE_CENTS), factor)
+    if (fresh.risen < 2) return 0
+    const upper = Math.min(fresh.rises[1], fresh.rises[2])
+    return freq < 150 ? Math.max(fresh.rises[0], upper) : fresh.rises[0]
+  }
+
+  /**
+   * When the stroke behind a confirmation at `t` happened, read from the attack-strength curve: the
+   * sharpest rise in the 160 ms before, favouring where a stroke confirmed now would be (a chord takes
+   * the first rise of its strum; a legato note, which has no stroke of its own, may reach back to a
+   * stroke inside its window). Without any rise the usual lag is assumed (`found` is then false).
+   */
+  private attackTime(g: Tracked, t: number): { time: number; found: boolean } {
+    const s = this.speed
+    const chord = g.group.notes.length > 1
+    const span = (chord ? 0.24 : 0.16) * s
+    const w = this.window
+    const expected = t - Math.max(RECOGNITION.attackLag, g.settle) * s
+    // Candidate strokes: the attack strength jumps in one hop, to well above its calm level. The wide-band
+    // measure is the sharper one; in a noisy room only the band-limited one still shows the stroke.
+    let jumps: { t: number; jump: number }[] = []
+    for (const key of ['flux', 'fluxBand'] as const) {
+      const calm: number[] = []
+      for (const h of this.history) if (h.t < t - span && h.t >= t - span - 0.18 * s) calm.push(h[key])
+      calm.sort((a, b) => a - b)
+      const level = calm.length ? calm[calm.length >> 1] : 0
+      for (let k = 1; k < this.history.length; k++) {
+        const h = this.history[k]
+        if (h.t > t - 0.005 * s) break
+        const inSpan = h.t >= t - span
+        const inWindow = g.legato && h.t >= g.group.time - w.early && h.t <= g.group.time + w.late
+        if (!inSpan && !inWindow) continue
+        const jump = h[key] - this.history[k - 1][key]
+        if (h[key] > RECOGNITION.fluxBump * level + 1e-5 && jump >= 0.3 * h[key]) jumps.push({ t: h.t, jump })
+      }
+      if (jumps.length) break
+      jumps = []
+    }
+    if (jumps.length === 0) return { time: expected - RECOGNITION.onsetLag * s, found: false }
+    let pick = jumps[0]
+    if (chord) {
+      // The first real stroke of the strum: the earliest jump that is not dwarfed by the biggest.
+      const biggest = Math.max(...jumps.map((j) => j.jump))
+      pick = jumps.find((j) => j.jump >= 0.35 * biggest) ?? jumps[0]
+    } else {
+      // The sharpest jump near where the stroke should be: a ripple in a ringing string, or the click
+      // track a moment earlier, must not pass for it.
+      let bestScore = -1
+      for (const j of jumps) {
+        const far = (j.t - (g.legato && j.t < t - span ? g.group.time : expected)) / (0.04 * s)
+        const score = j.jump * Math.exp(-far * far)
+        if (score > bestScore) {
+          bestScore = score
+          pick = j
+        }
+      }
+    }
+    return { time: pick.t - RECOGNITION.onsetLag * s, found: true }
+  }
+
+  /** Is there a later pending group with the same pitches whose time is nearer to `attack` than group `i`'s? */
+  private nearerLater(i: number, attack: number): boolean {
+    const g = this.tracked[i]
+    const w = this.window
+    const own = Math.abs(g.group.time - attack)
+    for (let k = i + 1; k < this.tracked.length; k++) {
+      const other = this.tracked[k]
+      if (other.group.time - w.early > attack) break
+      if (other.status !== 'pending' || other.midis.length !== g.midis.length || !other.midis.every((m) => g.midis.includes(m))) continue
+      if (Math.abs(other.group.time - attack) < own) return true
+    }
+    return false
+  }
+
+  /**
+   * Feed one analysis frame: `songTime` is the latency-compensated song position of the frame, `peaks`
+   * its spectral peaks ([freq, amp] pairs), `flux` and `fluxBand` its attack strength (wide-band and
+   * band-limited). Returns the group this frame confirmed, if any.
+   */
+  onFrame(songTime: number, peaks: Float32Array | undefined, flux: number, fluxBand = 0): GroupState | null {
+    const frame: SpectralFrame = { t: songTime, peaks: peaks ?? EMPTY_PEAKS, flux, fluxBand, strongest: peaks ? strongestPeak(peaks) : 0 }
+    const s = this.speed
+    // Time went backwards (seek or loop): the past is no longer comparable.
+    if (this.history.length && songTime < this.history[this.history.length - 1].t) this.history = []
+    this.history.push(frame)
+    while (this.history.length > 2 && this.history[0].t < songTime - HISTORY_SECONDS * s) this.history.shift()
+    const w = this.window
+    let result: GroupState | null = null
+    for (let i = this.cursor; i < this.tracked.length; i++) {
+      const g = this.tracked[i]
+      if (g.group.time > songTime + w.early) break
+      if (g.status !== 'pending') continue
+      const base = this.trough(g, songTime)
+      if (base === 'wait' || !this.struck(g, frame, this.frameBefore(base))) {
+        g.streak = 0
+        continue
+      }
+      if (g.streak++ === 0) g.since = songTime
+      if (g.streak < RECOGNITION.confirm) continue
+      const stroke = this.attackTime(g, songTime)
+      let attack = stroke.time
+      if (stroke.found) {
+        // Too soon after the stroke to trust the pitches: look again on the next frame.
+        if (songTime - attack < g.settle * s) continue
+      } else {
+        // No stroke to be seen (a soft touch, a noisy room, or a hammer-on, slide or bend). Then the rise
+        // has to hold for a while and, unless the note is of that stroke-less kind, climb above
+        // everything heard lately: partials of ringing strings beating against each other also rise.
+        if (songTime - g.since < (g.settle - 0.035) * s) continue
+        if (!g.legato && !this.struck(g, frame, this.crest(songTime)) && !this.struck(g, frame, this.frameBefore(base), RECOGNITION.deepRise)) continue
+        attack = g.since - (RECOGNITION.attackLag + RECOGNITION.onsetLag) * s
+      }
+      // The stroke belongs to the nearest note of this pitch: an earlier one that was skipped must not take it.
+      if (this.nearerLater(i, attack)) continue
+      if (attack < g.group.time - w.early || attack > g.group.time + w.late) continue
+      // One stroke scores a pitch once.
+      if (this.usedAttacks.some((u) => Math.abs(u.t - attack) < RECOGNITION.sameAttack * s && u.midis.some((m) => g.midis.includes(m)))) continue
+      this.usedAttacks.push({ t: attack, midis: g.midis })
+      if (this.usedAttacks.length > 8) this.usedAttacks.shift()
+      for (const m of g.midis) this.lastStruck.set(m, attack)
+      this.registerHit(g, attack - g.group.time, songTime)
+      result ??= g
+    }
+    return result
+  }
+
+  /** Marks a group hit and updates score, streak and counters. */
+  private registerHit(g: Tracked, delta: number, songTime: number): void {
     const judgement: Judgement = Math.abs(delta) <= this.window.perfect ? 'perfect' : 'good'
     g.status = 'hit'
     g.judgement = judgement
     g.delta = delta
     g.hitAt = songTime
-    this.chromaAcc.delete(g)
     this.score += (judgement === 'perfect' ? 100 : 50) * this.multiplier
     this.streak++
     if (this.streak > this.maxStreak) this.maxStreak = this.streak
@@ -262,57 +656,37 @@ export class ScoreTracker {
     else this.goods++
   }
 
-  /**
-   * Feed a 12-bin chroma frame (chroma mode only; null otherwise). Frames are summed per chord
-   * group inside its window; the group is hit once the accumulated chroma matches the chord.
-   * Timing is taken from the first contributing frame.
-   */
-  onChroma(chroma: Float32Array, songTime: number): GroupState | null {
-    if (this.mode !== 'chroma') return null
-    const w = this.window
-    for (let i = this.cursor; i < this.groups.length; i++) {
-      const g = this.groups[i]
-      if (g.group.time > songTime + w.early) break
-      if (g.status !== 'pending' || !isChromaChord(g.group.notes)) continue
-      if (songTime - g.group.time > w.late) continue
-      let acc = this.chromaAcc.get(g)
-      if (!acc) {
-        acc = { sum: new Float32Array(12), first: songTime }
-        this.chromaAcc.set(g, acc)
-      }
-      for (let k = 0; k < 12; k++) acc.sum[k] += chroma[k]
-      if (!chordMatch(acc.sum, g.group.notes.map((n) => n.midi)).ok) return null
-      const delta = Math.min(w.late, Math.max(-w.early, acc.first - g.group.time))
-      this.registerHit(g, delta, songTime)
-      return g
-    }
-    return null
-  }
-
   summary(): ScoreSummary {
-    let total = 0
-    for (const g of this.groups) if (g.status !== 'skipped') total++
-    const hits = this.perfects + this.goods
-    const judged = hits + this.misses
+    let inPass = 0
+    for (const g of this.tracked) if (g.status !== 'skipped') inPass++
+    const perfects = this.carried.perfects + this.perfects
+    const goods = this.carried.goods + this.goods
+    const misses = this.carried.misses + this.misses
+    const hits = perfects + goods
+    const judged = hits + misses
     return {
-      score: this.score,
+      score: this.carried.score + this.score,
       streak: this.streak,
       maxStreak: this.maxStreak,
       multiplier: this.multiplier,
-      perfects: this.perfects,
-      goods: this.goods,
-      misses: this.misses,
-      total,
+      perfects,
+      goods,
+      misses,
+      total: inPass * (this.carried.passes + 1),
       judged,
       accuracy: judged > 0 ? hits / judged : 0,
     }
   }
 
-  /** Signed timing errors (seconds) of all hit groups, in time order. */
-  hitDeltas(): number[] {
+  private passDeltas(): number[] {
     const out: number[] = []
-    for (const g of this.groups) if (g.status === 'hit' && g.delta !== undefined) out.push(g.delta)
+    for (const g of this.tracked) if (g.status === 'hit' && g.delta !== undefined) out.push(g.delta)
     return out
+  }
+
+  /** Signed timing errors (seconds) of all hit groups, earlier loop passes first. */
+  hitDeltas(): number[] {
+    return [...this.carried.deltas, ...this.passDeltas()]
   }
 
   /** Median of hit deltas (ms) and population stdev of (delta - median) (ms); null with fewer than 8 hits. */
@@ -358,20 +732,16 @@ export class ScoreTracker {
     return out
   }
 
-  /** Call once per detector frame; heard = a clear pitch was reported. */
+  /** Call once per analysis frame; heard = the frame carried sound (see `RECOGNITION.heard`). */
   observe(songTime: number, heard: boolean): void {
     const w = this.window
-    // Skip groups whose window has certainly ended (cursor only blocks on long earlier groups, which is conservative).
-    while (this.covCursor < this.groups.length && this.groupEnd(this.groups[this.covCursor], w) < songTime) this.covCursor++
-    for (let i = this.covCursor; i < this.groups.length; i++) {
-      const g = this.groups[i]
+    // Skip groups whose window has certainly ended (the cursor only blocks on long earlier groups, which is conservative).
+    while (this.covCursor < this.tracked.length && this.groupEnd(this.tracked[this.covCursor], w) < songTime) this.covCursor++
+    if (!heard) return
+    for (let i = this.covCursor; i < this.tracked.length; i++) {
+      const g = this.tracked[i]
       if (g.group.time - w.early > songTime) break
-      if (g.status === 'skipped') continue
-      if (songTime <= this.groupEnd(g, w)) {
-        this.expectedFrames++
-        if (heard) this.heardFrames++
-        return
-      }
+      if (songTime <= this.groupEnd(g, w)) g.heard = true
     }
   }
 
@@ -381,18 +751,36 @@ export class ScoreTracker {
     return g.group.time + Math.max(w.late, Math.min(dur, 1.0))
   }
 
-  /** Fraction of expected frames in which a pitch was heard; 1 when none were expected yet. */
+  private passCoverage(): [number, number] {
+    let heard = 0
+    let resolved = 0
+    for (const g of this.tracked) {
+      if (g.status !== 'hit' && g.status !== 'miss') continue
+      resolved++
+      if (g.heard || g.status === 'hit') heard++
+    }
+    return [heard, resolved]
+  }
+
+  /**
+   * Of the notes judged so far, the fraction during whose window the microphone heard any sound at
+   * all; 1 when none were judged yet. Low coverage means the microphone is not picking the guitar
+   * up, which is a different problem from wrong notes.
+   */
   coverage(): number {
-    return this.expectedFrames > 0 ? this.heardFrames / this.expectedFrames : 1
+    const [heard, resolved] = this.passCoverage()
+    const total = this.carried.resolved + resolved
+    return total > 0 ? (this.carried.heard + heard) / total : 1
   }
 
   toAttemptResult(opts: { playedTempo: number; targetTempo: number; speed: number; durationSec: number }): AttemptResult {
     const { medianMs, stdevMs } = this.timingStats()
+    const s = this.summary()
     const result: AttemptResult = {
-      perfects: this.perfects,
-      goods: this.goods,
-      misses: this.misses,
-      total: this.perfects + this.goods + this.misses,
+      perfects: s.perfects,
+      goods: s.goods,
+      misses: s.misses,
+      total: s.perfects + s.goods + s.misses,
       timingMedianMs: medianMs,
       timingStdevMs: stdevMs,
       coverage: this.coverage(),
@@ -400,13 +788,19 @@ export class ScoreTracker {
       playedTempo: opts.playedTempo,
       targetTempo: opts.targetTempo,
       speed: opts.speed,
-      chordScoring: this.mode,
+      // Notes and chords are both verified against the spectrum, whatever else is ringing.
+      chordScoring: 'chroma',
     }
     if (this.hasBeats) result.perBar = this.perBarAccuracy().map((a) => (a < 0 ? 1 : a))
     return result
   }
 
   get finished(): boolean {
-    return this.cursor >= this.groups.length
+    return this.cursor >= this.tracked.length
   }
+}
+
+/** True when any group of the chart is a chord (two or more notes struck together). */
+export function hasChordGroups(notes: ChartNote[]): boolean {
+  return groupNotes(notes).some((g) => g.notes.length > 1)
 }

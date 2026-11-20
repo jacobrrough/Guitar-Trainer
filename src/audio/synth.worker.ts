@@ -1,20 +1,27 @@
 /// <reference lib="webworker" />
 import type { Chart } from '../chart/types'
-import { renderChartBacking, type BackingOptions } from './synth'
+import type { SampleBank } from './instrument/bank'
+import { renderChartBacking, renderGuitarNote, type BackingOptions } from './synth'
 
-/** Renders a chart off the main thread; see `renderBacking.ts`. */
-interface RenderRequest {
-  id: number
-  chart: Chart
-  options?: BackingOptions
-}
+/** Renders guitar audio off the main thread; see `guitar.ts`. The sample bank arrives once and stays here. */
+type Request =
+  | { type: 'bank'; bank: SampleBank }
+  | { type: 'chart'; id: number; chart: Chart; options?: Omit<BackingOptions, 'bank'> }
+  | { type: 'note'; id: number; midi: number; seconds: number; sampleRate: number }
 
-self.onmessage = (e: MessageEvent<RenderRequest>) => {
-  const { id, chart, options } = e.data
+let bank: SampleBank | null = null
+const post = (message: unknown, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(message, transfer)
+
+self.onmessage = (e: MessageEvent<Request>) => {
+  const msg = e.data
+  if (msg.type === 'bank') {
+    bank = msg.bank
+    return
+  }
   try {
-    const samples = renderChartBacking(chart, options)
-    ;(self as unknown as Worker).postMessage({ id, samples }, [samples.buffer])
+    const samples = msg.type === 'chart' ? renderChartBacking(msg.chart, { ...msg.options, bank }) : renderGuitarNote(bank, msg.midi, msg.seconds, msg.sampleRate)
+    post({ id: msg.id, samples }, [samples.buffer])
   } catch (err) {
-    ;(self as unknown as Worker).postMessage({ id, error: err instanceof Error ? err.message : String(err) })
+    post({ id: msg.id, error: err instanceof Error ? err.message : String(err) })
   }
 }

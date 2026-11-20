@@ -7,7 +7,7 @@ import type { AppSettings } from '../app/settings'
 import { generateLevels } from '../chart/difficulty'
 import { db, type SongRecord } from '../db/db'
 import { applyPlacement, applyTestResults, isTestDue } from './assessment'
-import { exerciseParams, generateExercise, resolveGeneratorId } from './exercises'
+import { exerciseParams, generateExercise } from './exercises'
 import { renderExerciseBacking } from './exercises/backing'
 import { DEFAULT_TUNING } from './exercises/builder'
 import { applyAttempt, effectiveRating, newSkillState } from './learner'
@@ -142,25 +142,24 @@ export async function getOrCreateTodaySession(opts: TodayOptions): Promise<Sessi
   return { ...record, id }
 }
 
-const CLICK_ONLY_GENERATORS = new Set(['chordChanges', 'strumPattern', 'powerChordRiff'])
-
 /** Builds the playable exercise (chart + backing audio) for an exercise block. */
 export function exerciseForBlock(block: ExerciseBlock, tuning: number[] = DEFAULT_TUNING): GeneratedExercise {
   const skill = SKILLS_BY_ID[block.skillId]
   if (!skill) throw new Error(`Unknown skill ${block.skillId}`)
   const params = exerciseParams(skill, block.generatorId, block.tempo, block.params)
   const exercise = generateExercise(skill, block.generatorId, params, tuning)
-  return withBacking(exercise, block.generatorId)
+  return withBacking(exercise)
 }
 
 /**
  * Ear exercises play their own reference tones, so they get no rendered backing.
- * Everything else gets a click-only backing for scoring plus, unless the drill is
- * about the player's own strumming or this is a test, a guide track with the part.
+ * Everything else gets a click-only backing for scoring plus, unless this is a test,
+ * a listening guide with the part played on the guitar (chords included: a beginner
+ * needs to hear what a chord change should sound like).
  */
-function withBacking(exercise: GeneratedExercise, generatorId: string, allowGuide = true): GeneratedExercise {
+function withBacking(exercise: GeneratedExercise, allowGuide = true): GeneratedExercise {
   if (exercise.interaction === 'ear') return exercise
-  return renderExerciseBacking(exercise, { guide: allowGuide && !CLICK_ONLY_GENERATORS.has(resolveGeneratorId(generatorId)) })
+  return renderExerciseBacking(exercise, { guide: allowGuide })
 }
 
 /** Builds the playable exercise for a test task (null for song tasks, which load the song instead). */
@@ -168,7 +167,7 @@ export function exerciseForTask(task: TestTask, tuning: number[] = DEFAULT_TUNIN
   if (task.generatorId === 'song') return null
   const skill = SKILLS_BY_ID[task.skillIds[0]] ?? SKILLS[0]
   const exercise = generateExercise(skill, task.generatorId, task.params, tuning)
-  return withBacking(exercise, task.generatorId, false)
+  return withBacking(exercise, false)
 }
 
 const KIND_BY_BLOCK: Record<ExerciseBlock['kind'], AttemptKind> = { warmup: 'warmup', focus: 'practice', second: 'practice', review: 'review', ear: 'practice' }

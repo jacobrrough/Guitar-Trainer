@@ -145,6 +145,8 @@ export interface GeneratedExercise {
   backing: Float32Array | null
   /** Same backing with the part's notes played, for listening; null for chord/strum drills and tests. */
   guide?: Float32Array | null
+  /** A listening guide should be rendered for this exercise (see `renderExerciseGuide`). */
+  wantsGuide?: boolean
   backingSampleRate: number
   /** Short instructions shown before the block. */
   instructions: string

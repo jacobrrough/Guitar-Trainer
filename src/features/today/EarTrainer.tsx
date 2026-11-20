@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getSettings } from '../../app/settings'
 import { audioEngine } from '../../audio/AudioEngine'
-import { guitarBody, normalize, pluck } from '../../audio/synth'
+import { renderNoteAudio } from '../../audio/guitar'
+import { renderGuitarNote } from '../../audio/synth'
 import { Button, Card, cx } from '../../components/ui'
-import { midiToFreq, midiToName } from '../../music/pitch'
+import { midiToName } from '../../music/pitch'
 import { EAR_RESPONSE_SECONDS } from '../../training/constants'
 import type { AttemptResult, GeneratedExercise } from '../../training/types'
 import { PitchSmoother } from '../play/pitchTracker'
@@ -40,6 +41,7 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
   const timers = useRef<number[]>([])
   const unsub = useRef<(() => void) | null>(null)
   const source = useRef<AudioBufferSourceNode | null>(null)
+  const references = useRef(new Map<number, Float32Array<ArrayBuffer>>())
   const ignoreUntil = useRef(0)
   const history = useRef<number[]>([])
   const heardThis = useRef(false)
@@ -80,10 +82,8 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
   const playReference = (midi: number): number => {
     const ctx = audioEngine.context
     const rate = ctx.sampleRate
-    const data = new Float32Array(Math.round(REFERENCE_SECONDS * rate))
-    pluck(data, 0, midiToFreq(midi), REFERENCE_SECONDS, 0.8, 7 + midi, rate)
-    guitarBody(data, rate)
-    normalize(data, 0.8)
+    // Rendered ahead in start(); the string model stands in if that has not finished.
+    const data = references.current.get(midi) ?? new Float32Array(renderGuitarNote(null, midi, REFERENCE_SECONDS, rate))
     const buffer = ctx.createBuffer(1, data.length, rate)
     buffer.copyToChannel(data, 0)
     try {
@@ -154,7 +154,17 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
     setPhaseBoth('starting')
     audioEngine
       .startMic({ deviceId: settings.inputDeviceId || undefined, echoCancellation: settings.echoCancellation })
-      .then(() => {
+      .then(async () => {
+        // The reference notes, played by the recorded guitar.
+        const rate = audioEngine.context.sampleRate
+        await Promise.all(
+          [...new Set(targets)].map(async (midi) => {
+            if (references.current.has(midi)) return
+            const pcm = await renderNoteAudio(midi, REFERENCE_SECONDS, rate).catch(() => null)
+            if (pcm) references.current.set(midi, new Float32Array(pcm))
+          }),
+        )
+        if (phaseRef.current !== 'starting') return
         const smoother = new PitchSmoother()
         unsub.current = audioEngine.subscribe((frame) => {
           if (phaseRef.current !== 'turn' || performance.now() < ignoreUntil.current) return

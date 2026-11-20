@@ -84,7 +84,7 @@ export function LibraryPage() {
   const addDemo = async () => {
     setCreatingDemo(true)
     try {
-      const id = await addSong(createDemoSong())
+      const id = await addSong(await createDemoSong())
       navigate(`/play/${id}`)
     } finally {
       setCreatingDemo(false)

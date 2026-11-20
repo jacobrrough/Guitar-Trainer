@@ -11,7 +11,8 @@ import { HighwayRenderer } from './Highway'
 import { PlaybackClock } from './PlaybackClock'
 import { detectBleed } from './bleed'
 import { PitchSmoother } from './pitchTracker'
-import { ScoreTracker, hasChordGroups, type ScoreSummary } from './scoring'
+import { scoreFrame } from './scoreFrame'
+import { ScoreTracker, type ScoreSummary } from './scoring'
 
 export type PlayerMode = 'song' | 'exercise' | 'test'
 export type PlayerPhase = 'ready' | 'countin' | 'playing' | 'paused' | 'finished'
@@ -47,6 +48,11 @@ export interface PlayerProps {
    * default while the microphone scores, so a phone speaker cannot score itself.
    */
   guideAudio?: Blob | null
+  /**
+   * `audio` is a click track with no pitched content (the app's own exercises and songs). A phone
+   * speaker playing it into the microphone cannot score notes, so such runs count in full.
+   */
+  backingIsClick?: boolean
   /** Changing this value resets the player to the start. */
   resetKey?: number | string
   /** Count-in clicks before the audio starts (default true). */
@@ -119,6 +125,7 @@ export function Player({
   loopBars,
   loopCount = 2,
   guideAudio = null,
+  backingIsClick = false,
   resetKey,
   countIn = true,
   headerControls,
@@ -141,6 +148,7 @@ export function Player({
   const [progress, setProgress] = useState(0)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [portraitPhone, setPortraitPhone] = useState(false)
+  const [starting, setStarting] = useState(false)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -161,11 +169,37 @@ export function Player({
   const audioUrlRef = useRef<string | null>(null)
   const loopsDoneRef = useRef(0)
   const startedAtRef = useRef<number | null>(null)
+  /** Bumped by every start, restart, pause and unmount: an older start() that is still awaiting gives up when it changes. */
+  const runIdRef = useRef(0)
+  const startingRef = useRef(false)
+  /** Analysis frames scored in this run; none means the microphone never delivered anything. */
+  const framesRef = useRef(0)
+  /** The user switched the microphone off: runs are for listening, not for scoring. */
+  const micOffRef = useRef(false)
+  const countInGainRef = useRef<GainNode | null>(null)
+  const guideRef = useRef(false)
   const phaseRef = useRef<PlayerPhase>('ready')
   const settingsRef = useRef(settings)
-  const propsRef = useRef({ chart, notes, speed, loopBars, loopCount, playedTempo, targetTempo, mode })
+  const propsRef = useRef({ chart, notes, speed, loopBars, loopCount, playedTempo, targetTempo, mode, backingIsClick })
   settingsRef.current = settings
-  propsRef.current = { chart, notes, speed, loopBars, loopCount, playedTempo, targetTempo, mode }
+  propsRef.current = { chart, notes, speed, loopBars, loopCount, playedTempo, targetTempo, mode, backingIsClick }
+  guideRef.current = guide
+
+  /** The latency setting (real time) as song time at the current speed. */
+  const lagRef = useRef<() => number>(() => 0)
+  lagRef.current = () => (settingsRef.current.latencyMs / 1000) * propsRef.current.speed
+  /** Seeks the tracker to `songTime` and, in a section loop, limits scoring to the loop's bars. */
+  const armTracker = useCallback((tracker: ScoreTracker, songTime: number) => {
+    const p = propsRef.current
+    tracker.seek(songTime - lagRef.current())
+    if (p.loopBars) tracker.setRange(barStartTime(p.chart, p.loopBars[0]) ?? 0, barStartTime(p.chart, p.loopBars[1] + 1) ?? p.chart.duration)
+  }, [])
+
+  const cancelCountIn = useCallback(() => {
+    countInGainRef.current?.disconnect()
+    countInGainRef.current = null
+    setCountdown(null)
+  }, [])
 
   const onPhaseChangeRef = useRef(onPhaseChange)
   onPhaseChangeRef.current = onPhaseChange
@@ -228,18 +262,16 @@ export function Player({
 
   // Score tracker follows the active notes and speed.
   useEffect(() => {
-    const chords = hasChordGroups(notes)
-    audioEngine.setChroma(chords)
     const tracker = new ScoreTracker(notes, {
       octaveTolerance: settingsRef.current.octaveTolerance,
+      a4: settingsRef.current.a4,
       beats: chart.beats,
-      chordScoring: chords ? 'chroma' : 'pitch',
     })
     tracker.setSpeed(speed)
     const el = audioRef.current
-    if (el && el.currentTime > 0.05) tracker.seek(el.currentTime - settingsRef.current.latencyMs / 1000)
+    if (el && el.currentTime > 0.05) armTracker(tracker, el.currentTime)
     trackerRef.current = tracker
-  }, [notes, chart, speed])
+  }, [notes, chart, speed, armTracker])
 
   // Canvas renderer (callback ref: the canvas mounts after data is ready).
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
@@ -284,6 +316,8 @@ export function Player({
     setPhase('finished')
     const tracker = trackerRef.current
     if (!tracker) return
+    // No frames at all means no microphone (denied, switched off or dead): the run was not scored, which is not a 0 %.
+    if (framesRef.current === 0) tracker.markUnscored()
     tracker.advance(Number.POSITIVE_INFINITY)
     const p = propsRef.current
     const durationSec = startedAtRef.current ? (performance.now() - startedAtRef.current) / 1000 : (el?.currentTime ?? 0)
@@ -320,13 +354,13 @@ export function Player({
             }
             el.currentTime = loopStart
             clock.reset()
-            tracker.seek(loopStart - st.latencyMs / 1000)
+            tracker.nextPass()
             judgementRef.current = null
             t = loopStart
           }
         }
         if (!listenOnlyRef.current) {
-          const missed = tracker.advance(t - st.latencyMs / 1000)
+          const missed = tracker.advance(t - lagRef.current())
           if (missed.length) judgementRef.current = { text: 'Miss', at: t }
         }
       }
@@ -353,42 +387,29 @@ export function Player({
     return () => cancelAnimationFrame(raf)
   }, [])
 
-  // Pitch frames → scoring + coverage.
+  // Microphone frames → scoring.
   useEffect(
     () =>
       audioEngine.subscribe((frame) => {
         const st = settingsRef.current
-        const { midi, isAttack } = smootherRef.current.push(frame, st.clarityThreshold, st.a4)
-        detectedRef.current.midi = midi
-        if (listenOnlyRef.current) {
-          detectedRef.current.matches = false
-          return
-        }
-        // Count-in: microphone attacks right after our own clicks mean the speaker is being heard.
-        if (phaseRef.current === 'countin' && isAttack) countInAttacksRef.current.push(frame.time)
-        const tracker = trackerRef.current
         const el = audioRef.current
-        if (midi === null) tracker?.release()
-        if (!tracker || !el || phaseRef.current !== 'playing') {
-          detectedRef.current.matches = false
-          return
+        const listening = listenOnlyRef.current
+        let songTime: number | null = null
+        let now = 0
+        if (el && phaseRef.current === 'playing' && !listening) {
+          now = clockRef.current?.time ?? el.currentTime
+          // The frame was analysed a moment before it got here: step back by its age on the audio clock,
+          // so a busy main thread does not make notes look late.
+          const age = Math.min(0.25, Math.max(0, audioEngine.context.currentTime - frame.time))
+          songTime = now - age * propsRef.current.speed - lagRef.current()
+          framesRef.current++
         }
-        const now = clockRef.current?.time ?? el.currentTime
-        const t = now - st.latencyMs / 1000
-        tracker.observe(t, midi !== null)
-        const chromaHit = frame.chroma ? tracker.onChroma(frame.chroma, t) : null
-        if (chromaHit) judgementRef.current = { text: chromaHit.judgement === 'perfect' ? 'Perfect!' : 'Good', at: now }
-        if (midi === null) {
-          detectedRef.current.matches = chromaHit !== null
-          return
-        }
-        const hit = tracker.onPitch(midi, t, isAttack)
-        if (hit) {
-          judgementRef.current = { text: hit.judgement === 'perfect' ? 'Perfect!' : 'Good', at: now }
-          detectedRef.current.matches = true
-        } else {
-          detectedRef.current.matches = tracker.isUpcomingPitch(midi, t)
-        }
+        const out = scoreFrame(listening ? null : trackerRef.current, smootherRef.current, frame, songTime, st)
+        detectedRef.current.midi = out.midi
+        detectedRef.current.matches = out.matches
+        // Count-in: microphone attacks right after our own clicks mean the speaker is being heard.
+        if (phaseRef.current === 'countin' && out.isAttack && !listening) countInAttacksRef.current.push(frame.time)
+        if (out.judgement) judgementRef.current = { text: out.judgement === 'perfect' ? 'Perfect!' : 'Good', at: now }
       }),
     [],
   )
@@ -401,13 +422,18 @@ export function Player({
     return () => clearInterval(timer)
   }, [])
 
-  useEffect(
-    () => () => {
-      audioEngine.setChroma(false)
+  useEffect(() => {
+    audioEngine.setSpectrum(true)
+    const el = audioRef.current
+    return () => {
+      // Leaving the player: stop anything a pending start() would still do, the backing and the microphone.
+      runIdRef.current++
+      countInGainRef.current?.disconnect()
+      el?.pause()
+      audioEngine.setSpectrum(false)
       audioEngine.stopMic()
-    },
-    [],
-  )
+    }
+  }, [])
 
   const startMic = useCallback(async (overrides: { echoCancellation?: boolean } = {}) => {
     try {
@@ -433,6 +459,8 @@ export function Player({
   }, [startMic])
 
   const restart = useCallback(() => {
+    runIdRef.current++
+    cancelCountIn()
     endListen()
     const el = audioRef.current
     if (el) {
@@ -445,76 +473,105 @@ export function Player({
     trackerRef.current?.reset()
     judgementRef.current = null
     bleedRef.current = false
+    framesRef.current = 0
     clockRef.current?.reset()
     setPhase('ready')
-  }, [endListen, setPhase])
+  }, [cancelCountIn, endListen, setPhase])
 
   const start = useCallback(async (opts: { listen?: boolean } = {}) => {
     const el = audioRef.current
-    if (!el || phaseRef.current === 'countin' || phaseRef.current === 'playing') return
+    if (!el || startingRef.current || phaseRef.current === 'countin' || phaseRef.current === 'playing') return
     if (phaseRef.current === 'finished') restart()
     if (!opts.listen) endListen()
-    audioEngine.unlock()
-    primeMediaElement(el, mediaPrimedRef, playbackStartedRef)
-    setNotice(null)
-    setNoticeAction(null)
-    if (!opts.listen && !audioEngine.micActive && micStatus !== 'error') await startMic()
-    await audioEngine.resume()
-    const p = propsRef.current
-    // WebKit can reset the rate when a paused element starts; set the default too and re-assert after play().
-    el.defaultPlaybackRate = p.speed
-    el.playbackRate = p.speed
-    el.preservesPitch = true
-    const loopStart = p.loopBars ? (barStartTime(p.chart, p.loopBars[0]) ?? 0) : 0
-    if (el.currentTime < loopStart) el.currentTime = loopStart
-    const atStart = el.currentTime <= loopStart + 0.05
-    if (atStart) bleedRef.current = false
-    if (!opts.listen && atStart && countIn && !skipCountInRef.current) {
-      setPhase('countin')
-      const ctx = audioEngine.context
-      const bpm = p.chart.tempos[0]?.bpm ?? 120
-      const interval = 60 / bpm / p.speed
-      const beats = 4
-      const t0 = ctx.currentTime + 0.15
-      clickTimesRef.current = []
-      countInAttacksRef.current = []
-      for (let i = 0; i < beats; i++) {
-        playClick(ctx, ctx.destination, t0 + i * interval, i === 0 ? 'high' : 'mid', 0.6)
-        clickTimesRef.current.push(t0 + i * interval)
-        setTimeout(() => setCountdown(beats - i), Math.max(0, (t0 + i * interval - ctx.currentTime) * 1000))
-      }
-      await new Promise((r) => setTimeout(r, Math.max(0, (t0 + beats * interval - ctx.currentTime) * 1000)))
-      setCountdown(null)
-      if (audioEngine.micActive && detectBleed(clickTimesRef.current, countInAttacksRef.current)) {
-        bleedRef.current = true
-        setNotice('The microphone is hearing the speaker, so this run will not count towards your progress. Use headphones, or turn on speaker mode.')
-        setNoticeAction('speaker-mode')
-      }
-    }
+    const runId = ++runIdRef.current
+    const stale = () => runIdRef.current !== runId
+    startingRef.current = true
+    setStarting(true)
     try {
-      el.muted = false
-      playbackStartedRef.current = true
-      await el.play()
-      if (el.playbackRate !== p.speed) el.playbackRate = p.speed
-    } catch (err) {
-      playbackStartedRef.current = false
-      skipCountInRef.current = true
-      setNotice(err instanceof DOMException && err.name === 'NotAllowedError' ? 'Tap the play button once more to start.' : `Playback failed: ${err instanceof Error ? err.message : String(err)}`)
-      setPhase('ready')
-      return
+      audioEngine.unlock()
+      primeMediaElement(el, mediaPrimedRef, playbackStartedRef)
+      setNotice(null)
+      setNoticeAction(null)
+      if (!opts.listen && !micOffRef.current && !audioEngine.micActive && micStatus !== 'error') await startMic()
+      if (stale()) return
+      await audioEngine.resume()
+      if (stale()) return
+      const p = propsRef.current
+      // WebKit can reset the rate when a paused element starts; set the default too and re-assert after play().
+      el.defaultPlaybackRate = p.speed
+      el.playbackRate = p.speed
+      el.preservesPitch = true
+      const loopStart = p.loopBars ? (barStartTime(p.chart, p.loopBars[0]) ?? 0) : 0
+      if (el.currentTime < loopStart) el.currentTime = loopStart
+      const atStart = el.currentTime <= loopStart + 0.05
+      if (atStart) {
+        bleedRef.current = false
+        framesRef.current = 0
+      }
+      if (!opts.listen && atStart && countIn && !skipCountInRef.current) {
+        setPhase('countin')
+        const ctx = audioEngine.context
+        const bpm = p.chart.tempos[0]?.bpm ?? 120
+        const interval = 60 / bpm / p.speed
+        const beats = 4
+        const t0 = ctx.currentTime + 0.15
+        // Through its own gain node, so leaving or restarting can silence clicks that are already scheduled.
+        const gain = ctx.createGain()
+        gain.connect(ctx.destination)
+        countInGainRef.current = gain
+        clickTimesRef.current = []
+        countInAttacksRef.current = []
+        for (let i = 0; i < beats; i++) {
+          playClick(ctx, gain, t0 + i * interval, i === 0 ? 'high' : 'mid', 0.6)
+          clickTimesRef.current.push(t0 + i * interval)
+          setTimeout(() => !stale() && setCountdown(beats - i), Math.max(0, (t0 + i * interval - ctx.currentTime) * 1000))
+        }
+        await new Promise((r) => setTimeout(r, Math.max(0, (t0 + beats * interval - ctx.currentTime) * 1000)))
+        if (stale()) return
+        setCountdown(null)
+        // Hearing our own clicks only matters when what plays next has pitches in it: the guitar part,
+        // or a real recording. The click track alone cannot score notes.
+        const pitched = guideRef.current || !p.backingIsClick
+        if (pitched && audioEngine.micActive && detectBleed(clickTimesRef.current, countInAttacksRef.current)) {
+          bleedRef.current = true
+          setNotice('The microphone is hearing the speaker, so this run will not count towards your progress. Use headphones, or turn on speaker mode.')
+          setNoticeAction('speaker-mode')
+        }
+      }
+      try {
+        el.muted = false
+        playbackStartedRef.current = true
+        await el.play()
+        if (el.playbackRate !== p.speed) el.playbackRate = p.speed
+      } catch (err) {
+        if (stale()) return
+        playbackStartedRef.current = false
+        skipCountInRef.current = true
+        setNotice(err instanceof DOMException && err.name === 'NotAllowedError' ? 'Tap the play button once more to start.' : `Playback failed: ${err instanceof Error ? err.message : String(err)}`)
+        setPhase('ready')
+        return
+      }
+      if (stale()) {
+        el.pause()
+        return
+      }
+      skipCountInRef.current = false
+      const tracker = trackerRef.current
+      if (atStart) {
+        if (tracker) armTracker(tracker, loopStart)
+        startedAtRef.current = performance.now()
+      } else if (startedAtRef.current === null) {
+        startedAtRef.current = performance.now()
+      }
+      clockRef.current?.reset()
+      smootherRef.current.reset()
+      setPhase('playing')
+      if (opts.listen) setNotice('Listen first: the part is played for you and nothing is scored.')
+    } finally {
+      startingRef.current = false
+      setStarting(false)
     }
-    skipCountInRef.current = false
-    if (atStart) {
-      trackerRef.current?.seek(loopStart - settingsRef.current.latencyMs / 1000)
-      startedAtRef.current = performance.now()
-    } else if (startedAtRef.current === null) {
-      startedAtRef.current = performance.now()
-    }
-    clockRef.current?.reset()
-    smootherRef.current.reset()
-    setPhase('playing')
-    if (opts.listen) setNotice('Listen first: the part is played for you and nothing is scored.')
-  }, [countIn, endListen, micStatus, restart, setPhase, startMic])
+  }, [armTracker, countIn, endListen, micStatus, restart, setPhase, startMic])
 
   /** Plays the guide track once without the microphone or scoring, then returns to ready. */
   const listen = useCallback(() => {
@@ -535,22 +592,24 @@ export function Player({
 
   const pause = useCallback(() => {
     if (mode === 'test') return
+    runIdRef.current++
+    cancelCountIn()
     audioRef.current?.pause()
     playbackStartedRef.current = false
     setPhase('paused')
-  }, [mode, setPhase])
+  }, [cancelCountIn, mode, setPhase])
 
   const seek = useCallback(
     (t: number) => {
       const el = audioRef.current
       if (!el || mode === 'test') return
       el.currentTime = t
-      trackerRef.current?.seek(t - settingsRef.current.latencyMs / 1000)
+      if (trackerRef.current) armTracker(trackerRef.current, t)
       clockRef.current?.reset()
       judgementRef.current = null
       if (phaseRef.current === 'finished') setPhase('paused')
     },
-    [mode, setPhase],
+    [armTracker, mode, setPhase],
   )
 
   useImperativeHandle(ref, () => ({ start: () => void start(), listen, pause, restart, seek }), [start, listen, pause, restart, seek])
@@ -614,7 +673,7 @@ export function Player({
           <Button
             size="sm"
             variant={guide ? 'secondary' : 'ghost'}
-            disabled={busy}
+            disabled={busy || starting}
             aria-pressed={guide}
             onClick={() => setGuide((g) => !g)}
             title={guide ? 'Guitar part on: it plays along with the drums' : 'Guitar part muted: only the drums play'}
@@ -627,15 +686,18 @@ export function Player({
         <Button
           size="sm"
           variant={micStatus === 'on' ? 'secondary' : 'primary'}
+          disabled={busy || starting}
           onClick={() => {
             if (micStatus === 'on') {
+              micOffRef.current = true
               audioEngine.stopMic()
               setMicStatus('off')
               // Listening without scoring: play the part.
               if (guideAudio) setGuide(true)
             } else {
+              micOffRef.current = false
               audioEngine.unlock()
-              setGuide(settingsRef.current.echoCancellation)
+              setGuide(Boolean(guideAudio) && settingsRef.current.echoCancellation)
               void startMic()
             }
           }}
@@ -673,7 +735,8 @@ export function Player({
             <button
               type="button"
               onClick={() => void start()}
-              className="flex h-24 w-24 items-center justify-center rounded-full bg-accent text-slate-950 shadow-lg transition-transform hover:scale-105"
+              disabled={starting}
+              className="flex h-24 w-24 items-center justify-center rounded-full bg-accent text-slate-950 shadow-lg transition-transform hover:scale-105 disabled:opacity-60"
               aria-label="Start"
               data-testid="start"
             >

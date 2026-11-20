@@ -409,8 +409,12 @@ try {
     await p2.getByTestId('first-steps-start').click()
     await p2.waitForSelector('[data-testid="lesson-learn"]', { timeout: 15000 })
     await p2.screenshot({ path: path.join(OUT, `lesson-learn${SUFFIX}.png`) })
-    for (let i = 0; i < 8 && !(await p2.getByTestId('lesson-try').count()); i++) await p2.getByTestId('lesson-next').click()
-    await p2.waitForSelector('[data-testid="lesson-try"]', { timeout: 10000 })
+    // Next through the Learn cards; after the last one the practice is prepared (its guide is rendered), then shown.
+    for (let i = 0; i < 8 && (await p2.getByTestId('lesson-next').count()); i++) {
+      await p2.getByTestId('lesson-next').click()
+      await p2.waitForTimeout(150)
+    }
+    await p2.waitForSelector('[data-testid="lesson-try"]', { timeout: 20000 })
     check((await p2.getByTestId('listen').count()) === 1 && (await p2.getByTestId('start').count()) === 1, 'lesson 1 try step shows Listen first and Start')
     await p2.screenshot({ path: path.join(OUT, `lesson-try${SUFFIX}.png`) })
     await p2.getByTestId('start').click()

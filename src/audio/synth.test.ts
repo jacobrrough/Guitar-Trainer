@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { constantBeatGrid } from '../chart/timing'
 import type { Chart } from '../chart/types'
 import { midiToFreq } from '../music/pitch'
-import { applyGainLimited, guitarBody, loudnessGain, pluck, renderChartBacking } from './synth'
+import { guitarBody, isStaleRender, limitPeaks, loudnessGain, pluck, renderChartBacking, renderDrums, renderGuitarNote, renderStrings, synthAudioName, SYNTH_VERSION } from './synth'
 
 const SR = 44100
 
@@ -135,11 +135,39 @@ describe('loudness', () => {
     expect(loudnessGain(new Float32Array(SR), SR)).toBe(1)
   })
 
-  it('never lets the peak pass the ceiling', () => {
-    const s = applyGainLimited(new Float32Array([0.5, -0.5, 0.1]), 4, 0.95)
-    expect(Math.max(...Array.from(s).map(Math.abs))).toBeCloseTo(0.95, 5)
-    const t = applyGainLimited(new Float32Array([0.1, -0.1]), 2, 0.95)
-    expect(t[0]).toBeCloseTo(0.2, 5)
+  it('limits stray peaks without turning the rest down', () => {
+    const x = new Float32Array(SR)
+    for (let i = 0; i < x.length; i++) x[i] = 0.3 * Math.sin((2 * Math.PI * 220 * i) / SR)
+    for (let i = 20000; i < 20200; i++) x[i] *= 5
+    const before = x[5000]
+    limitPeaks(x, SR, 0.95)
+    let peak = 0
+    for (const v of x) peak = Math.max(peak, Math.abs(v))
+    expect(peak).toBeLessThanOrEqual(0.951)
+    expect(peak).toBeGreaterThan(0.8)
+    expect(x[5000]).toBe(before)
+    expect(x[40000]).toBeCloseTo(0.3 * Math.sin((2 * Math.PI * 220 * 40000) / SR), 6)
+    const quiet = new Float32Array([0.1, -0.2, 0.3])
+    expect(Array.from(limitPeaks(quiet, SR))).toEqual([0.1, -0.2, 0.3].map((v) => Math.fround(v)))
+  })
+})
+
+describe('stored audio names', () => {
+  it('carry the renderer version and the voice', () => {
+    expect(synthAudioName('ode-to-joy', 1)).toBe(`ode-to-joy.v${SYNTH_VERSION}s1.wav`)
+    expect(synthAudioName('ode-to-joy')).toBe(`ode-to-joy.v${SYNTH_VERSION}m.wav`)
+  })
+
+  it('are stale when an older renderer, the model, or another sample pack made them', () => {
+    const base = 'ode-to-joy'
+    expect(isStaleRender('ode-to-joy.wav', base, 1)).toBe(true)
+    expect(isStaleRender('ode-to-joy.v3.wav', base, 1)).toBe(true)
+    expect(isStaleRender(synthAudioName(base, 1), base, 1)).toBe(false)
+    expect(isStaleRender(synthAudioName(base, null), base, 1)).toBe(true)
+    expect(isStaleRender(synthAudioName(base, 1), base, 2)).toBe(true)
+    // While the samples are unavailable, keep what is there: a sampled render is not replaced by the model.
+    expect(isStaleRender(synthAudioName(base, 1), base, null)).toBe(false)
+    expect(isStaleRender(synthAudioName(base, null), base, null)).toBe(false)
   })
 })
 
@@ -165,18 +193,28 @@ describe('renderChartBacking', () => {
     timeSignatures: [{ time: 0, numerator: 4, denominator: 4 }],
   } as unknown as Chart
 
-  it('renders strings and click at a consistent level, deterministically', () => {
+  it('renders the guitar over the click deterministically, and the click alone at the same level', () => {
     const full = renderChartBacking(chart, { seed: 7 })
-    const again = renderChartBacking(chart, { seed: 7 })
+    expect(renderChartBacking(chart, { seed: 7 })).toEqual(full)
     const clickOnly = renderChartBacking(chart, { seed: 7, plucks: false })
-    expect(again).toEqual(full)
+    expect(clickOnly).toEqual(renderDrums(chart))
     expect(clickOnly.length).toBe(full.length)
-    const peak = (s: Float32Array) => Math.max(...Array.from(s.subarray(0, SR)).map(Math.abs))
-    expect(peak(full)).toBeLessThanOrEqual(0.95)
+    const strings = renderStrings(chart, { seed: 7 })
+    const peak = (s: Float32Array) => s.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
+    expect(peak(full)).toBeLessThanOrEqual(0.951)
     expect(peak(full)).toBeGreaterThan(0.2)
-    // The click track is soft under the strings, and the same when played alone.
-    expect(peak(clickOnly)).toBeLessThan(peak(full))
+    // The click is soft under the guitar, and the mix is the two stems added (before any limiting).
     expect(rms(clickOnly, 0.3, 0.1)).toBeLessThan(rms(full, 0.3, 0.1))
+    const at = Math.round(0.6 * SR)
+    expect(full[at]).toBeCloseTo(strings[at] + clickOnly[at], 3)
+    expect(renderChartBacking(chart, { plucks: false, click: false }).every((v) => v === 0)).toBe(true)
+  })
+
+  it('renders a single reference note that starts on time and peaks at 0.8', () => {
+    const note = renderGuitarNote(null, 57, 1, SR)
+    expect(note.length).toBe(Math.round(0.01 * SR) + SR)
+    expect(note.reduce((m, v) => Math.max(m, Math.abs(v)), 0)).toBeCloseTo(0.8, 2)
+    expect(Math.abs(1200 * Math.log2(estimateFreq(note, 0.2, 220) / 220))).toBeLessThan(6)
   })
 
   it('cuts a note when the next one lands on the same string', () => {

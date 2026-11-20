@@ -1,21 +1,43 @@
 /**
- * Offline guitar synthesiser for the demo song, the bundled songs, generated exercises and the ear
- * trainer. Each note is an extended Karplus–Strong string (Jaffe & Smith): a noise burst shaped by
- * where and how hard the string is picked, circulating through a delay line tuned to the exact
- * period, losing energy the way a real string does. The strings go through a small guitar-body
- * resonator, over a soft kick-and-hat click track, and the mix is levelled by loudness. Everything
- * renders straight into a Float32Array, so it runs in tests and workers without an AudioContext.
+ * Offline audio for the demo song, the bundled songs, generated exercises and the ear trainer: the
+ * guitar part played from real recordings (`instrument/sampler.ts`; the string model in
+ * `instrument/stringModel.ts` is the fallback when the sample pack is not loaded) over a soft
+ * kick-and-hat click track. Everything renders straight into a Float32Array, so it runs in tests and
+ * workers without an AudioContext.
  */
 import type { Chart, ChartNote } from '../chart/types'
 import { midiToFreq } from '../music/pitch'
+import type { SampleBank } from './instrument/bank'
+import { renderSampledNote } from './instrument/sampler'
+import { guitarBody, pluck, roomAir } from './instrument/stringModel'
+
+export { guitarBody, pluck, roomAir, type PluckOptions } from './instrument/stringModel'
 
 export const SYNTH_SAMPLE_RATE = 44100
-/** Bumped whenever the sound changes, so audio rendered by an older synth and stored in the library is rendered again. */
-export const SYNTH_VERSION = 3
+/** Bumped whenever the sound changes, so audio rendered by an older version and stored in the library is rendered again. */
+export const SYNTH_VERSION = 4
 
-/** File name for stored synthesised audio; carries the synth version so stale renders can be found. */
-export function synthAudioName(base: string): string {
-  return `${base}.v${SYNTH_VERSION}.wav`
+/**
+ * File name for stored rendered audio. It carries the renderer version and the voice that played it
+ * (`s<pack version>` for the recorded samples, `m` for the string model), so stale renders can be
+ * found and a song rendered while the samples were unavailable is rendered again once they are.
+ */
+export function synthAudioName(base: string, samplePackVersion: number | null = null): string {
+  return `${base}.v${SYNTH_VERSION}${samplePackVersion === null ? 'm' : `s${samplePackVersion}`}.wav`
+}
+
+/**
+ * True when stored audio called `name` (for the song `base`) should be rendered again: it came from an
+ * older renderer, or from the string model while the recorded samples (`voice` = pack version) are
+ * available now, or from a different sample pack. A render made with samples is kept while they are
+ * unavailable.
+ */
+export function isStaleRender(name: string, base: string, voice: number | null): boolean {
+  if (!name.startsWith(`${base}.v`) || !name.endsWith('.wav')) return true
+  const tag = /^(\d+)(m|s(\d+))$/.exec(name.slice(base.length + 2, -4))
+  if (!tag || Number(tag[1]) !== SYNTH_VERSION) return true
+  if (voice === null) return false
+  return tag[2] === 'm' || Number(tag[3]) !== voice
 }
 
 function lcg(seed: number): () => number {
@@ -27,263 +49,6 @@ function lcg(seed: number): () => number {
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
-
-/** One-pole low-pass coefficient for a cutoff in Hz. */
-function onePole(cutoff: number, sampleRate: number): number {
-  return 1 - Math.exp((-2 * Math.PI * cutoff) / sampleRate)
-}
-
-export interface PluckOptions {
-  /** How hard the string is struck, 0..1. Harder is louder and brighter. */
-  velocity?: number
-  /** Picking point as a fraction of the string length from the bridge (0.5 is the middle, a pick sits near 0.15). */
-  pickPosition?: number
-  /** Nylon strings are darker and die away sooner than steel. */
-  nylon?: boolean
-  /** Wound bass strings are darker than plain ones; by default inferred from the pitch. */
-  wound?: boolean
-}
-
-/**
- * Karplus–Strong pluck mixed into `out` from `startSample`.
- *
- * What makes it sound like a string rather than a loop: the excitation is the shape of a string
- * pulled at the pick point and released; the string is run in two polarisations, slightly detuned
- * and one dying faster, which gives the slow beat and two-stage decay of a real note; the loop has a
- * low-pass whose cutoff depends on the string and the stroke (the high partials die first), a
- * fractional delay (all-pass) so every note is in tune, a loss factor from a realistic 60 dB decay
- * time, and a touch of pitch sag after the attack; and the pick itself is heard as a short unpitched tick.
- */
-export function pluck(
-  out: Float32Array,
-  startSample: number,
-  freq: number,
-  seconds: number,
-  amp: number,
-  seed: number,
-  sampleRate = SYNTH_SAMPLE_RATE,
-  options: PluckOptions = {},
-): void {
-  if (startSample >= out.length || freq <= 0) return
-  const velocity = clamp(options.velocity ?? 0.8, 0.05, 1)
-  const nylon = options.nylon ?? false
-  const wound = options.wound ?? freq < 230
-  const rand = lcg(seed)
-  const pickPosition = clamp(options.pickPosition ?? 0.1 + 0.07 * rand(), 0.05, 0.5)
-  const total = Math.min(out.length - startSample, Math.round(seconds * sampleRate))
-  if (total <= 0) return
-  const attack = Math.max(1, Math.round(0.003 * sampleRate))
-  const fadeStart = total - Math.round(0.03 * sampleRate)
-
-  // Loop low-pass: the string's own damping of its high partials, set by the stroke and the string but
-  // never so low that it eats the fundamental of a high note (the loss factor below owns that decay).
-  // Its delay is taken out of the loop length.
-  const loopCutoff = Math.max((nylon ? 0.6 : 1) * (wound ? 0.6 : 1) * (2500 + 6500 * velocity), 30 * freq)
-  const la = onePole(loopCutoff, sampleRate)
-  const lpDelay = (1 - la) / la
-
-  // Two polarisations: a slow beat of well under a hertz, the second one fading about twice as fast.
-  const beat = 0.35 + 0.35 * rand()
-  // 60 dB decay time: about nine seconds for the low E, four for the high E at the twelfth fret.
-  const t60 = clamp((nylon ? 4.5 : 8) * (110 / freq) ** 0.35, 1.5, 10)
-  const loops = [
-    { f: freq + beat / 2, t60, gain: 1 / 1.7 },
-    { f: freq - beat / 2, t60: t60 * 0.5, gain: 0.7 / 1.7 },
-  ].map((l) => {
-    const exact = sampleRate / l.f - lpDelay
-    const n = Math.max(2, Math.floor(exact - 0.4))
-    return { ...l, n, frac0: exact - n, rho: 10 ** (-3 / (l.f * l.t60)) }
-  })
-  const nMax = Math.max(...loops.map((l) => l.n))
-
-  // Excitation: the string pulled into a triangle at the pick point and let go. The delay line carries
-  // the slope of that shape (a two-level pulse), whose harmonics fall off like a real pluck's, with a
-  // strong fundamental every time; a little noise is the pick scraping the string.
-  const exc = new Float32Array(nMax)
-  const pickSample = Math.max(1, Math.min(nMax - 1, Math.round(pickPosition * nMax)))
-  const up = 1 / pickSample
-  const down = 1 / (nMax - pickSample)
-  const noise = 0.25 * velocity
-  for (let i = 0; i < nMax; i++) exc[i] = (i < pickSample ? up : -down) * 0.5 * nMax * 0.1 + noise * (rand() * 2 - 1)
-  const cutoff = (nylon ? 0.5 : 1) * (1500 + 6000 * velocity * velocity)
-  const a = onePole(cutoff, sampleRate)
-  let y = 0
-  for (let i = 0; i < nMax; i++) {
-    y += a * (exc[i] - y)
-    exc[i] = y
-  }
-  let mean = 0
-  for (let i = 0; i < nMax; i++) mean += exc[i]
-  mean /= nMax
-  let peak = 1e-9
-  for (let i = 0; i < nMax; i++) {
-    exc[i] -= mean
-    peak = Math.max(peak, Math.abs(exc[i]))
-  }
-  const scale = (0.35 + 0.65 * velocity) / peak
-  for (let i = 0; i < nMax; i++) exc[i] *= scale
-
-  const glideK = Math.exp(-1 / (0.08 * sampleRate))
-  for (const l of loops) {
-    const n = l.n
-    const buf = exc.slice(0, n)
-    let idx = 0
-    let apX1 = 0
-    let apY1 = 0
-    let lp = 0
-    let glide = 0.3
-    const g = amp * l.gain
-    for (let i = 0; i < total; i++) {
-      const cur = buf[idx]
-      const nextIdx = idx + 1 === n ? 0 : idx + 1
-      lp += la * (cur * l.rho - lp)
-      // Plucked strings start a touch sharp (the extra tension of the pull) and settle within ~100 ms.
-      const frac = l.frac0 - glide
-      glide *= glideK
-      const c = (1 - frac) / (1 + frac)
-      const ap = c * (lp - apY1) + apX1
-      apX1 = lp
-      apY1 = ap
-      buf[idx] = ap
-      const env = i < attack ? i / attack : i > fadeStart ? (total - i) / Math.max(1, total - fadeStart) : 1
-      out[startSample + i] += cur * g * env
-      idx = nextIdx
-    }
-  }
-
-  // The pick: a few milliseconds of unpitched tick, and on hard strokes a touch of body thump.
-  const tick = Math.min(total, Math.round(0.006 * sampleRate))
-  const hpK = Math.exp((-2 * Math.PI * 1800) / sampleRate)
-  const lpA = onePole(6000, sampleRate)
-  let hp = 0
-  let prev = 0
-  let tl = 0
-  const tickAmp = 0.12 * velocity * amp
-  for (let i = 0; i < tick; i++) {
-    const x = rand() * 2 - 1
-    hp = hpK * (hp + x - prev)
-    prev = x
-    tl += lpA * (hp - tl)
-    out[startSample + i] += tl * tickAmp * Math.exp(-i / (0.0018 * sampleRate))
-  }
-  const thump = Math.min(total, Math.round(0.06 * sampleRate))
-  const thumpAmp = 0.06 * velocity * velocity * amp
-  for (let i = 0; i < thump; i++) {
-    const t = i / sampleRate
-    out[startSample + i] += Math.sin(2 * Math.PI * 150 * t) * Math.exp(-t / 0.02) * thumpAmp
-  }
-}
-
-/** Direct-form biquad (RBJ cookbook). */
-class Biquad {
-  private b0 = 1
-  private b1 = 0
-  private b2 = 0
-  private a1 = 0
-  private a2 = 0
-  private z1 = 0
-  private z2 = 0
-
-  static bandpass(freq: number, q: number, sampleRate: number): Biquad {
-    const f = new Biquad()
-    const w0 = (2 * Math.PI * freq) / sampleRate
-    const alpha = Math.sin(w0) / (2 * q)
-    const a0 = 1 + alpha
-    f.b0 = alpha / a0
-    f.b1 = 0
-    f.b2 = -alpha / a0
-    f.a1 = (-2 * Math.cos(w0)) / a0
-    f.a2 = (1 - alpha) / a0
-    return f
-  }
-
-  static highpass(freq: number, q: number, sampleRate: number): Biquad {
-    const f = new Biquad()
-    const w0 = (2 * Math.PI * freq) / sampleRate
-    const alpha = Math.sin(w0) / (2 * q)
-    const cos = Math.cos(w0)
-    const a0 = 1 + alpha
-    f.b0 = (1 + cos) / 2 / a0
-    f.b1 = -(1 + cos) / a0
-    f.b2 = (1 + cos) / 2 / a0
-    f.a1 = (-2 * cos) / a0
-    f.a2 = (1 - alpha) / a0
-    return f
-  }
-
-  static lowpass(freq: number, q: number, sampleRate: number): Biquad {
-    const f = new Biquad()
-    const w0 = (2 * Math.PI * freq) / sampleRate
-    const alpha = Math.sin(w0) / (2 * q)
-    const cos = Math.cos(w0)
-    const a0 = 1 + alpha
-    f.b0 = (1 - cos) / 2 / a0
-    f.b1 = (1 - cos) / a0
-    f.b2 = (1 - cos) / 2 / a0
-    f.a1 = (-2 * cos) / a0
-    f.a2 = (1 - alpha) / a0
-    return f
-  }
-
-  process(x: number): number {
-    const y = this.b0 * x + this.z1
-    this.z1 = this.b1 * x - this.a1 * y + this.z2
-    this.z2 = this.b2 * x - this.a2 * y
-    return y
-  }
-}
-
-/**
- * A small guitar body, in place: a dozen resonances of a steel-string box (air at ~100 Hz, the top's
- * modes above it, thinning out towards 2 kHz) added to the dry strings, the box's weak radiation
- * below about 105 Hz (which leaves the low strings' fundamentals under their harmonics, as a
- * microphone hears them), and a roll-off above 6.5 kHz so the attack does not fizz.
- */
-export function guitarBody(samples: Float32Array, sampleRate = SYNTH_SAMPLE_RATE): Float32Array {
-  const modes = [
-    [98, 6, 0.45],
-    [200, 6, 0.35],
-    [260, 8, 0.2],
-    [345, 8, 0.18],
-    [420, 9, 0.15],
-    [520, 10, 0.12],
-    [640, 10, 0.1],
-    [780, 12, 0.1],
-    [960, 12, 0.08],
-    [1180, 14, 0.07],
-    [1500, 14, 0.06],
-    [2100, 12, 0.05],
-  ].map(([f, q, gain]) => ({ filter: Biquad.bandpass(f, q, sampleRate), gain }))
-  const bottom = Biquad.highpass(105, 0.7, sampleRate)
-  const top = Biquad.lowpass(6500, 0.6, sampleRate)
-  for (let i = 0; i < samples.length; i++) {
-    const x = samples[i]
-    let y = x
-    for (const m of modes) y += m.gain * m.filter.process(x)
-    samples[i] = top.process(bottom.process(y))
-  }
-  return samples
-}
-
-/** A hint of room, in place: four soft early reflections, low-passed, so the guitar is not bone dry. */
-export function roomAir(samples: Float32Array, sampleRate = SYNTH_SAMPLE_RATE): Float32Array {
-  const taps = [
-    [0.011, 0.1],
-    [0.017, 0.08],
-    [0.023, 0.06],
-    [0.031, 0.05],
-  ].map(([t, gain]) => ({ delay: Math.round(t * sampleRate), gain }))
-  const dry = samples.slice()
-  const a = onePole(3000, sampleRate)
-  let lp = 0
-  for (let i = 0; i < samples.length; i++) {
-    let wet = 0
-    for (const tap of taps) if (i >= tap.delay) wet += tap.gain * dry[i - tap.delay]
-    lp += a * (wet - lp)
-    samples[i] += lp
-  }
-  return samples
-}
 
 /** Short high-passed noise burst: a closed hi-hat tick. */
 export function hat(out: Float32Array, startSample: number, amp: number, seconds: number, seed: number, sampleRate = SYNTH_SAMPLE_RATE): void {
@@ -349,18 +114,64 @@ export function peakOf(samples: Float32Array): number {
 }
 
 /**
- * Scales `samples` by `gain`, then down again if `peak` (the mix's, by default the samples' own) would
- * pass `ceiling`. Never boosts beyond `gain`.
+ * Look-ahead peak limiter, in place: wherever the signal would pass `ceiling` the gain dips smoothly
+ * around the peak (10 ms either side) and nowhere else, so one loud strum does not turn the whole
+ * track down.
  */
-export function applyGainLimited(samples: Float32Array, gain: number, ceiling = 0.95, peak = peakOf(samples)): Float32Array {
-  const g = peak * gain > ceiling ? ceiling / peak : gain
-  for (let i = 0; i < samples.length; i++) samples[i] *= g
+export function limitPeaks(samples: Float32Array, sampleRate = SYNTH_SAMPLE_RATE, ceiling = 0.95): Float32Array {
+  const n = samples.length
+  let over = false
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(samples[i]) > ceiling) {
+      over = true
+      break
+    }
+  }
+  if (!over) return samples
+  const L = Math.max(1, Math.round(0.01 * sampleRate))
+  // Gain each sample needs, then its minimum over a centred window of 2L+1 (monotonic deque), then a moving average of the same width.
+  const need = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    const a = Math.abs(samples[i])
+    need[i] = a > ceiling ? ceiling / a : 1
+  }
+  const lowest = new Float32Array(n)
+  const deque = new Int32Array(n)
+  let head = 0
+  let tail = 0
+  let next = 0
+  for (let i = 0; i < n; i++) {
+    const hi = Math.min(n - 1, i + L)
+    while (next <= hi) {
+      while (tail > head && need[deque[tail - 1]] >= need[next]) tail--
+      deque[tail++] = next++
+    }
+    while (deque[head] < i - L) head++
+    lowest[i] = need[deque[head]]
+  }
+  let sum = 0
+  let count = 0
+  let right = -1
+  let left = 0
+  for (let i = 0; i < n; i++) {
+    const hi = Math.min(n - 1, i + L)
+    const lo = Math.max(0, i - L)
+    while (right < hi) {
+      sum += lowest[++right]
+      count++
+    }
+    while (left < lo) {
+      sum -= lowest[left++]
+      count--
+    }
+    samples[i] *= Math.min(need[i], sum / count)
+  }
   return samples
 }
 
 export interface BackingOptions {
   sampleRate?: number
-  /** Render the chart's notes as plucked strings (reference track). */
+  /** Render the chart's notes on the guitar (reference track). */
   plucks?: boolean
   /** Click on every beat, accented kick on downbeats. */
   click?: boolean
@@ -368,30 +179,34 @@ export interface BackingOptions {
   /** Extra seconds after the last note. */
   tail?: number
   seed?: number
-  /** Nylon-string tone instead of steel. */
+  /** Nylon-string tone instead of steel (string model only). */
   nylon?: boolean
+  /** Recorded guitar samples; without them the string model plays. */
+  bank?: SampleBank | null
 }
 
 /** Seconds between the first strings of a strummed chord (a relaxed downstroke, which then speeds up). */
 const STRUM_GAP = 0.017
+/** Loudness of the guitar stem (RMS of its loud parts) and the fixed level of the click track under it. */
+const STRINGS_TARGET = 0.15
+const DRUM_GAIN = 1.2
+
+function chartLength(chart: Chart, sampleRate: number, tail: number): number {
+  const lastNoteEnd = chart.notes.reduce((m, n) => Math.max(m, n.time + n.duration), 0)
+  return Math.ceil(Math.max(chart.duration, lastNoteEnd + tail, 1) * sampleRate)
+}
 
 /**
- * Renders a chart to mono PCM: plucked strings (optional) over a beat click. The strings are
- * rendered either way so the click track comes out at exactly the level it has under the strings,
- * and the two stems can be swapped without a jump in loudness. Deterministic for identical input.
+ * The chart's notes played on the guitar, as a stem levelled to a fixed loudness. A new note on a
+ * string stops the one before it, chords are strummed from the lowest string up, no two strokes are
+ * equally hard, and repeated notes cycle through different takes. Deterministic for identical input.
  */
-export function renderChartBacking(chart: Chart, options: BackingOptions = {}): Float32Array {
+export function renderStrings(chart: Chart, options: BackingOptions = {}): Float32Array {
   const sampleRate = options.sampleRate ?? SYNTH_SAMPLE_RATE
-  const tail = options.tail ?? 1
-  const plucks = options.plucks ?? true
-  const click = options.click ?? true
   const pluckGain = options.pluckGain ?? 1
   const seed = options.seed ?? 1000
-  const lastNoteEnd = chart.notes.reduce((m, n) => Math.max(m, n.time + n.duration), 0)
-  const duration = Math.max(chart.duration, lastNoteEnd + tail, 1)
-  const length = Math.ceil(duration * sampleRate)
-
-  const strings = new Float32Array(length)
+  const bank = options.bank ?? null
+  const strings = new Float32Array(chartLength(chart, sampleRate, options.tail ?? 1))
   const notes = [...chart.notes].sort((a, b) => a.time - b.time || a.midi - b.midi)
   // A new note on the same string stops the one before it, as a fretting hand would.
   const ringUntil = new Map<ChartNote, number>()
@@ -409,6 +224,7 @@ export function renderChartBacking(chart: Chart, options: BackingOptions = {}): 
     chordOrder.set(n.chordId, group)
   }
   const human = lcg(seed + 99)
+  const takes = new Map<number, number>()
   notes.forEach((n, i) => {
     const group = chordOrder.get(n.chordId) ?? [n]
     const strumIndex = group.length > 1 ? group.findIndex((m) => m === n) : 0
@@ -419,32 +235,66 @@ export function renderChartBacking(chart: Chart, options: BackingOptions = {}): 
     const cutOff = ringUntil.get(n) ?? Infinity
     const seconds = Math.max(0.05, Math.min(n.duration + 1.5, 4, cutOff - n.time))
     const amp = (group.length > 1 ? 0.32 : 0.5) * pluckGain
-    const velocity = clamp(n.velocity * (0.9 + 0.2 * human()), 0.05, 1)
-    pluck(strings, start, midiToFreq(n.midi), seconds, amp, seed + i * 17, sampleRate, {
-      velocity: 0.45 + 0.55 * velocity,
-      nylon: options.nylon,
-      wound: n.string <= 3,
-    })
+    const velocity = 0.45 + 0.55 * clamp(n.velocity * (0.9 + 0.2 * human()), 0.05, 1)
+    if (bank) {
+      const key = Math.round(n.midi)
+      const take = takes.get(key) ?? 0
+      takes.set(key, take + 1)
+      renderSampledNote(strings, start, bank, n.midi, seconds, amp, sampleRate, { velocity, variant: take })
+    } else {
+      pluck(strings, start, midiToFreq(n.midi), seconds, amp, seed + i * 17, sampleRate, { velocity, nylon: options.nylon, wound: n.string <= 3 })
+    }
   })
-  guitarBody(strings, sampleRate)
+  // The recordings were made in an anechoic room and already contain the guitar's body; the model needs one.
+  if (!bank) guitarBody(strings, sampleRate)
   roomAir(strings, sampleRate)
+  const gain = loudnessGain(strings, sampleRate, STRINGS_TARGET)
+  for (let i = 0; i < strings.length; i++) strings[i] *= gain
+  return strings
+}
 
-  const drums = new Float32Array(length)
+/** One guitar note of `seconds` at `sampleRate`, starting 10 ms into the buffer and peaking at 0.8 (the ear trainer's reference tone). */
+export function renderGuitarNote(bank: SampleBank | null, midi: number, seconds: number, sampleRate: number): Float32Array {
+  const lead = Math.round(0.01 * sampleRate)
+  const out = new Float32Array(lead + Math.round(seconds * sampleRate))
+  if (bank) {
+    renderSampledNote(out, lead, bank, midi, seconds, 0.8, sampleRate, { velocity: 0.85 })
+  } else {
+    pluck(out, lead, midiToFreq(midi), seconds, 0.8, 7 + Math.round(midi), sampleRate)
+    guitarBody(out, sampleRate)
+  }
+  return normalize(out, 0.8)
+}
+
+/** The click track: a soft hat on every beat and a kick on the strong ones, at a fixed level. Deterministic. */
+export function renderDrums(chart: Chart, options: Pick<BackingOptions, 'sampleRate' | 'tail'> = {}): Float32Array {
+  const sampleRate = options.sampleRate ?? SYNTH_SAMPLE_RATE
+  const drums = new Float32Array(chartLength(chart, sampleRate, options.tail ?? 1))
   chart.beats.forEach((b, i) => {
     const s = Math.round(b.time * sampleRate)
-    hat(drums, s, b.isDownbeat ? 0.065 : 0.04, 0.03, 77 + i, sampleRate)
-    if (b.isDownbeat || b.beatInBar % 2 === 0) kick(drums, s, b.isDownbeat ? 0.4 : 0.26, sampleRate)
+    if (s < 0) return
+    hat(drums, s, (b.isDownbeat ? 0.065 : 0.04) * DRUM_GAIN, 0.03, 77 + i, sampleRate)
+    if (b.isDownbeat || b.beatInBar % 2 === 0) kick(drums, s, (b.isDownbeat ? 0.4 : 0.26) * DRUM_GAIN, sampleRate)
   })
+  return drums
+}
 
-  // One gain for every stem, decided on the full mix, so the click track alone is exactly as loud as it is under the strings.
-  const mix = new Float32Array(length)
-  for (let i = 0; i < length; i++) mix[i] = strings[i] + drums[i]
-  const gain = loudnessGain(mix, sampleRate)
-  const mixPeak = peakOf(mix)
-
-  const out = new Float32Array(length)
-  for (let i = 0; i < length; i++) out[i] = (plucks ? strings[i] : 0) + (click ? drums[i] : 0)
-  return applyGainLimited(out, gain, 0.95, mixPeak)
+/**
+ * Renders a chart to mono PCM: the guitar part (optional) over the click track (optional). The two
+ * stems are levelled independently, so the click track alone is as loud as it is under the guitar,
+ * and only stray peaks of the mix are limited. Deterministic for identical input.
+ */
+export function renderChartBacking(chart: Chart, options: BackingOptions = {}): Float32Array {
+  const sampleRate = options.sampleRate ?? SYNTH_SAMPLE_RATE
+  const plucks = options.plucks ?? true
+  const click = options.click ?? true
+  if (!plucks) return click ? renderDrums(chart, options) : new Float32Array(chartLength(chart, sampleRate, options.tail ?? 1))
+  const out = renderStrings(chart, options)
+  if (click) {
+    const drums = renderDrums(chart, options)
+    for (let i = 0; i < out.length; i++) out[i] += drums[i]
+  }
+  return limitPeaks(out, sampleRate)
 }
 
 /** 16-bit PCM mono WAV. */

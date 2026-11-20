@@ -1,8 +1,9 @@
 import { constantBeatGrid } from '../../chart/timing'
 import type { Chart, ChartNote } from '../../chart/types'
 import type { NewSong } from '../../db/db'
-import { renderChartBackingAsync } from '../../audio/renderBacking'
-import { encodeWav, renderChartBacking, synthAudioName } from '../../audio/synth'
+import { guitarVoice, loadGuitar, renderChartAudio } from '../../audio/guitar'
+import type { SampleBank } from '../../audio/instrument/bank'
+import { encodeWav, renderChartBacking, renderDrums, synthAudioName } from '../../audio/synth'
 
 const TUNING = [40, 45, 50, 55, 59, 64]
 const BPM = 90
@@ -72,34 +73,37 @@ export function demoChart(): Chart {
   }
 }
 
-export function renderDemoAudio(): Float32Array {
-  return renderChartBacking(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000 })
+/** The demo riff over its click track, rendered on this thread (tests; the app goes through `renderDemoAudioAsync`). */
+export function renderDemoAudio(bank: SampleBank | null = null): Float32Array {
+  return renderChartBacking(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000, bank })
 }
 
-/** `renderDemoAudio` off the main thread when possible. */
+/** The demo riff over its click track with the app's current guitar voice, off the main thread when possible. */
 export function renderDemoAudioAsync(): Promise<Float32Array> {
-  return renderChartBackingAsync(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000 })
+  return renderChartAudio(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000 })
 }
 
-/** The demo's drums and click without the riff: what plays while the microphone scores. */
+/** The demo's click track without the riff: what plays while the microphone scores. */
 export function renderDemoBacking(): Float32Array {
-  return renderChartBacking(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000, plucks: false })
+  return renderDrums(demoChart(), { sampleRate: SAMPLE_RATE })
 }
 
 export { encodeWav }
 
-/** Stored name of the demo's audio; changes with the synth version. */
-export const DEMO_AUDIO_NAME = synthAudioName('demo-riff')
+/** Base of the demo's stored audio name; the full name carries the renderer version and voice. */
+export const DEMO_AUDIO_BASE = 'demo-riff'
 
-/** A short synthesised riff + chord progression, so the app is playable without any files. */
-export function createDemoSong(): NewSong {
+/** A short riff + chord progression played by the app's own guitar, so the app is playable without any files. */
+export async function createDemoSong(): Promise<NewSong> {
   const chart = demoChart()
+  await loadGuitar()
+  const voice = guitarVoice()
   return {
     title: chart.title,
     artist: chart.artist,
-    audio: encodeWav(renderDemoAudio()),
+    audio: encodeWav(await renderDemoAudioAsync()),
     audioType: 'audio/wav',
-    audioName: DEMO_AUDIO_NAME,
+    audioName: synthAudioName(DEMO_AUDIO_BASE, voice),
     duration: DURATION,
     chart,
     source: 'demo',

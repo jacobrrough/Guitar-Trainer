@@ -2,7 +2,7 @@ import { Activity, CalendarCheck, ListMusic, Settings, Timer, TrendingUp } from 
 import { useEffect } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { cx } from '../components/ui'
-import { refreshSynthesisedAudio } from '../songs/refresh'
+import { refreshRenderedAudio } from '../songs/refresh'
 
 const NAV = [
   { to: '/', label: 'Today', icon: CalendarCheck, end: true },
@@ -14,9 +14,9 @@ const NAV = [
 ]
 
 export function AppLayout() {
-  // Songs rendered by an older synth get their audio rendered again, once per launch, in the background.
+  // Load the recorded guitar and render again any stored song that an older renderer made, once per launch, in the background.
   useEffect(() => {
-    refreshSynthesisedAudio().catch(() => {
+    refreshRenderedAudio().catch(() => {
       /* the library keeps the old render */
     })
   }, [])

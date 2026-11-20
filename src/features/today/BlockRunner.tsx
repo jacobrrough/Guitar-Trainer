@@ -5,7 +5,7 @@ import { getSettings, useSettings } from '../../app/settings'
 import { encodeWav } from '../../audio/synth'
 import { generateLevels } from '../../chart/difficulty'
 import { Badge, Button } from '../../components/ui'
-import { db, songAudioBlob, type SongRecord } from '../../db/db'
+import { db, type SongRecord } from '../../db/db'
 import { getTuning } from '../../music/tunings'
 import {
   completeExerciseBlock,
@@ -22,8 +22,8 @@ import { SKILLS_BY_ID } from '../../training/skills'
 import { localDateString } from '../../training/store'
 import type { AttemptResult, Block, ExerciseBlock, SessionRecord, SongBlock } from '../../training/types'
 import { useTodaySession } from '../../training/useTraining'
-import { renderDemoBacking } from '../library/demoSong'
-import { builtInBacking } from '../../songs'
+import { songPlayback } from '../../songs/playback'
+import { useExerciseGuide } from '../play/useExerciseGuide'
 import { Player, type PlayerHandle } from '../play/Player'
 import { EarTrainer } from './EarTrainer'
 import type { ScoreSummary } from '../play/scoring'
@@ -133,7 +133,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   }, [block.id, tempo, tuning.join(',')])
   const exercise = exerciseResult.exercise
   const audio = useMemo(() => (exercise?.backing ? encodeWav(exercise.backing, exercise.backingSampleRate) : null), [exercise])
-  const guideAudio = useMemo(() => (exercise?.guide ? encodeWav(exercise.guide, exercise.backingSampleRate) : null), [exercise])
+  const { guide: guideAudio, ready: guideReady } = useExerciseGuide(exercise)
 
   // After "Next rep": the Player resets through resetKey (child effect), then we start it.
   // The audio element gets its new source one render later, so wait briefly.
@@ -341,6 +341,13 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   }
 
   if (!audio) return null
+  if (!guideReady) {
+    return (
+      <div className="flex h-dvh items-center justify-center text-muted" data-testid="block-runner">
+        Getting your exercise ready…
+      </div>
+    )
+  }
 
   return (
     <div data-testid="block-runner">
@@ -353,6 +360,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
         notes={exercise.chart.notes}
         audio={audio}
         guideAudio={guideAudio}
+        backingIsClick
         playedTempo={tempo}
         targetTempo={block.tempo}
         readyHint={exercise.instructions}
@@ -403,15 +411,8 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
   const playerRef = useRef<PlayerHandle>(null)
   const levels = useMemo(() => generateLevels(song.chart), [song])
   const level = Math.max(0, Math.min(levels.length - 1, block.level))
-  const audio = useMemo(() => songAudioBlob(song), [song])
-  const demoBacking = useMemo(() => {
-    if (song.source === 'demo') return encodeWav(renderDemoBacking())
-    if (song.source === 'builtin' && song.builtinId) {
-      const pcm = builtInBacking(song.builtinId)
-      return pcm ? encodeWav(pcm) : null
-    }
-    return null
-  }, [song])
+  const playback = useMemo(() => songPlayback(song), [song])
+  const audio = playback.audio
   const chart = useMemo(() => ({ ...song.chart, duration: Math.max(song.chart.duration, song.duration) }), [song])
 
   const onFinished = (summary: ScoreSummary, result: AttemptResult) => {
@@ -502,8 +503,9 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
         subtitle={phase === 'loop' ? loopLabel : `Level ${level + 1}${block.speed < 1 ? ` · ${Math.round(block.speed * 100)}% speed` : ''}`}
         chart={chart}
         notes={levels[level].notes}
-        audio={demoBacking ?? audio}
-        guideAudio={demoBacking ? audio : null}
+        audio={audio}
+        guideAudio={playback.guide}
+        backingIsClick={playback.clickOnly}
         speed={block.speed}
         playedTempo={song.bpm * block.speed}
         targetTempo={song.bpm}

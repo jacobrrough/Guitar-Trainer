@@ -12,7 +12,7 @@ describe('demo song', () => {
   })
 
   it('renders a valid 16-bit WAV', async () => {
-    const song = createDemoSong()
+    const song = await createDemoSong()
     expect(song.audioType).toBe('audio/wav')
     const buf = new Uint8Array(await song.audio.arrayBuffer())
     expect(String.fromCharCode(...buf.slice(0, 4))).toBe('RIFF')

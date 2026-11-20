@@ -1,7 +1,7 @@
 import type { Chart } from '../chart/types'
-import { addSong, db, type SongRecord, updateSong } from '../db/db'
-import { renderChartBackingAsync } from '../audio/renderBacking'
-import { SYNTH_SAMPLE_RATE, encodeWav, renderChartBacking, synthAudioName } from '../audio/synth'
+import { addSong, db, type SongRecord } from '../db/db'
+import { guitarVoice, loadGuitar, renderChartAudio } from '../audio/guitar'
+import { SYNTH_SAMPLE_RATE, encodeWav, isStaleRender, renderDrums, synthAudioName } from '../audio/synth'
 import { amazingGrace } from './tunes/amazingGrace'
 import { dAGroove } from './tunes/dAGroove'
 import { emAmGroove } from './tunes/emAmGroove'
@@ -15,7 +15,7 @@ import { saints } from './tunes/saints'
 import { tomDooley } from './tunes/tomDooley'
 import { twinkleTwinkle } from './tunes/twinkleTwinkle'
 
-/** A bundled, synthesised, public-domain song. */
+/** A bundled public-domain song, played by the app's own guitar. */
 export interface BuiltInSong {
   id: string
   title: string
@@ -63,12 +63,14 @@ function install(song: BuiltInSong): Promise<SongRecord> {
   const job = (async () => {
     const existing = await findRecord(song.id)
     if (existing) return existing
-    const samples = await renderChartBackingAsync(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
+    await loadGuitar()
+    const voice = guitarVoice()
+    const samples = await renderChartAudio(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
     const key = await addSong({
       title: song.title,
       artist: song.artist,
       audioType: 'audio/wav',
-      audioName: synthAudioName(song.id),
+      audioName: synthAudioName(song.id, voice),
       duration: song.chart.duration,
       chart: song.chart,
       source: 'builtin',
@@ -90,34 +92,48 @@ export async function installBuiltInSongs(): Promise<void> {
   for (const song of BUILT_IN_SONGS) if (!have.has(song.id)) await install(song)
 }
 
-/** True when the record's audio was rendered by an older synth. */
+/**
+ * True when the record's audio should be rendered again (older renderer, or the string model while
+ * the recorded guitar is available now). Call after `loadGuitar()` has settled.
+ */
 export function hasStaleAudio(record: Pick<SongRecord, 'builtinId' | 'audioName'>): boolean {
-  return !!record.builtinId && record.audioName !== synthAudioName(record.builtinId)
+  return !!record.builtinId && isStaleRender(record.audioName, record.builtinId, guitarVoice())
 }
 
-/** Renders the bundled song again with the current synth and stores it on the existing record (scores and play count stay). */
-export async function rerenderBuiltIn(record: SongRecord): Promise<SongRecord> {
+const rerendering = new Map<number, Promise<SongRecord>>()
+
+/** Renders the bundled song again with the current voice and stores it on the existing record (scores and play count stay). */
+export function rerenderBuiltIn(record: SongRecord): Promise<SongRecord> {
   const song = record.builtinId ? builtInSong(record.builtinId) : undefined
-  if (!song) return record
-  const samples = await renderChartBackingAsync(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
-  const audioData = await encodeWav(samples, SYNTH_SAMPLE_RATE).arrayBuffer()
-  await updateSong(record.id, { audioData, audio: undefined, audioType: 'audio/wav', audioName: synthAudioName(song.id) })
-  return (await db.songs.get(record.id)) ?? record
+  if (!song) return Promise.resolve(record)
+  const running = rerendering.get(record.id)
+  if (running) return running
+  const job = (async () => {
+    await loadGuitar()
+    const voice = guitarVoice()
+    const samples = await renderChartAudio(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
+    const audioData = await encodeWav(samples, SYNTH_SAMPLE_RATE).arrayBuffer()
+    // The song may have been deleted while it rendered: update only what is still there.
+    const changed = await db.songs.update(record.id, { audioData, audio: undefined, audioType: 'audio/wav', audioName: synthAudioName(song.id, voice), updatedAt: Date.now() })
+    return (changed ? await db.songs.get(record.id) : undefined) ?? record
+  })().finally(() => rerendering.delete(record.id))
+  rerendering.set(record.id, job)
+  return job
 }
 
-/** The library record for a bundled song, installing it first if needed and refreshing audio from an older synth. */
+/** The library record for a bundled song, installing it first if needed and refreshing audio from an older renderer. */
 export async function builtInSongRecord(id: string): Promise<SongRecord> {
   const song = builtInSong(id)
   if (!song) throw new Error(`Unknown built-in song ${id}`)
   const existing = await findRecord(id)
   if (!existing) return install(song)
+  await loadGuitar()
   return hasStaleAudio(existing) ? rerenderBuiltIn(existing) : existing
 }
 
 /**
- * Drums and click only (no plucks) at 44.1 kHz: what plays while the microphone scores. The synth
- * levels every stem with the gain of the full mix, so this is exactly as loud as the drums are under
- * the strings. Cached per song for the session.
+ * The click track alone at 44.1 kHz: what plays while the microphone scores, at the level it has under
+ * the guitar. Cached per song for the session.
  */
 const backingCache = new Map<string, Float32Array>()
 
@@ -126,7 +142,7 @@ export function builtInBacking(id: string): Float32Array | null {
   if (!song) return null
   const cached = backingCache.get(id)
   if (cached) return cached
-  const drums = renderChartBacking(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: false })
+  const drums = renderDrums(song.chart, { sampleRate: SYNTH_SAMPLE_RATE })
   backingCache.set(id, drums)
   return drums
 }

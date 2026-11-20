@@ -45,7 +45,7 @@ describe('coach orchestration', () => {
   it('plans practice blocks once placement is done, and completing a block updates everything', async () => {
     const profile = await loadProfile()
     await db.profile.put({ ...profile, placementDoneAt: Date.now() - 86_400_000 })
-    const song = createDemoSong()
+    const song = await createDemoSong()
     const { audio, ...rest } = song
     await db.songs.add({ ...rest, audioData: await audio.arrayBuffer(), createdAt: 1, updatedAt: 1, bestScores: {}, lastLevel: null, lastSpeed: 1, playCount: 0 })
     expect((await songSummaries())[0].levelNoteCounts).toHaveLength(6)
@@ -86,7 +86,7 @@ describe('coach orchestration', () => {
   })
 
   it('records free song plays outside a session', async () => {
-    const song = createDemoSong()
+    const song = await createDemoSong()
     const { audio, ...rest } = song
     const id = await db.songs.add({ ...rest, audioData: await audio.arrayBuffer(), createdAt: 1, updatedAt: 1, bestScores: {}, lastLevel: null, lastSpeed: 1, playCount: 0 })
     const stored = (await db.songs.get(id))!

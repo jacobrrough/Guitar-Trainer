@@ -1,0 +1,15 @@
+Guitar samples (guitar-steel.mp3)
+
+The recorded guitar in this app comes from the University of Iowa Electronic Music
+Studios "Musical Instrument Samples" (steel-string acoustic guitar),
+http://theremin.music.uiowa.edu/, as edited and published by Nicholaus P. Brosowsky
+in tonejs-instruments, https://github.com/nbrosowsky/tonejs-instruments
+(commit 622c2f1c32c8cfce4158ddc3eb26e518ddef37e5).
+
+Licence of the samples: Creative Commons Attribution 3.0,
+https://creativecommons.org/licenses/by/3.0/
+
+Changes made for this app: each note trimmed to start at its attack and to four
+seconds at most, faded out, packed into one file and encoded as MP3
+(scripts/build-guitar-samples.mjs). The note A2 is the A#2 recording played a
+semitone lower.

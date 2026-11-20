@@ -39,7 +39,8 @@ export default defineConfig({
       workbox: {
         // alphaTab (~1.3 MB) and the TensorFlow.js worker (~1.9 MB) exceed Workbox's 2 MiB default.
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
-        globPatterns: ['**/*.{js,css,html,svg,png,json,bin,webmanifest}'],
+        // mp3: the recorded guitar sample pack (public/samples), needed offline.
+        globPatterns: ['**/*.{js,css,html,svg,png,json,bin,webmanifest,mp3}'],
         navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
         // First install: take control of the open page so the app works offline without a second launch.

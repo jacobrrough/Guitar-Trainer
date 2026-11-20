@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import { updateSettings, useSettings } from "../../app/settings";
 import { useWakeLock } from "../../app/useWakeLock";
 import { audioEngine } from "../../audio/AudioEngine";
+import { useMicActive } from "../../audio/useMicActive";
 import {
   Button,
   Card,
@@ -24,7 +25,8 @@ type Target = "auto" | "chromatic" | number;
 export function TunerPage() {
   const settings = useSettings();
   const tuning = getTuning(settings.tunerTuningId);
-  const [listening, setListening] = useState(audioEngine.micActive);
+  // Follows the audio engine, so a microphone that another screen closed never shows as listening.
+  const listening = useMicActive();
   const [error, setError] = useState<string | null>(null);
   const [target, setTarget] = useState<Target>("auto");
   const [details, setDetails] = useState(false);
@@ -35,7 +37,11 @@ export function TunerPage() {
   );
   useWakeLock(listening);
 
-  useEffect(() => () => audioEngine.stopMic(), []);
+  // Take over a microphone the guided tune-up left running; hand ours on the same way when leaving.
+  useEffect(() => {
+    audioEngine.claimMic();
+    return () => audioEngine.releaseMic();
+  }, []);
 
   const start = async () => {
     setError(null);
@@ -46,18 +52,13 @@ export function TunerPage() {
         threshold: 0.93,
         echoCancellation: settings.echoCancellation,
       });
-      setListening(true);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not access the microphone",
       );
-      setListening(false);
     }
   };
-  const stop = () => {
-    audioEngine.stopMic();
-    setListening(false);
-  };
+  const stop = () => audioEngine.stopMic();
 
   // Which string are we tuning, and how far off is it?
   const view = useMemo(() => {

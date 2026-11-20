@@ -6,7 +6,8 @@ import { encodeWav } from '../../audio/synth'
 import { generateLevels } from '../../chart/difficulty'
 import type { Chart, ChartNote } from '../../chart/types'
 import { Badge, Button, Card, PageHeader } from '../../components/ui'
-import { db, songAudioBlob } from '../../db/db'
+import { db } from '../../db/db'
+import { songPlayback } from '../../songs/playback'
 import { getTuning } from '../../music/tunings'
 import { checkpointTasks, evaluateTask, monthlyTasks, placementLadder } from '../../training/assessment'
 import { CALIBRATION_MAX_AGE_DAYS } from '../../training/constants'
@@ -31,6 +32,8 @@ interface PlayMedia {
   chart: Chart
   notes: ChartNote[]
   audio: Blob
+  /** The audio is a click track only (see Player.backingIsClick). */
+  clickOnly: boolean
   tempo: number
   hint: string
 }
@@ -54,8 +57,10 @@ async function buildTasks(type: TestType, model: LearnerModel, profile: Profile)
 async function prepareMedia(task: TestTask, tuning: number[]): Promise<PlayMedia | null> {
   if (task.generatorId === 'song') {
     const song = await db.songs.get(task.params.songId as number)
-    const audio = song ? songAudioBlob(song) : null
-    if (!song || !audio) return null
+    // Bundled songs store the guitar part itself: a test plays their click track only.
+    const playback = song ? songPlayback(song) : null
+    const audio = playback?.audio ?? null
+    if (!song || !playback || !audio) return null
     const levels = generateLevels(song.chart)
     const level = levels[task.params.level as number] ?? levels[levels.length - 1]
     const chart = {
@@ -67,6 +72,7 @@ async function prepareMedia(task: TestTask, tuning: number[]): Promise<PlayMedia
       chart,
       notes: level.notes,
       audio,
+      clickOnly: playback.clickOnly,
       tempo: song.bpm,
       hint: task.instructions,
     }
@@ -78,6 +84,7 @@ async function prepareMedia(task: TestTask, tuning: number[]): Promise<PlayMedia
     chart: exercise.chart,
     notes: exercise.chart.notes,
     audio: encodeWav(exercise.backing, exercise.backingSampleRate),
+    clickOnly: true,
     tempo: task.params.tempo,
     hint: task.instructions,
   }
@@ -345,6 +352,7 @@ function TestFlowInner({ type }: { type: TestType }) {
           chart={media.chart}
           notes={media.notes}
           audio={media.audio}
+          backingIsClick={media.clickOnly}
           mode="test"
           speed={1}
           playedTempo={media.tempo}

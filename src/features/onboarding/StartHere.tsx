@@ -40,7 +40,8 @@ function MicCheck() {
   useEffect(
     () => () => {
       unsub.current?.()
-      audioEngine.stopMic()
+      // The tuning step that follows takes the microphone over; if nothing does, it closes in a moment.
+      audioEngine.releaseMic()
     },
     [],
   )
