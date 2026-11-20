@@ -2,6 +2,7 @@ import { ClipboardCheck, Mic, Play, Timer } from 'lucide-react'
 import { Badge, Button, Card, PageHeader } from '../../components/ui'
 import { SKILLS_BY_ID } from '../../training/skills'
 import type { TestTask, TestType } from '../../training/types'
+import { passRuleText } from './taskResult'
 
 export const TEST_TITLES: Record<TestType, string> = {
   placement: 'Placement test',
@@ -103,7 +104,7 @@ export function TaskCard({ task, position, total, onPlay, busy }: TaskCardProps)
             </dd>
           </div>
         </dl>
-        <p className="mt-4 text-xs text-muted">A count-in plays first. Pass: 85% accuracy with steady timing.</p>
+        <p className="mt-4 text-xs text-muted">A count-in plays first. {passRuleText(task.passCriteria)}</p>
         <Button variant="primary" size="lg" className="mt-4" onClick={onPlay} disabled={busy} data-testid="task-play">
           <Play className="h-4 w-4" /> Play task
         </Button>

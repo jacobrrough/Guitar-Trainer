@@ -18,12 +18,6 @@
     <style>
       /* Dark first paint: a home-screen launch shows the page background before the CSS bundle loads. */
       html { background: #0b0f17; }
-      /* iOS zooms the page when a focused field has a font size under 16px (and does not zoom back in a standalone app). */
-      @supports (-webkit-touch-callout: none) {
-        input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
-        select,
-        textarea { font-size: 16px; }
-      }
     </style>
   </head>
   <body>

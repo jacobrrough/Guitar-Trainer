@@ -168,7 +168,9 @@ class AudioEngine {
     try {
       await this.startMic(this.lastMicOptions)
     } catch {
-      this._micActive = false
+      // Could not be reopened: say so, so the screens stop showing a microphone that is not there.
+      this.teardownMic()
+      this.setMicActive(false)
     }
   }
 
@@ -240,7 +242,13 @@ class AudioEngine {
     this.source.connect(this.worklet)
     this.worklet.connect(this.sink)
     this.sink.connect(ctx.destination)
-    stream.getAudioTracks()[0]?.addEventListener('unmute', () => void this.recoverMic())
+    const track = stream.getAudioTracks()[0]
+    track?.addEventListener('unmute', () => void this.recoverMic())
+    // The input went away while the page stayed open (headphones back in their case, an interface
+    // unplugged): reopen whatever microphone is there now, or report that there is none.
+    track?.addEventListener('ended', () => {
+      if (this.stream === stream) void this.recoverMic()
+    })
     this._micDeviceId = stream.getAudioTracks()[0]?.getSettings().deviceId ?? options.deviceId
     this.setMicActive(true)
   }
@@ -260,6 +268,8 @@ class AudioEngine {
   }
 
   configureDetector(opts: { minFreq?: number; maxFreq?: number; threshold?: number }): void {
+    // Remembered, so a microphone that is reopened after an interruption comes back with this range.
+    this.lastMicOptions = { ...this.lastMicOptions, ...opts }
     this.worklet?.port.postMessage({ type: 'configure', ...opts })
   }
 

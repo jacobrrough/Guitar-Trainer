@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canContinue, initialWizardState, stepOrder, summarise, toSetup, wizardReducer } from './wizardState'
+import { canContinue, canSkipSetup, initialWizardState, skipSetup, stepOrder, summarise, toSetup, wizardReducer } from './wizardState'
 
 describe('wizardState', () => {
   it('has beginner defaults', () => {
@@ -37,5 +37,25 @@ describe('wizardState', () => {
     expect(summarise(s)).toBe('New to guitar · acoustic · right-handed · 10 min a day')
     s = wizardReducer(s, { type: 'setExperience', value: 'played' })
     expect(toSetup(s).goalSongId).toBeUndefined()
+  })
+  it('skipping keeps the answers given so far', () => {
+    // A left-handed player with an electric guitar who has played before, leaving on the tuning screen.
+    let s = wizardReducer(initialWizardState(true), { type: 'setExperience', value: 'played' })
+    s = wizardReducer(s, { type: 'setGuitar', value: 'electric' })
+    s = wizardReducer(s, { type: 'setHand', value: 'left' })
+    s = wizardReducer(s, { type: 'setMinutes', value: 30 })
+    expect(skipSetup(s)).toEqual({ experience: 'played', handedness: 'left', guitarType: 'electric', dailyMinutes: 30, goalSongId: undefined })
+    // A beginner who picked a goal song keeps it too.
+    let b = wizardReducer(initialWizardState(true), { type: 'setExperience', value: 'some' })
+    b = wizardReducer(b, { type: 'setSong', value: 'ode' })
+    expect(skipSetup(b)).toMatchObject({ experience: 'some', goalSongId: 'ode' })
+  })
+  it('skipping before any answer gives the beginner defaults', () => {
+    expect(skipSetup(initialWizardState(true))).toEqual({ experience: 'new', handedness: 'right', guitarType: 'acoustic', dailyMinutes: 10, goalSongId: undefined })
+  })
+  it('offers Skip setup only on screens without their own way out', () => {
+    expect(stepOrder(true).filter(canSkipSetup)).toEqual(['welcome', 'guitar', 'time', 'song', 'phone'])
+    expect(canSkipSetup('tune')).toBe(false)
+    expect(canSkipSetup('finish')).toBe(false)
   })
 })

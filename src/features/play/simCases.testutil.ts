@@ -1,6 +1,6 @@
 /**
- * Test helper: the charts a learner actually meets (every lesson drill, every lesson song at the
- * level the lesson uses, every skill's first exercise at its start and target tempo) and the ways a
+ * Test helper: the charts a learner actually meets (every lesson drill, every lesson song as the
+ * lesson shows it, every skill's first exercise at its start and target tempo) and the ways a
  * performance can reach the microphone. Used by the scoring simulation tests.
  */
 import type { SampleBank } from '../../audio/instrument/bank'
@@ -8,10 +8,11 @@ import { renderDrums, renderStrings } from '../../audio/synth'
 import { generateLevels } from '../../chart/difficulty'
 import type { Beat, Chart, ChartNote } from '../../chart/types'
 import { COURSE } from '../../lessons/course'
+import { lessonDrillExercise, lessonSongNotes } from '../../lessons/material'
 import { BUILT_IN_SONGS } from '../../songs'
 import { DEFAULT_TUNING } from '../../training/exercises/builder'
 import { exerciseParams, generateExercise } from '../../training/exercises/index'
-import { SKILLS, SKILLS_BY_ID } from '../../training/skills'
+import { SKILLS } from '../../training/skills'
 
 export interface SimCase {
   name: string
@@ -21,19 +22,18 @@ export interface SimCase {
   notes: ChartNote[]
 }
 
+/** Every lesson's practice round and song, built by the same functions as the lesson screens (src/lessons/material.ts). */
 export function lessonCases(): SimCase[] {
   const cases: SimCase[] = []
   for (const lesson of COURSE) {
     if (lesson.drill) {
-      const skill = SKILLS_BY_ID[lesson.drill.skillId]
-      const ex = generateExercise(skill, lesson.drill.generatorId, exerciseParams(skill, lesson.drill.generatorId, lesson.drill.tempo, lesson.drill.params), DEFAULT_TUNING)
+      const ex = lessonDrillExercise(lesson, DEFAULT_TUNING)
       cases.push({ name: `lesson ${lesson.number} drill ${lesson.drill.generatorId}@${lesson.drill.tempo}`, kind: 'lesson-drill', chart: ex.chart, notes: ex.chart.notes })
     }
     if (lesson.play) {
       const song = BUILT_IN_SONGS.find((s) => s.id === lesson.play!.songId)!
-      const levels = generateLevels(song.chart)
-      const level = Math.max(0, Math.min(levels.length - 1, lesson.play.level))
-      cases.push({ name: `lesson ${lesson.number} song ${song.id} level ${level}`, kind: 'lesson-song', chart: song.chart, notes: levels[level].notes })
+      const shown = lessonSongNotes(lesson.play, song.chart)
+      cases.push({ name: `lesson ${lesson.number} song ${song.id} ${lesson.play.view}`, kind: 'lesson-song', chart: song.chart, notes: shown.notes })
     }
   }
   return cases
@@ -51,7 +51,7 @@ export function skillCases(): SimCase[] {
   const seen = new Set<string>()
   for (const skill of SKILLS) {
     const gid = skill.generators[0]
-    for (const tempo of [skill.tempo?.start ?? 60, skill.tempo?.target ?? 100]) {
+    for (const tempo of [skill.startTempo, skill.targetTempo]) {
       const key = `${gid}@${tempo}|${JSON.stringify(exerciseParams(skill, gid, tempo))}`
       if (seen.has(key)) continue
       seen.add(key)

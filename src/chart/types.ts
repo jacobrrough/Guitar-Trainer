@@ -75,6 +75,12 @@ export interface Chart {
   beats: Beat[]
   tempos: TempoEvent[]
   timeSignatures: TimeSignatureEvent[]
+  /**
+   * The song is strummed with chord shapes its player has been taught: every difficulty level keeps
+   * the whole shape and only thins out the strums. (Without it the easy levels cut a chord down to
+   * its lowest notes, which is right for an unknown tab and wrong for "Em Groove" after the Em lesson.)
+   */
+  wholeChords?: boolean
 }
 
 export function chartBpm(chart: Chart): number {

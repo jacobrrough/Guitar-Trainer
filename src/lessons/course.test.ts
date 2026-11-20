@@ -53,6 +53,13 @@ describe('course content', () => {
       expect(l.learn.length).toBeGreaterThanOrEqual(2)
       expect(l.learn.length).toBeLessThanOrEqual(4)
       const texts = [l.title, l.subtitle, l.done]
+      if (l.drill) {
+        // The line shown before the practice round: plain words, short enough to read at a glance.
+        expect(l.drill.hint.length, l.id).toBeGreaterThan(20)
+        expect(l.drill.hint.length, l.id).toBeLessThan(220)
+        expect(l.drill.hint, l.id).not.toMatch(/\b(major|minor scale|root|eighths?|quarters?|measured|pitch|tempo|pattern:)\b/i)
+        texts.push(l.drill.hint)
+      }
       for (const c of l.learn) {
         expect(c.paragraphs.length, `${l.id} ${c.title}`).toBeGreaterThanOrEqual(1)
         expect(c.paragraphs.length, `${l.id} ${c.title}`).toBeLessThanOrEqual(4)

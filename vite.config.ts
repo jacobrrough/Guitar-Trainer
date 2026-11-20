@@ -5,16 +5,19 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // BASE_PATH lets the same build be hosted at a sub-path (e.g. GitHub Pages: /Guitar-Trainer/).
 const base = process.env.BASE_PATH ?? '/'
+// Shown in Settings, so it is plain which version a phone is running.
+const buildId = `${new Date().toISOString().slice(0, 10)} · ${(process.env.GITHUB_SHA ?? 'local').slice(0, 7)}`
 
 export default defineConfig({
   base,
+  define: { __BUILD_ID__: JSON.stringify(buildId) },
   plugins: [
     react(),
     tailwindcss(),
     VitePWA({
-      // 'prompt' (no UI wired): a new service worker waits until every window is closed, so a deploy
-      // never calls location.reload() in the middle of a song or a latency calibration. 'autoUpdate'
-      // would skipWaiting and reload the page as soon as an update is found.
+      // 'prompt': a new service worker waits, so a deploy never reloads the page in the middle of a
+      // song or a latency calibration ('autoUpdate' would reload as soon as an update is found).
+      // src/app/appUpdate.ts decides when to switch: at launch, or when the learner taps "Update".
       registerType: 'prompt',
       // Everything under public/ (icons, Basic Pitch model) is already matched by globPatterns below.
       includeAssets: ['favicon.svg'],
@@ -57,5 +60,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // The scoring simulations render and analyse whole performances: seconds each on a slow machine.
+    testTimeout: 30_000,
   },
 })

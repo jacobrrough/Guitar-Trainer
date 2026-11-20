@@ -142,7 +142,17 @@ graph LR
   TR --> SD
 ```
 
-A skill is **unlocked** when every prerequisite has an effective rating ≥ 60.
+A skill is **open** (`src/training/unlock.ts`, one function shared by the planner, the
+"unlocked" milestones and the skill map) when one of these holds:
+
+- everything it builds on, **all the way down the chain**, has an effective rating ≥ 60
+  (one strong rating in the middle is not enough: barre chords stay closed while open
+  chords are shaky);
+- the learner has already practised it and it is at most one tier above a skill rated ≥ 25;
+- the skill itself is rated ≥ 60 (shown in a first check);
+- a finished lesson of the First steps course drilled it.
+
+A prerequisite that was solid and has gone rusty closes the last three again.
 
 ---
 
@@ -195,17 +205,49 @@ d = tierBase(skill) + 30·log2(tempo / refTempo) + densityBonus + techniqueBonus
 Rating update (Elo-style, bounded 0–100):
 
 ```
+score    = 1 for a clean run, else p / 0.85       // see below
 expected = 1 / (1 + 10^((d − rating) / 25))
 K = 6 for practice, 12 for tests, ×1.5 while confidence < 5
-rating ← clamp(rating + K·(p − expected)·2, 0, 100)
+delta    = K·(score − expected)·2
+a gain stops at d + 40                            // an item proves no more than that
+rating ← clamp(rating + delta, 0, 100)
 confidence ← Σ over attempts of exp(−ageDays / 30)
 ```
 
 Ten ordinary practice attempts can move a rating by roughly 30 points; a test moves
 it twice as fast. Attempts flagged unreliable (§5) use K/3.
 
+Why the score and the bound: real playing never reaches p = 1 (timing always spreads a
+little, so p tops out near 0.92), while the expected score of an item below the rating
+is close to 1. With the raw p every good run on such an item cost points and ratings
+settled under the unlock line. Now:
+
+- a clean run scores 1 and never lowers a rating. Clean is p ≥ 0.85 (about 90 % of the
+  notes with ordinary timing), and also any practice run with acc ≥ 0.85 at the tempo
+  that was asked: that is the run the tempo ceiling counts and the Coach calls "played
+  cleanly", and a note only counts as hit when it was in time. A run the learner slowed
+  down, and a skill-check task, keep the full measure (p);
+- a weaker run still lowers it when the rating promised more (60 % playing settles about
+  14 points above the item, 80 % about 27);
+- gains stop 40 points above the item's difficulty, so easy material cannot run a rating
+  up: a tier 1 exercise must be played cleanly at about its reference tempo (d = 20)
+  before what builds on it opens at 60;
+- the Coach only raises the tempo after runs of 85 % accuracy or more, so weak playing
+  stays on easy items and under the line.
+
+Simulated course graduates (planner.test.ts, 20 minutes a day): at 95 % (and from 90 %,
+where the tempo also goes up from round to round) the first tier 1 skills are solid
+within one to two weeks and the spider, power chords and alternate picking open within
+four; at 85 to 89 % the tempo goes up 5 % per main exercise only, and the first tier 1
+skills are solid after three to four weeks; at 80 % ratings rise slowly and nothing is
+solid after four weeks; at 60 % nothing rises past the mid-forties and the tempo stays
+at the start.
+
 Tempo ceiling: highest tempo among the last 10 attempts (≤ 30 days old) with
-acc ≥ 0.85; if none qualifies, 0.8 × the lowest tempo attempted.
+acc ≥ 0.85; if none qualifies, 0.8 × the lowest tempo attempted. A clean warm-up round
+can raise the ceiling but never lowers it: warm-ups are played at 0.9 × the ceiling on
+purpose, and several rounds a day would otherwise push every faster run out of the
+window and talk the tempo down.
 
 Rust: a skill not practised for more than 14 days has an *effective* rating
 `rating − 2·(days − 14)/7`, capped at −20. The stored rating is untouched; the
@@ -273,6 +315,14 @@ session, pinned skill.
 A due checkpoint (5 min) replaces the second skill or the review; a monthly
 assessment (10 min) replaces focus + second skill that day.
 
+The minutes are real: one round lasts its bars plus a four-beat count-in and a second
+of silence (`roundSeconds`). A block gets the exercise length (4, 8, 16 or 32 bars)
+and the number of rounds (at most 6) that fill its minutes, longer exercises before
+more rounds. The song time is shared between up to three songs, each played through up
+to three times (`SongBlock.passes`). An ear-training exercise is timed by its questions
+(about a minute a round), also when it is the main exercise. `SessionRecord.minutesDone`
+is the time actually played (the lengths of the recorded runs), not the planned minutes.
+
 ### 6.3 Choosing the focus skill
 
 For every unlocked, not-mastered skill:
@@ -289,23 +339,37 @@ The top skill is today's focus unless it was the focus on both of the last two d
 always wins. The second-skill block takes the next in priority from a different
 category.
 
+The recap takes a due review first, then a rusty skill, then the known skill that has
+waited longest. A skill that was the recap in one of the last three sessions waits its
+turn, also when that recap was skipped.
+
 ### 6.4 Tempo and content for a block
 
 ```
 startTempo = tempoCeiling × 1.05 × dayFactor          (first time: skill.startTempo)
-dayFactor from the warm-up: acc ≥ 0.9 → 1.0 · 0.75–0.9 → 0.95 · < 0.75 → 0.9
-reps: 2–4 of 45–60 s
+dayFactor from the warm-up: acc ≥ 0.85 (a clean warm-up) → 1.0 · 0.75–0.85 → 0.95 · < 0.75 → 0.9
+rounds: as many as fill the block (§6.2), at most 6
 after each rep: acc ≥ 0.9 → tempo +5 % (max +15 % per session)
                0.75–0.9 → keep
                < 0.75 → tempo −8 %
                two reps < 0.6 → switch to the prerequisite variant or halve density
 ```
 
-Song block: choose the level whose predicted accuracy is closest to 85 %: start at
-the best level with ≥ 85 %, move to the next level when the last result there was
-≥ 90 %; if the next level scored < 70 % last time, play it at 80–90 % speed instead
-of dropping back. Half the block loops the weakest bars (per-bar accuracy), the
-other half is a full run.
+Song block. Which song: the songs take turns, the one that has waited longest first
+(never played before anything else). The goal song from the set-up goes first whenever
+it was not the last song played. A bundled song is offered once its lesson is finished
+(`lessonLevel`): for a beginner, and for anyone who took lessons of the course, also
+after leaving it half way. A player who never took the lessons and is past beginner
+mode gets every song.
+
+Level and speed move one step at a time from the level played most recently, and only
+one of the two changes: a result ≥ 85 % at reduced speed (0.75 → 0.85 → 1) makes it one
+step faster; ≥ 90 % at full speed moves up a level; < 70 % slows it one step; two
+results < 70 % in a row go back one level at the same speed. A level cleared at full
+speed is the floor, so replaying an easier level changes nothing. A beginner's first
+song starts at the sparsest level at 75 % speed; a song that is new to a learner who
+has played others starts at the level of their easiest song. Weak bars (< 70 %) are
+looped before the full run.
 
 ### 6.5 Planner contract
 
@@ -394,7 +458,8 @@ from the metronome alone for pure rhythm work.
 | `scaleRun` | scale/box, direction, note value, tempo | lead.pent-box1, lead.pent-boxes, lead.major-scale |
 | `chordChanges` | chord list, beats per chord, strum pattern | chord.open, chord.changes-open, chord.barre, chord.sevenths |
 | `strumPattern` | pattern (D/U/–), chord, bars | chord.strum-patterns, time.metronome |
-| `powerChordRiff` | roots, rhythm (8ths, palm-mute flags) | chord.power, pick.downstrokes |
+| `powerChordRiff` | roots, rhythm (8ths, palm-mute flags) | chord.power |
+| `metronomeSteady` | one open note per click | pick.downstrokes, time.metronome |
 | `stringSkipping` | pattern, position | fret.cross-string, pick.alternate-8 |
 | `legatoLick` | pentatonic cell with h/p markers | lead.hammer-pull |
 | `slideLick` | target notes with slide-in/out | lead.slides |
@@ -403,7 +468,14 @@ from the metronome alone for pure rhythm work.
 
 Each generator returns `{ chart, difficulty, backing }` deterministically from its
 parameters, so a test task is reproducible and its difficulty `d` is known in
-advance. Generators use the fretboard assignment and chord shapes already in
+advance. Variety comes from one parameter, `seed`: the planner sets it to the number of
+earlier days on which the skill was practised, so a drill is the same notes all day and
+at every tempo, and the next variation (the next chord pair, the next pentatonic box,
+another melody) on the next day the skill comes up, whatever the practice rhythm.
+
+When a default drill changes so much that a tempo earned on the old one no longer means
+the same (`DRILL_REV` in `constants.ts`), `migrate.ts` corrects the stored tempos once
+per learner, marked on the profile in the same transaction. Generators use the fretboard assignment and chord shapes already in
 `music/`, and the chart's `beats` grid so the difficulty generator and per-bar
 statistics work unchanged.
 
@@ -533,7 +605,10 @@ Phase 1 alone already delivers "open the app, do today's session, see progress".
 A brand-new learner found the first sessions far too hard: the warm-up was the
 chromatic spider at eighth notes, the focus block a cross-string melody, the song
 at Level 3. The planner now has a **first-steps mode** while the learner's best
-rating is below `BEGINNER_MAX_RATING` (25):
+tier 0–1 rating is below `BEGINNER_MAX_RATING` (25). A learner who has finished
+lessons that drilled a tier 1 skill or higher is never in this mode, whatever the
+ratings: the Coach is told which lessons were really completed (`finishedLessons` in
+coach.ts) and the plan builds on the skills they drilled. In first-steps mode:
 
 - Two tier-0 skills with no prerequisites: `basics.open-strings` (generator
   `openStrings`: half notes on one or two open strings) and `basics.first-frets`

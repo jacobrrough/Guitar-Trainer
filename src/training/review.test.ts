@@ -23,9 +23,25 @@ describe('review scheduling', () => {
     const a = nextReview({ ease: 2.3, intervalDays: 2 }, 0.9, NOW)
     expect(a.intervalDays).toBe(5)
     expect(a.ease).toBeCloseTo(2.35, 10)
-    const b = nextReview(a, 0.9, NOW)
+    // The second review happens when it is due, five days later.
+    const b = nextReview(a, 0.9, a.nextReviewAt)
     expect(b.intervalDays).toBe(12)
-    expect(b.nextReviewAt).toBe(NOW + 12 * DAY)
+    expect(b.nextReviewAt).toBe(a.nextReviewAt + 12 * DAY)
+  })
+
+  it('leaves the schedule alone when a good recap comes before the review is due', () => {
+    const scheduled = startReview(NOW)
+    let s = scheduled
+    for (let day = 1; day < 2; day++) s = nextReview(s, 0.95, NOW + day * DAY - 1000)
+    expect(s).toEqual(scheduled)
+    const daily = nextReview({ ease: 2.35, intervalDays: 5, nextReviewAt: NOW + 5 * DAY }, 0.75, NOW + DAY)
+    expect(daily).toEqual({ ease: 2.35, intervalDays: 5, nextReviewAt: NOW + 5 * DAY })
+  })
+
+  it('a recap that goes badly still brings the review forward, also before it is due', () => {
+    const r = nextReview({ ease: 2.3, intervalDays: 12, nextReviewAt: NOW + 10 * DAY }, 0.5, NOW)
+    expect(r.intervalDays).toBe(1)
+    expect(r.nextReviewAt).toBe(NOW + DAY)
   })
 
   it('caps ease at 2.8', () => {
@@ -74,6 +90,36 @@ describe('song items', () => {
     expect(next.intervalDays).toBe(5)
     const failed = applySongAttempt(next, attempt({ at: NOW + 7 * DAY, performance: 0.5, accuracy: 0.5 }))
     expect(failed.intervalDays).toBe(1)
+  })
+})
+
+describe('song items remember speed and recent results', () => {
+  it('keeps the best full-speed result apart from results at reduced speed', () => {
+    const slow = applySongAttempt(newSongItem(1, 0), attempt({ accuracy: 0.95, speed: 0.75 }))
+    expect(slow).toMatchObject({ bestAccuracy: 0.95, fullSpeedBest: 0, lastAccuracy: 0.95, lastSpeed: 0.75, lowStreak: 0 })
+    const full = applySongAttempt(slow, attempt({ accuracy: 0.88, speed: 1 }))
+    expect(full).toMatchObject({ bestAccuracy: 0.95, fullSpeedBest: 0.88, lastAccuracy: 0.88, lastSpeed: 1 })
+  })
+
+  it('counts results under 70 % in a row and starts again after a better one', () => {
+    let item = applySongAttempt(newSongItem(1, 2), attempt({ accuracy: 0.5 }))
+    expect(item.lowStreak).toBe(1)
+    item = applySongAttempt(item, attempt({ accuracy: 0.6 }))
+    expect(item.lowStreak).toBe(2)
+    item = applySongAttempt(item, attempt({ accuracy: 0.7 }))
+    expect(item.lowStreak).toBe(0)
+  })
+
+  it('treats the best result of an item stored before speeds were tracked as a full-speed result', () => {
+    const old = { ...newSongItem(1, 1), bestAccuracy: 0.92, lastAt: NOW - DAY }
+    expect(applySongAttempt(old, attempt({ accuracy: 0.6, speed: 0.75 })).fullSpeedBest).toBe(0.92)
+  })
+
+  it('a replay before the review is due does not move the review', () => {
+    const started = applySongAttempt(newSongItem(1, 1), attempt())
+    const replay = applySongAttempt(started, attempt({ at: NOW + DAY }))
+    expect(replay.intervalDays).toBe(2)
+    expect(replay.nextReviewAt).toBe(NOW + 2 * DAY)
   })
 })
 

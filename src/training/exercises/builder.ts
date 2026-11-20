@@ -130,3 +130,20 @@ export function hashParams(value: unknown): string {
   }
   return (h >>> 0).toString(36)
 }
+
+/**
+ * Which variation of a drill to show, as a whole number from 0. It comes from `params.seed` alone
+ * (the planner can set one per day), never from the tempo: a round played again slower or faster
+ * has to be the same notes. Without a seed it is 0.
+ */
+export function variationOf(params: Record<string, unknown>): number {
+  const seed = params.seed
+  if (typeof seed === 'number' && Number.isFinite(seed)) return Math.abs(Math.round(seed))
+  if (typeof seed === 'string' && seed !== '') return parseInt(hashParams({ seed }), 36)
+  return 0
+}
+
+/** The item for a variation: consecutive seeds walk through the list in order and start again. */
+export function pickVariation<T>(items: readonly T[], params: Record<string, unknown>): T {
+  return items[variationOf(params) % items.length]
+}

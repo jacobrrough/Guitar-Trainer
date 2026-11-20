@@ -61,4 +61,16 @@ describe('slideLick generator', () => {
     const e = gen.generate(skill, { ...base, noteValue: 'eighth' }, DEFAULT_TUNING).chart.notes.length
     expect(e).toBeGreaterThan(q)
   })
+
+  it('never asks for a slide into or out of an open string, even in open position', () => {
+    for (const key of ['A', 'E', 'G', 'D']) {
+      for (const strings of [1, 2, 3]) {
+        const { chart } = gen.generate(skill, { ...gen.defaults(skill, 80), position: 0, key, strings, bars: 6 }, DEFAULT_TUNING)
+        expect(chart.notes.length).toBeGreaterThan(0)
+        for (const n of chart.notes) {
+          if (n.tech?.slideIn || n.tech?.slideOut) expect(n.fret, `${key} ${strings}`).toBeGreaterThan(0)
+        }
+      }
+    }
+  })
 })

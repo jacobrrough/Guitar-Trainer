@@ -1,10 +1,13 @@
+import { useLiveQuery } from 'dexie-react-hooks'
 import { ChevronDown, ChevronRight, Lock, Pin } from 'lucide-react'
 import { useState } from 'react'
 import { useSettings } from '../../app/settings'
 import { Badge, Card, cx } from '../../components/ui'
-import { effectiveRating, masteryBand } from '../../training/learner'
-import { CATEGORY_LABELS, SKILLS_BY_ID, isUnlocked, skillsForCategory } from '../../training/skills'
+import { courseProgress } from '../../lessons/store'
+import { masteryBand } from '../../training/learner'
+import { CATEGORY_LABELS, SKILLS, skillsForCategory } from '../../training/skills'
 import type { LearnerModel, MasteryBand, SkillCategory } from '../../training/types'
+import { missingPrerequisites, openContextOf, skillOpener, taughtSkillIds as lessonSkills } from '../../training/unlock'
 import { simpleBandLabel } from '../today/todayUtils'
 import { RatingChart } from './RatingChart'
 
@@ -14,6 +17,8 @@ interface SkillMapProps {
   pinnedSkillId?: string
   onPin: (skillId: string | undefined) => void
   seriesFor: (skillId: string) => { at: number; rating: number }[]
+  /** Skills the finished First steps lessons drilled; the Coach keeps these open. Read from the lesson rows when absent. */
+  taughtSkillIds?: string[]
 }
 
 const CATEGORIES: SkillCategory[] = ['fretting', 'picking', 'chords', 'lead', 'timing', 'ear']
@@ -26,11 +31,15 @@ const BAND_BAR: Record<MasteryBand, string> = {
   mastered: 'bg-green-400',
 }
 
-export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor }: SkillMapProps) {
+export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSkillIds }: SkillMapProps) {
   const [open, setOpen] = useState<string | null>(null)
   const simple = useSettings().simpleFeedback
-  const ratings: Record<string, number> = {}
-  for (const [id, st] of Object.entries(model.skills)) ratings[id] = effectiveRating(st, now)
+  // The same rule and the same facts the Coach plans with (what the finished lessons taught included),
+  // so a skill is never drawn locked while it is in today's plan.
+  const lessonRows = useLiveQuery(() => courseProgress(), [])
+  const context = openContextOf(model, now, taughtSkillIds ?? lessonSkills(lessonRows ?? []))
+  const ratings = context.ratings
+  const isOpen = skillOpener(SKILLS, context)
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -44,10 +53,10 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor }: SkillM
               const rating = state?.rating ?? 0
               const band = masteryBand(eff)
               const rust = Math.round(rating - eff)
-              const unlocked = isUnlocked(skill.id, ratings)
+              const unlocked = isOpen(skill)
               const expanded = open === skill.id
               const pinned = pinnedSkillId === skill.id
-              const missing = skill.prerequisites.filter((p) => (ratings[p] ?? 0) < 60).map((p) => SKILLS_BY_ID[p]?.name ?? p)
+              const missing = missingPrerequisites(skill, ratings, SKILLS).map((p) => p.name)
               return (
                 <li key={skill.id} className="py-2">
                   <div className="flex items-start gap-2">
@@ -94,7 +103,7 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor }: SkillM
                           {rust > 0 && <span className="text-amber-300">{simple ? 'a bit rusty' : `rusty −${rust}`}</span>}
                           {!unlocked && (
                             <span className="inline-flex items-center gap-1">
-                              <Lock size={12} aria-hidden /> needs {missing.join(', ')}
+                              <Lock size={12} aria-hidden /> first get better at: {missing.join(', ')}
                             </span>
                           )}
                         </span>

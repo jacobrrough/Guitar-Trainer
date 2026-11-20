@@ -146,6 +146,73 @@ describe('ScoreTracker on audio', () => {
     expect(Math.abs(slow.deltasMs[0])).toBeLessThan(15)
   })
 
+  it('hears the first note of the song, even when the clock steps back as playback really starts', () => {
+    const first = [note(0, 0, 45), note(1, 0.6, 48), note(2, 1.2, 52)]
+    const plucks: Pluck[] = first.map((n) => ({ time: n.time, midi: n.midi }))
+    // The count-in predicted the start 40 ms too early: every frame before the song is stamped 40 ms ahead.
+    const r = run(first, plucks, 2.5, { startJitter: 0.04 })
+    expect(r.statuses).toEqual(['hit', 'hit', 'hit'])
+    for (const d of r.deltasMs) expect(Math.abs(d)).toBeLessThan(15)
+  })
+
+  it('a first note played on the count-in’s beat is on time, however late the song’s audio really started', () => {
+    const first = [note(0, 0, 45), note(1, 0.6, 48), note(2, 1.2, 52)]
+    // The audio started later than the count-in said it would. The player trusted the count-in for the
+    // first note and the audible song from then on. (At 50 ms the note is confirmed after the clock has
+    // stepped back; at 150 ms before.)
+    const lead = 0.3
+    for (const late of [0.05, 0.15]) {
+      const plucks: Pluck[] = [
+        { time: lead - late, midi: 45 },
+        { time: lead + 0.6, midi: 48 },
+        { time: lead + 1.2, midi: 52 },
+      ]
+      const r = run(first, plucks, lead + 2.5, { micLead: lead, startJitter: late })
+      expect(r.statuses, `${late * 1000} ms`).toEqual(['hit', 'hit', 'hit'])
+      for (const d of r.deltasMs) expect(Math.abs(d), `${late * 1000} ms`).toBeLessThan(20)
+    }
+  })
+
+  it('scores every note of every pass of a section loop, including the first after a wrap and the last before it', () => {
+    // A two-second loop: the first note on the wrap itself, the last an eighth before it.
+    const bar = [note(0, 4.0, 45), note(1, 4.5, 48), note(2, 5.0, 52), note(3, 5.75, 50)]
+    const all = [note(10, 1.0, 40), ...bar, note(11, 7.0, 43)]
+    const plucks: Pluck[] = []
+    for (let pass = 0; pass < 3; pass++) for (const n of bar) plucks.push({ time: pass * 2 + (n.time - 4), midi: n.midi, ring: 0.5 })
+    const r = run(all, plucks, 6.2, { loop: { from: 4, to: 6, passes: 3 } })
+    expect(r.summary.total).toBe(12)
+    expect(r.summary.perfects + r.summary.goods).toBe(12)
+    expect(r.summary.misses).toBe(0)
+    for (const d of r.deltasMs) expect(Math.abs(d)).toBeLessThan(20)
+  })
+
+  it('with a long sound delay (Bluetooth), the last note before a loop wrap still counts', () => {
+    // 400 ms from stroke to app. The last note sits a sixteenth before the wrap: its sound arrives well into the next pass.
+    const delay = 0.4
+    const bar = [note(0, 4.0, 45), note(1, 5.0, 50), note(2, 5.875, 52)]
+    const plucks: Pluck[] = []
+    for (let pass = 0; pass < 3; pass++) for (const n of bar) plucks.push({ time: delay + pass * 2 + (n.time - 4), midi: n.midi, ring: 0.4 })
+    const r = run(bar, plucks, 6.9, { loop: { from: 4, to: 6, passes: 3 }, latencySec: delay })
+    expect(r.summary.total).toBe(9)
+    // The last two strokes of the last pass arrive after this simulation has ended (the player waits for them); every other one must count.
+    expect(r.summary.perfects + r.summary.goods).toBeGreaterThanOrEqual(7)
+    for (const d of r.deltasMs) expect(Math.abs(d)).toBeLessThan(25)
+  })
+
+  it('a loop pass that is not played is missed, and one stroke before the wrap does not score the note after it', () => {
+    const bar = [note(0, 4.0, 45), note(1, 5.9, 45)]
+    // Pass 1 played in full; in pass 2 only the last note; pass 3 not at all.
+    const plucks: Pluck[] = [
+      { time: 0, midi: 45, ring: 0.5 },
+      { time: 1.9, midi: 45, ring: 0.5 },
+      { time: 3.9, midi: 45, ring: 0.5 },
+    ]
+    const r = run(bar, plucks, 6.2, { loop: { from: 4, to: 6, passes: 3 } })
+    expect(r.summary.total).toBe(6)
+    expect(r.summary.perfects + r.summary.goods).toBe(3)
+    expect(r.summary.misses).toBe(3)
+  })
+
   it('works at 48 kHz', () => {
     const out = new Float32Array(Math.round(4 * 48000))
     const src = synth(exact, 4)
@@ -262,5 +329,15 @@ describe('ScoreTracker statistics', () => {
   it('reports polyphonic verification in the attempt result', () => {
     const t = new ScoreTracker([note(0, 1, 45)])
     expect(t.toAttemptResult({ playedTempo: 90, targetTempo: 100, speed: 0.9, durationSec: 12 })).toMatchObject({ playedTempo: 90, targetTempo: 100, speed: 0.9, durationSec: 12, chordScoring: 'chroma' })
+  })
+})
+
+describe('per-bar results on a beat grid', () => {
+  it('files a note written a hair before its bar line under that bar', () => {
+    // Bars of 2 s; the note for bar 2 is written a fraction of a microsecond early, as adding up beat lengths can do.
+    const beats = constantBeatGrid(120, 0, 8, 4)
+    const tracker = new ScoreTracker([note(0, 0, 45), note(1, 2 - 2e-7, 45), note(2, 4, 45)], { beats })
+    tracker.advance(100)
+    expect(tracker.perBarAccuracy()).toEqual([0, 0, 0])
   })
 })

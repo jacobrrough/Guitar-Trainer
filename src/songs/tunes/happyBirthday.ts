@@ -1,4 +1,4 @@
-import { lazySong, melodyChart, type MelodyStep } from './util'
+import { lazySong, melodyChart, rest, type MelodyStep } from './util'
 
 // Key of C in 3/4 on the G, B and high E strings.
 const G3 = (len = 1): MelodyStep => [3, 0, len]
@@ -18,13 +18,16 @@ export const happyBirthday = () =>
         title: 'Happy Birthday',
         artist: 'Traditional',
         bpm: 76,
-        bars: 8,
+        // "Hap-py" is a pickup on beat 3: the first bar starts with two silent beats, so that
+        // "birth-" and "you" fall on beat 1 with the accent and the drums. Each line below ends on its pickup.
+        bars: 9,
         beatsPerBar: 3,
         steps: [
-          G3(0.5), G3(0.5), A3(), G3(), C4(), B3(2),
-          G3(0.5), G3(0.5), A3(), G3(), D4(), C4(2),
-          G3(0.5), G3(0.5), G4(), E4(), C4(), B3(), A3(),
-          F4(0.5), F4(0.5), E4(), C4(), D4(), C4(2),
+          rest(2), G3(0.5), G3(0.5),
+          A3(), G3(), C4(), B3(2), G3(0.5), G3(0.5),
+          A3(), G3(), D4(), C4(2), G3(0.5), G3(0.5),
+          G4(), E4(), C4(), B3(), A3(), F4(0.5), F4(0.5),
+          E4(), C4(), D4(), C4(2),
         ],
       }),
   )

@@ -54,6 +54,12 @@ export function exerciseParams(skill: SkillDef, generatorId: string, tempo: numb
   return { ...generator.defaults(skill, tempo), ...overrides, tempo }
 }
 
+/**
+ * Builds the exercise. Whatever the caller left out is filled in from the skill's own defaults first,
+ * so a task that only names a tempo and a length still gets the skill's drill (its hand position,
+ * its technique) and not the generator's bare fallback.
+ */
 export function generateExercise(skill: SkillDef, generatorId: string, params: ExerciseParams, tuning: number[]): GeneratedExercise {
-  return getGenerator(generatorId).generate(skill, params, tuning)
+  const generator = getGenerator(generatorId)
+  return generator.generate(skill, { ...generator.defaults(skill, params.tempo), ...params }, tuning)
 }

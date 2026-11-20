@@ -62,6 +62,14 @@ describe('unlockMilestones', () => {
     expect(unlockMilestones([a, b], { a: 65 }, { a: 80 }, NOW)).toEqual([])
     expect(unlockMilestones([a, b], { a: 10 }, { a: 20 }, NOW)).toEqual([])
   })
+  it('only says "everything it builds on is solid" when that is true', () => {
+    expect(unlockMilestones([a, b], { a: 50 }, { a: 65 }, NOW)[0].detail).toMatch(/builds on is solid/)
+    // B opens because a skill check rated it solid, while A under it is still shaky.
+    const shown = unlockMilestones([a, b], { a: 30, b: 40 }, { a: 30, b: 66 }, NOW)
+    expect(shown.map((m) => m.key)).toEqual(['unlock:b'])
+    expect(shown[0].detail).not.toMatch(/solid/)
+    expect(shown[0].detail).toMatch(/practice/)
+  })
 })
 
 describe('streakMilestone', () => {

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
+import { BUILD_ID, applyUpdate, checkForUpdate, useUpdateReady, type UpdateCheck } from '../../app/appUpdate'
+import { isStandalone } from '../../app/platform'
 import { DEFAULT_SETTINGS, updateSettings, useSettings } from '../../app/settings'
+import { installProtects, protectStorage, storageProtection, storageStatusText } from '../../app/storage'
 import { audioEngine } from '../../audio/AudioEngine'
 import { Button, Card, Field, PageHeader, Select, Toggle } from '../../components/ui'
 import { TUNINGS } from '../../music/tunings'
@@ -13,6 +16,72 @@ const SENSITIVITY = [
   { value: 0.78, label: 'Overdrive' },
   { value: 0.7, label: 'High gain / noisy room' },
 ]
+
+const CHECK_TEXT: Record<UpdateCheck, string> = {
+  ready: 'A new version is ready.',
+  downloading: 'A new version is downloading. It will be offered when it is ready.',
+  current: 'You have the latest version.',
+  unavailable: 'Could not check right now. Try again when you are online.',
+}
+
+/** Which build this is, and a way to ask for a newer one (an installed app on a phone can stay open for days). */
+function VersionRow() {
+  const ready = useUpdateReady()
+  const [checking, setChecking] = useState(false)
+  const [status, setStatus] = useState<UpdateCheck | null>(null)
+  const check = async () => {
+    setChecking(true)
+    setStatus(await checkForUpdate())
+    setChecking(false)
+  }
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="version-row">
+      <span>
+        Version: <span data-testid="build-id">{BUILD_ID}</span>
+      </span>
+      {ready ? (
+        <Button size="sm" variant="primary" onClick={applyUpdate}>
+          Update now
+        </Button>
+      ) : (
+        <Button size="sm" onClick={() => void check()} disabled={checking}>
+          {checking ? 'Checking…' : 'Check for updates'}
+        </Button>
+      )}
+      {status && !ready && (
+        <span role="status" data-testid="update-status">
+          {CHECK_TEXT[status]}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Says whether the browser has promised to keep the songs and progress when the device runs low on space.
+ * It first asks for that promise (only where no prompt can appear), so someone who set the app up
+ * before it started asking is covered the first time they look here.
+ */
+function StorageRow() {
+  const [text, setText] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void (async () => {
+      await protectStorage()
+      const status = await storageProtection()
+      if (live) setText(storageStatusText(status, installProtects(isStandalone(), navigator.userAgent)))
+    })()
+    return () => {
+      live = false
+    }
+  }, [])
+  if (!text) return null
+  return (
+    <p className="mt-2" data-testid="storage-status">
+      {text}
+    </p>
+  )
+}
 
 export function SettingsPage() {
   const settings = useSettings()
@@ -170,11 +239,17 @@ export function SettingsPage() {
             automatic transcription uses Spotify's Basic Pitch (Apache-2.0).
           </p>
           <p className="mt-2">
+            The guitar you hear is a recorded steel-string guitar from the University of Iowa Musical Instrument Samples, as edited in
+            tonejs-instruments (CC BY 3.0); the notes were trimmed and packed into one file for this app.
+          </p>
+          <p className="mt-2">
             Source code and issues:{' '}
             <a href="https://github.com/jacobrrough/Guitar-Trainer" className="underline" target="_blank" rel="noreferrer">
               github.com/jacobrrough/Guitar-Trainer
             </a>
           </p>
+          <VersionRow />
+          <StorageRow />
         </Card>
       </div>
       {calibrating && <CalibrationDialog deviceId={settings.inputDeviceId || undefined} onClose={closeCalibration} onResult={(ms) => updateSettings({ latencyMs: ms, calibratedAt: Date.now() })} />}

@@ -30,6 +30,26 @@ export const STEADY_SPREAD_MS = 40
 /** Frame lag of the onset detector: the hop is ~11 ms, so a transient is seen ~5 ms late on average. */
 const DETECTOR_LAG = 0.005
 
+/**
+ * Tells a calibration run whether it is still wanted. The dialog can be closed, or a new run
+ * started, while a run waits for the microphone or for its clicks to finish. A run that finds it is
+ * no longer current must stop there: by then the microphone may belong to another screen.
+ */
+export class RunGuard {
+  private token = 0
+
+  /** Starts a run, ending any earlier one. The returned function says whether this run is still the current one. */
+  start(): () => boolean {
+    const mine = ++this.token
+    return () => mine === this.token
+  }
+
+  /** Ends the current run. */
+  cancel(): void {
+    this.token++
+  }
+}
+
 export function median(values: number[]): number {
   const s = [...values].sort((a, b) => a - b)
   const mid = s.length >> 1

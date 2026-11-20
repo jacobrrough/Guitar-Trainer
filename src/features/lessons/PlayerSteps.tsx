@@ -1,24 +1,26 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { getSettings, useSettings } from '../../app/settings'
 import { encodeWav } from '../../audio/synth'
-import { LEVELS, generateLevels } from '../../chart/difficulty'
+import { LEVELS } from '../../chart/difficulty'
 import { chartBpm } from '../../chart/types'
 import { ChordBox } from '../../components/diagrams'
 import { Badge, Button } from '../../components/ui'
 import { recordResult, type SongRecord } from '../../db/db'
+import { forHand } from '../../lessons/fingering'
+import { lessonDrillExercise, lessonSongNotes } from '../../lessons/material'
 import type { Lesson, LessonDrill, LessonPlay } from '../../lessons/types'
 import { getTuning } from '../../music/tunings'
 import { builtInSong, builtInSongRecord } from '../../songs'
 import { songPlayback } from '../../songs/playback'
 import { useExerciseGuide } from '../play/useExerciseGuide'
 import { recordLessonDrill, recordSongPlay } from '../../training/coach'
-import { exerciseParams, generateExercise } from '../../training/exercises'
 import { renderExerciseBacking } from '../../training/exercises/backing'
 import { SKILLS_BY_ID } from '../../training/skills'
 import type { AttemptResult } from '../../training/types'
 import { Player, type PlayerHandle } from '../play/Player'
+import { NOT_COUNTED, runVerdict, type RunVerdict } from '../play/runVerdict'
 import type { ScoreSummary } from '../play/scoring'
-import { feedbackLine, hitFraction, tipFor } from './lessonUtils'
+import { feedbackLine, hitFraction, lessonSongHint, tipFor } from './lessonUtils'
 import { getLessonProgress, patchLessonProgress } from '../../lessons/store'
 
 function Overlay({ testId, children }: { testId: string; children: ReactNode }) {
@@ -29,11 +31,28 @@ function Overlay({ testId, children }: { testId: string; children: ReactNode }) 
   )
 }
 
+/** Share of a lesson song's notes that must be hit for the song to count as played. */
+const SONG_PLAYED_FRACTION = 0.5
+
+/** A full-screen wait with a way out: nobody should be stuck on it if something takes too long. */
+function Waiting({ text, onExit, testId }: { text: string; onExit: () => void; testId?: string }) {
+  return (
+    <div className="flex h-dvh flex-col items-center justify-center gap-4 text-muted" data-testid={testId}>
+      <p>{text}</p>
+      <Button variant="ghost" size="sm" onClick={onExit}>
+        Back
+      </Button>
+    </div>
+  )
+}
+
 interface Feedback {
   summary: ScoreSummary
   fraction: number
   passed: boolean
   round: number
+  /** Whether the run counted; when it did not, nothing was saved and the card says why. */
+  verdict: RunVerdict
 }
 
 function FeedbackCard({
@@ -51,19 +70,24 @@ function FeedbackCard({
   onAgain: () => void
   onContinue: () => void
 }) {
-  const none = feedback.summary.total === 0
+  const verdict = feedback.verdict
+  const settings = useSettings()
   return (
     <Overlay testId="lesson-feedback">
-      <h2 className="text-2xl font-bold" data-testid="lesson-score">
-        {feedbackLine(feedback.summary)}
+      <h2 className="text-2xl font-bold" data-testid="lesson-score" data-verdict={verdict}>
+        {verdict === 'unscored' ? 'We did not hear any notes this time.' : verdict !== 'counted' ? NOT_COUNTED[verdict].title : feedbackLine(feedback.summary)}
       </h2>
-      {none ? (
-        <p className="mt-3 text-sm text-slate-200">Check that your guitar is close to the phone and the microphone is allowed, then try again.</p>
+      {verdict === 'unscored' ? (
+        <p className="mt-3 text-sm text-slate-200">
+          Check that the microphone is allowed and that the phone is close to your guitar, then try again. If the guitar may be out of tune, tune it first.
+        </p>
+      ) : verdict !== 'counted' ? (
+        <p className="mt-3 text-sm text-slate-200">{NOT_COUNTED[verdict].body}</p>
       ) : (
         <>
           <p className="mt-3 text-sm text-slate-200">{note}</p>
           <p className="mt-3 rounded-lg bg-panel-2 p-3 text-sm text-slate-200" data-testid="lesson-tip">
-            {tipFor(lesson, feedback.fraction, feedback.round, skillTips)}
+            {forHand(tipFor(lesson, feedback.fraction, feedback.round, skillTips), settings.handedness)}
           </p>
         </>
       )}
@@ -105,8 +129,8 @@ export function TryStep({ lesson, drill, onExit, onContinue }: { lesson: Lesson;
 
   const built = useMemo(() => {
     try {
-      const params = exerciseParams(skill, drill.generatorId, drill.tempo, drill.params)
-      return { exercise: renderExerciseBacking(generateExercise(skill, drill.generatorId, params, tuning), { guide: true }), error: null as string | null }
+      // Built by the same function as the scoring simulation's lesson cases, so what is proven there is what is shown here.
+      return { exercise: renderExerciseBacking(lessonDrillExercise(lesson, tuning), { guide: true }), error: null as string | null }
     } catch (err) {
       return { exercise: null, error: err instanceof Error ? err.message : String(err) }
     }
@@ -129,9 +153,10 @@ export function TryStep({ lesson, drill, onExit, onContinue }: { lesson: Lesson;
 
   const onFinished = (summary: ScoreSummary, result: AttemptResult) => {
     const fraction = hitFraction(summary)
-    const passed = summary.total > 0 && (fraction >= drill.passAccuracy || round >= drill.rounds)
-    setFeedback({ summary, fraction, passed, round })
-    if (summary.total === 0) return
+    const verdict = runVerdict(summary, result)
+    const passed = verdict === 'counted' && (fraction >= drill.passAccuracy || round >= drill.rounds)
+    setFeedback({ summary, fraction, passed, round, verdict })
+    if (verdict !== 'counted') return
     void recordLessonDrill(skill.id, exercise, result, getSettings()).catch(() => {})
     void getLessonProgress(lesson.id)
       .then((prev) =>
@@ -149,11 +174,14 @@ export function TryStep({ lesson, drill, onExit, onContinue }: { lesson: Lesson;
     setRound((r) => r + 1)
   }
 
-  const note = feedback?.passed
-    ? 'That is enough to move on. You can go again if you want more practice.'
-    : 'Listen first, then go again. Each try gets a little easier.'
+  const reached = !!feedback && feedback.fraction >= drill.passAccuracy
+  const note = !feedback?.passed
+    ? 'Listen first, then go again. It gets easier each time you try.'
+    : reached
+      ? 'That is enough to move on. You can go again if you want more practice.'
+      : 'Not quite there yet, and that is fine. You can move on and come back to this later, or go again now.'
 
-  if (!guideReady) return <div className="flex h-dvh items-center justify-center text-muted" data-testid="lesson-try-loading">Getting your practice ready…</div>
+  if (!guideReady) return <Waiting testId="lesson-try-loading" text="Getting your practice ready…" onExit={onExit} />
 
   return (
     <div data-testid="lesson-try" className="h-dvh">
@@ -169,7 +197,7 @@ export function TryStep({ lesson, drill, onExit, onContinue }: { lesson: Lesson;
         backingIsClick
         playedTempo={drill.tempo}
         targetTempo={drill.tempo}
-        readyHint={exercise.instructions}
+        readyHint={forHand(drill.hint, settings.handedness)}
         resetKey={round}
         headerControls={<Badge tone="accent">{`Try · round ${round} of ${drill.rounds}`}</Badge>}
         onExit={onExit}
@@ -202,12 +230,12 @@ export function PlayStep({ lesson, play, onExit, onContinue }: { lesson: Lesson;
 
   const prepared = useMemo(() => {
     if (!record) return null
-    const levels = generateLevels(record.chart)
-    const level = Math.max(0, Math.min(levels.length - 1, play.level))
+    // What the lesson shows of the song (the same function builds the scoring simulation's lesson cases).
+    const shown = lessonSongNotes(play, record.chart)
     const { audio, guide, clickOnly } = songPlayback(record)
     if (!audio) return null
-    return { level, notes: levels[level].notes, audio, guide, clickOnly, chart: { ...record.chart, duration: Math.max(record.chart.duration, record.duration) } }
-  }, [record, play.songId, play.level])
+    return { level: shown.level, notes: shown.notes, audio, guide, clickOnly, chart: { ...record.chart, duration: Math.max(record.chart.duration, record.duration) } }
+  }, [record, play])
 
   if (error || (record && !prepared)) {
     return (
@@ -222,13 +250,15 @@ export function PlayStep({ lesson, play, onExit, onContinue }: { lesson: Lesson;
       </div>
     )
   }
-  if (!record || !prepared) return <div className="flex h-dvh items-center justify-center text-muted">Getting your song ready…</div>
+  if (!record || !prepared) return <Waiting text="Getting your song ready…" onExit={onExit} />
 
   const bpm = chartBpm(prepared.chart)
   const onFinished = (summary: ScoreSummary, result: AttemptResult) => {
     const fraction = hitFraction(summary)
-    setFeedback({ summary, fraction, passed: summary.total > 0, round })
-    if (summary.total === 0) return
+    const verdict = runVerdict(summary, result)
+    // The song counts as played once a fair share of it was really hit; the learner can still carry on without.
+    setFeedback({ summary, fraction, passed: verdict === 'counted' && fraction >= SONG_PLAYED_FRACTION, round, verdict })
+    if (verdict !== 'counted') return
     void recordSongPlay(record, prepared.level, result, getSettings()).catch(() => {})
     void recordResult(record.id, {
       level: LEVELS[prepared.level].level,
@@ -242,7 +272,7 @@ export function PlayStep({ lesson, play, onExit, onContinue }: { lesson: Lesson;
       date: Date.now(),
     }).catch(() => {})
     void getLessonProgress(lesson.id)
-      .then((prev) => patchLessonProgress(lesson.id, { playDone: true, playBestAccuracy: Math.max(prev?.playBestAccuracy ?? 0, fraction) }))
+      .then((prev) => patchLessonProgress(lesson.id, { playDone: prev?.playDone || fraction >= SONG_PLAYED_FRACTION, playBestAccuracy: Math.max(prev?.playBestAccuracy ?? 0, fraction) }))
       .catch(() => {})
   }
   const again = () => {
@@ -279,7 +309,7 @@ export function PlayStep({ lesson, play, onExit, onContinue }: { lesson: Lesson;
         playedTempo={bpm * play.speed}
         targetTempo={bpm}
         resetKey={round}
-        readyHint={info?.description}
+        readyHint={lessonSongHint(play.view, info?.description)}
         headerControls={chordRow}
         mobileControls={chordRow}
         onExit={onExit}
@@ -289,7 +319,7 @@ export function PlayStep({ lesson, play, onExit, onContinue }: { lesson: Lesson;
             <FeedbackCard
               lesson={lesson}
               feedback={feedback}
-              note={feedback.passed ? 'Well played. You can go again, or carry on to finish the lesson.' : ''}
+              note={feedback.passed ? 'Well played. You can go again, or carry on to finish the lesson.' : 'Have another go: watch the notes come down and play each one as it reaches the line. You can also carry on and come back to this song later.'}
               onAgain={again}
               onContinue={onContinue}
             />

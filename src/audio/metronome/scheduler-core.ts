@@ -54,6 +54,23 @@ export function scheduleWindow(
   return { events, state: { nextTime, beat, sub } }
 }
 
+/** A click may be scheduled this late (seconds) and still sound; later than that it is dropped. */
+const LATE_TOLERANCE = 0.03
+
+/**
+ * After a stall (the page's timers did not run for a while, as in a background tab) the clicks that are
+ * already in the past are dropped instead of all sounding at once. The bar position moves on as if
+ * they had played, so the beat stays where it would have been.
+ */
+export function skipMissed(state: SchedulerState, settings: MetronomeSettings, now: number): SchedulerState {
+  if (state.nextTime >= now - LATE_TOLERANCE) return state
+  const interval = 60 / settings.bpm / settings.subdivision
+  const missed = Math.ceil((now - state.nextTime) / interval)
+  const perBar = settings.beatsPerBar * settings.subdivision
+  const position = (state.beat * settings.subdivision + state.sub + missed) % perBar
+  return { nextTime: state.nextTime + missed * interval, beat: Math.floor(position / settings.subdivision), sub: position % settings.subdivision }
+}
+
 /** Tap-tempo estimate from tap timestamps (ms); returns null with fewer than 2 taps. */
 export function tapTempo(taps: number[], maxGapMs = 2500): number | null {
   const recent: number[] = []

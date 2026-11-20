@@ -11,13 +11,17 @@ import { songPlayback } from '../../songs/playback'
 import { getTuning } from '../../music/tunings'
 import { checkpointTasks, evaluateTask, monthlyTasks, placementLadder } from '../../training/assessment'
 import { CALIBRATION_MAX_AGE_DAYS } from '../../training/constants'
-import { attemptForTask, calibrationAgeDays, exerciseForTask, finishTest, songSummaries } from '../../training/coach'
+import { attemptForTask, calibrationAgeDays, exerciseForTask, songSummaries } from '../../training/coach'
 import { SKILLS } from '../../training/skills'
+import { saveFinishedTest } from '../../training/testBlocks'
 import type { AttemptResult, LearnerModel, Profile, TestTask, TestType } from '../../training/types'
 import { useLearnerModel, useProfile } from '../../training/useTraining'
-import { Player } from '../play/Player'
+import { NotCountedCard } from '../play/NotCountedCard'
+import { Player, type PlayerHandle } from '../play/Player'
+import { runVerdict, type RunVerdict } from '../play/runVerdict'
 import type { ScoreSummary } from '../play/scoring'
 import { TaskCard, TaskIntro } from './TaskIntro'
+import { failedCriteria, failureReasons, ruleAccuracy, shownAccuracyPct, verdictBadge, type FailedCriterion } from './taskResult'
 import { TestReportView } from './TestReportView'
 import { initialTestFlowState, isComplete, progressOf, testFlowReducer } from './testFlowState'
 
@@ -97,48 +101,57 @@ function Centered({ children }: { children: React.ReactNode }) {
 function TaskResultCard({
   task,
   passed,
-  summary,
   result,
   last,
   onNext,
 }: {
   task: TestTask
   passed: boolean
-  summary: ScoreSummary | null
   result: AttemptResult | null
   last: boolean
   onNext: () => void
 }) {
-  const accuracy = summary ? Math.round(summary.accuracy * 100) : null
+  // The number shown is the one the pass rule uses (a note a little off counts for less), and a miss says which part was missed.
+  const accuracy = result ? shownAccuracyPct(ruleAccuracy(result), task.passCriteria.minAccuracy) : null
+  const failed: FailedCriterion[] = result && !passed ? failedCriteria(task.passCriteria, result) : []
+  const reasons = result && !passed ? failureReasons(task.passCriteria, result) : []
   const median = result?.timingMedianMs
   const stdev = result?.timingStdevMs
+  const tile = (part: FailedCriterion) => `rounded-lg bg-panel-2 p-3 ${failed.includes(part) ? 'ring-1 ring-amber-300/60' : ''}`
   return (
     <Centered>
       <PageHeader title="Task result" subtitle={task.title} />
       <Card>
-        <div className="mb-4 flex items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
           {passed ? <CheckCircle2 className="h-6 w-6 text-green-300" /> : <XCircle className="h-6 w-6 text-red-300" />}
           <span className="text-lg font-semibold">{passed ? 'Passed' : 'Not yet'}</span>
-          <Badge tone={passed ? 'ok' : 'warn'}>{passed ? 'on target' : 'below target'}</Badge>
+          <Badge tone={passed ? 'ok' : 'warn'}>{passed ? 'on target' : failed.length > 0 ? verdictBadge(failed) : 'below target'}</Badge>
         </div>
         <dl className="grid grid-cols-3 gap-2 text-sm">
-          <div className="rounded-lg bg-panel-2 p-3">
+          <div className={tile('accuracy')}>
             <dt className="text-[11px] uppercase tracking-wide text-muted">Accuracy</dt>
             <dd className="text-xl font-semibold tabular-nums">{accuracy === null ? '-' : `${accuracy}%`}</dd>
           </div>
-          <div className="rounded-lg bg-panel-2 p-3">
+          <div className={tile('timing')}>
             <dt className="text-[11px] uppercase tracking-wide text-muted">Timing</dt>
             <dd className="text-xl font-semibold tabular-nums">
               {median === null || median === undefined ? '-' : `${median > 0 ? '+' : ''}${Math.round(median)} ms`}
             </dd>
           </div>
-          <div className="rounded-lg bg-panel-2 p-3">
+          <div className={tile('spread')}>
             <dt className="text-[11px] uppercase tracking-wide text-muted">Spread</dt>
             <dd className="text-xl font-semibold tabular-nums">
               {stdev === null || stdev === undefined ? '-' : `${Math.round(stdev)} ms`}
             </dd>
           </div>
         </dl>
+        {reasons.length > 0 && (
+          <ul className="mt-3 space-y-1 text-sm text-slate-200" data-testid="task-reasons">
+            {reasons.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        )}
         <Button variant="primary" size="lg" className="mt-4" onClick={onNext} data-testid="task-next">
           {last ? 'See results' : 'Next'}
         </Button>
@@ -173,7 +186,6 @@ function TestFlowInner({ type }: { type: TestType }) {
   const [override, setOverride] = useState(false)
   const [media, setMedia] = useState<PlayMedia | null>(null)
   const [preparing, setPreparing] = useState(false)
-  const [lastSummary, setLastSummary] = useState<ScoreSummary | null>(null)
   const [lastResult, setLastResult] = useState<AttemptResult | null>(null)
   const [empty, setEmpty] = useState(false)
   const builtRef = useRef(false)
@@ -201,7 +213,7 @@ function TestFlowInner({ type }: { type: TestType }) {
       )
   }, [gateOpen, ready, model, profile, type])
 
-  // Save the results when the last task is done.
+  // Save the results when the last task is done. Saving also closes the check's block in today's plan.
   useEffect(() => {
     if (state.phase !== 'finishing' || finishingRef.current) return
     finishingRef.current = true
@@ -212,7 +224,7 @@ function TestFlowInner({ type }: { type: TestType }) {
       })
       return
     }
-    finishTest(type, state.tasks, state.results)
+    saveFinishedTest(type, state.tasks, state.results)
       .then((record) => dispatch({ type: 'done', record }))
       .catch((e: unknown) =>
         dispatch({
@@ -256,6 +268,8 @@ function TestFlowInner({ type }: { type: TestType }) {
   }, [navigate])
 
   const task = state.current
+  const playerRef = useRef<PlayerHandle>(null)
+  const [notCounted, setNotCounted] = useState<Exclude<RunVerdict, 'counted'> | null>(null)
   const tuning = useMemo(() => getTuning(settings.defaultTuningId).strings, [settings.defaultTuningId])
 
   const playTask = async () => {
@@ -281,9 +295,15 @@ function TestFlowInner({ type }: { type: TestType }) {
 
   const onFinished = (summary: ScoreSummary, result: AttemptResult) => {
     if (!task || state.phase !== 'playing') return
+    // A task the app could not hear (or where it heard its own playback) is played again, not marked as failed.
+    const verdict = runVerdict(summary, result)
+    if (verdict !== 'counted') {
+      setNotCounted(verdict)
+      return
+    }
+    setNotCounted(null)
     const passed = evaluateTask(task, result)
     const attempt = attemptForTask(task, result, settings)
-    setLastSummary(summary)
     setLastResult(result)
     dispatch({
       type: 'finishedTask',
@@ -347,6 +367,7 @@ function TestFlowInner({ type }: { type: TestType }) {
     return (
       <div className="fixed inset-0 z-40 bg-bg" data-testid="test-flow">
         <Player
+          ref={playerRef}
           title={media.title}
           subtitle={task.title}
           chart={media.chart}
@@ -361,6 +382,19 @@ function TestFlowInner({ type }: { type: TestType }) {
           readyHint={media.hint}
           onExit={confirmLeave}
           onFinished={onFinished}
+          onPhaseChange={(p) => p !== 'finished' && setNotCounted(null)}
+          resultsOverlay={
+            notCounted ? (
+              <NotCountedCard
+                verdict={notCounted}
+                onRetry={() => {
+                  setNotCounted(null)
+                  playerRef.current?.restart()
+                  playerRef.current?.start()
+                }}
+              />
+            ) : null
+          }
         />
       </div>
     )
@@ -370,7 +404,6 @@ function TestFlowInner({ type }: { type: TestType }) {
       <TaskResultCard
         task={task}
         passed={last?.passed ?? false}
-        summary={lastSummary}
         result={lastResult}
         last={isComplete(state)}
         onNext={() => dispatch({ type: 'next' })}

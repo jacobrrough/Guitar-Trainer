@@ -1,7 +1,7 @@
 import { constantBeatGrid } from '../../chart/timing'
 import type { Chart, ChartNote } from '../../chart/types'
 import type { NewSong } from '../../db/db'
-import { guitarVoice, loadGuitar, renderChartAudio } from '../../audio/guitar'
+import { renderChartAudio, renderChartVoiced } from '../../audio/guitar'
 import type { SampleBank } from '../../audio/instrument/bank'
 import { encodeWav, renderChartBacking, renderDrums, synthAudioName } from '../../audio/synth'
 
@@ -83,6 +83,12 @@ export function renderDemoAudioAsync(): Promise<Float32Array> {
   return renderChartAudio(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000 })
 }
 
+/** The same as a stored track: the WAV and the name that says which voice really played it. */
+export async function renderDemoTrack(): Promise<{ wav: Blob; audioName: string }> {
+  const { samples, voice } = await renderChartVoiced(demoChart(), { sampleRate: SAMPLE_RATE, seed: 1000 })
+  return { wav: encodeWav(samples), audioName: synthAudioName(DEMO_AUDIO_BASE, voice) }
+}
+
 /** The demo's click track without the riff: what plays while the microphone scores. */
 export function renderDemoBacking(): Float32Array {
   return renderDrums(demoChart(), { sampleRate: SAMPLE_RATE })
@@ -96,14 +102,13 @@ export const DEMO_AUDIO_BASE = 'demo-riff'
 /** A short riff + chord progression played by the app's own guitar, so the app is playable without any files. */
 export async function createDemoSong(): Promise<NewSong> {
   const chart = demoChart()
-  await loadGuitar()
-  const voice = guitarVoice()
+  const { wav, audioName } = await renderDemoTrack()
   return {
     title: chart.title,
     artist: chart.artist,
-    audio: encodeWav(await renderDemoAudioAsync()),
+    audio: wav,
     audioType: 'audio/wav',
-    audioName: synthAudioName(DEMO_AUDIO_BASE, voice),
+    audioName,
     duration: DURATION,
     chart,
     source: 'demo',

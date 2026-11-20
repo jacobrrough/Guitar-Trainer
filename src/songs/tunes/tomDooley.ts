@@ -1,6 +1,11 @@
 import { lazySong, repeat, strumChart, uniqueChords } from './util'
 
-const BARS: string[] = repeat(['G', 'G', 'D7', 'G'], 4)
+// One verse, played twice. The song moves to D7 on "cry" and stays there until the last word.
+const VERSE: string[] = [
+  'G', 'G', 'G', 'D7', // Hang down your head, Tom | Dooley | hang down your head and | cry
+  'D7', 'D7', 'D7', 'G', // Hang down your head, Tom | Dooley | poor boy, you're bound to | die
+]
+const BARS: string[] = repeat(VERSE, 2)
 
 export const tomDooley = () =>
   lazySong(

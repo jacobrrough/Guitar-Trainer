@@ -2,9 +2,11 @@
  * Milestone detectors (pure): compare learner state before/after an event and
  * return durable "you got somewhere" records. `now` is always passed in.
  */
-import { BAND_THRESHOLDS, MILESTONE_TEMPO_STEP, STREAK_MILESTONES, UNLOCK_RATING } from './constants'
+import { BAND_THRESHOLDS, MILESTONE_TEMPO_STEP, STREAK_MILESTONES } from './constants'
 import { effectiveRating, masteryBand } from './learner'
+import { prerequisitesSolid } from './skills'
 import type { MasteryBand, Milestone, SkillDef, SkillState, SongItemState, TestRecord, TestType } from './types'
+import { skillOpener, type OpenContext } from './unlock'
 
 /** Accuracy at which a song level counts as mastered. */
 const SONG_MASTERED_ACCURACY = 0.9
@@ -62,23 +64,41 @@ export function tempoMilestone(skill: SkillDef, before: SkillState | null, after
   }
 }
 
-/** Skills with prerequisites that are unlocked by `ratingsAfter` but were not by `ratingsBefore`. */
+/**
+ * Skills that build on others and are open with `ratingsAfter` but were not with `ratingsBefore`.
+ * "Open" is the planner's own rule (unlock.ts): the whole chain under the skill counts, and a skill the
+ * learner is already practising was open before, so nothing is announced that the plan keeps closed.
+ * `known` carries what the ratings do not say: practice rounds per skill and what the lessons taught.
+ */
 export function unlockMilestones(
   skills: SkillDef[],
   ratingsBefore: Record<string, number>,
   ratingsAfter: Record<string, number>,
   now: number,
+  known: Pick<OpenContext, 'attempts' | 'taught'> = {},
 ): Milestone[] {
-  const open = (skill: SkillDef, ratings: Record<string, number>) =>
-    skill.prerequisites.every((p) => (ratings[p] ?? 0) >= UNLOCK_RATING)
+  return unlockMilestonesBetween(skills, { ...known, ratings: ratingsBefore }, { ...known, ratings: ratingsAfter }, now)
+}
+
+/**
+ * The same with everything the rule looks at given for both moments (see `openContextOf`), so rust counts
+ * here exactly as it does in the plan. The text only says "everything it builds on is solid" when that is
+ * why the skill opened: a skill can also open because a skill check rated it solid by itself.
+ */
+export function unlockMilestonesBetween(skills: SkillDef[], contextBefore: OpenContext, contextAfter: OpenContext, now: number): Milestone[] {
+  const before = skillOpener(skills, contextBefore)
+  const after = skillOpener(skills, contextAfter)
+  const byId = new Map(skills.map((s) => [s.id, s]))
   return skills
-    .filter((s) => s.prerequisites.length > 0 && open(s, ratingsAfter) && !open(s, ratingsBefore))
+    .filter((s) => s.prerequisites.length > 0 && after(s) && !before(s))
     .map((s) => ({
       at: now,
       type: 'unlock' as const,
       skillId: s.id,
       title: `${s.name} unlocked`,
-      detail: `You have met the prerequisites for ${s.name}; it can now appear in your plan.`,
+      detail: prerequisitesSolid(s, contextAfter.ratings, byId)
+        ? `Everything ${s.name} builds on is solid now, so it can appear in your practice.`
+        : `You are ready for ${s.name}, so it can appear in your practice.`,
       key: `unlock:${s.id}`,
     }))
 }

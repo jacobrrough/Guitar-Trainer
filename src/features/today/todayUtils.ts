@@ -23,9 +23,9 @@ export const BLOCK_META: Record<BlockKind, { label: string; icon: BlockIconName 
   ear: { label: 'Ear training', icon: 'Ear' },
 }
 
-/** Whole minutes practised: sum of attempt durations. */
-export function minutesThisWeek(attempts: Pick<Attempt, 'durationSec'>[]): number {
-  const sec = attempts.reduce((sum, a) => sum + (Number.isFinite(a.durationSec) ? a.durationSec : 0), 0)
+/** Whole minutes practised: sum of attempt durations. Runs that did not count (speaker bleed) add nothing. */
+export function minutesThisWeek(attempts: Pick<Attempt, 'durationSec' | 'bleed'>[]): number {
+  const sec = attempts.reduce((sum, a) => sum + (!a.bleed && Number.isFinite(a.durationSec) ? a.durationSec : 0), 0)
   return Math.round(sec / 60)
 }
 
@@ -47,14 +47,15 @@ export function formatLongDate(date: string): string {
 export function blockTitle(block: Block, songTitle?: string, simple = false): string {
   switch (block.kind) {
     case 'test':
-      return `Skill check: ${block.test}`
+      return block.test === 'monthly' ? 'Monthly skill check' : block.test === 'placement' ? 'Starting check' : 'Weekly skill check'
     case 'song': {
       const title = songTitle ?? `Song #${block.songId}`
       return `${title} · Level ${block.level + 1}${block.speed < 1 ? ` · ${Math.round(block.speed * 100)}% speed` : ''}`
     }
     default: {
       const name = SKILLS_BY_ID[block.skillId]?.name ?? block.skillId
-      return simple ? name : `${name} · ${Math.round(block.tempo)} bpm`
+      // Ear training has no tempo to show.
+      return simple || block.kind === 'ear' ? name : `${name} · ${Math.round(block.tempo)} bpm`
     }
   }
 }
@@ -120,11 +121,11 @@ export function repSummaryText(result: Pick<AttemptResult, 'perfects' | 'goods' 
   return `${result.perfects} perfect · ${result.goods} good · ${result.misses} missed`
 }
 
-/** Latest attempt of the given session that belongs to the block. */
+/** Latest counted attempt of the given session that belongs to the block (a bleed run is not the block's result). */
 export function attemptForBlock(attempts: Attempt[], sessionId: number | undefined, block: Block): Attempt | undefined {
   if (sessionId === undefined) return undefined
   const match = attempts.filter((a) => {
-    if (a.sessionId !== sessionId) return false
+    if (a.sessionId !== sessionId || a.bleed) return false
     if (block.kind === 'song') return a.songId === block.songId
     if (block.kind === 'test') return false
     return a.skillId === block.skillId

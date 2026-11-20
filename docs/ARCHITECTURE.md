@@ -12,9 +12,12 @@ src/
 │   ├── AudioEngine.ts         single AudioContext + MediaStream + worklet node
 │   ├── pitch/fft.ts           radix-2 FFT
 │   ├── pitch/mpm.ts           McLeod Pitch Method (NSDF via FFT autocorrelation)
-│   ├── pitch/pitch-processor  AudioWorkletProcessor posting {freq, clarity, rms, chroma}
-│   ├── synth.ts               offline guitar: two-polarisation Karplus–Strong strings, pick, body, room, click track
-│   ├── renderBacking.ts       renders a chart in synth.worker.ts (Web Worker), inline fallback
+│   ├── pitch/spectrum.ts      spectral peaks of the last 4096 samples (what scoring listens to)
+│   ├── pitch/frameAnalyzer.ts framing shared by the worklet and the scoring simulation
+│   ├── pitch/pitch-processor  AudioWorkletProcessor posting {freq, clarity, rms, peaks, flux, fluxBand}
+│   ├── instrument/            the recorded guitar: sample bank + sampler; string model as fallback voice
+│   ├── guitar.ts              the app's guitar voice: loads the sample pack, renders in synth.worker.ts
+│   ├── synth.ts               offline renderer: strings (sampled or modelled), drums, loudness mastering
 │   └── metronome/             pure lookahead scheduler + click synthesis
 ├── music/          pitch math, tunings, string colours, string/fret assignment (Viterbi)
 ├── chart/          the app's own chart model + importers + difficulty generator
@@ -28,7 +31,7 @@ src/
 ├── training/       the Coach: skills graph, learner model, exercise generators,
 │                   session planner, tests, recommendations, store, orchestration
 ├── lessons/        the First steps course: lesson content, progress store
-├── songs/          bundled public-domain songs built with ChartBuilder and synthesised
+├── songs/          bundled public-domain songs built with ChartBuilder, played by the app's guitar
 ├── components/diagrams  SVG instruction set: chord boxes, fretboard spots, posture, pick grip
 └── features/       UI: onboarding (Start Here wizard), lessons (course + lesson pages),
                     today (session + block runner), progress, test flow, library
@@ -55,31 +58,56 @@ src/
    (downbeat > beat > off-beat > 16th), note length, phrase starts, chord size.
    Level *n* keeps the top *k%* of groups by salience (15/30/50/70/85/100%), always
    keeps the strongest group of every bar, enforces a minimum spacing at low levels,
-   and reduces chords (root → power chord → triad → full voicing). This is
-   deterministic and cheap, so levels are generated on load rather than stored.
+   and reduces chords (root → the two lowest neighbouring strings → triad → full
+   voicing). This is deterministic and cheap, so levels are generated on load rather
+   than stored.
 
 3. **Play.** The song plays through an `<audio>` element (`playbackRate` with
    `preservesPitch` gives slow-down practice for free). A `PlaybackClock`
    extrapolates `currentTime` between updates. Each animation frame the
    `HighwayRenderer` draws notes approaching a hit line; strings are lanes.
 
-4. **Scoring.** The microphone feeds the `pitch-processor` worklet, which runs
-   McLeod pitch detection every 512 samples and posts frames to the main thread.
-   `PitchSmoother` median-filters frames and flags attacks (level jumps).
-   `ScoreTracker` matches detected pitches against pending note groups inside a
-   timing window (±45 ms perfect, up to 170 ms late), with repeated-note attack
-   gating, streak multipliers and miss detection. Bend notes carry the pitch to
-   reach and are judged within 25 cents of it. For charts with chords the worklet
-   also posts a 12-bin chroma vector per frame (`audio/pitch/chroma.ts`, computed
-   over the last 4096 samples rather than the detector's 2048, because the low strings
-   of an open chord only separate with ~90 ms of signal); the
-   tracker sums it over a chord's window and calls the chord hit when the cosine
-   match to the chord's pitch-class template is ≥ 0.75 and at least 60 % of its
-   pitch classes are present. The latency setting shifts the scoring clock to
-   compensate for audio I/O delay; the Settings page measures it with a
-   click-and-strum calibration (`calibration.ts`: onsets relative to the room's
-   noise floor, the earliest sound after each click counts, so on a phone speaker
-   the click's own echo serves as a loopback measurement).
+4. **Scoring.** The microphone feeds the `pitch-processor` worklet. Every 512
+   samples it posts a frame: a single-pitch estimate (McLeod; used by the tuner and
+   the on-screen indicator), the spectral peaks of the last 4096 samples
+   (`pitch/spectrum.ts`) and the attack strength of the last hop, wide-band and
+   band-limited. `ScoreTracker` (`features/play/scoring.ts`) calls a note or chord
+   hit when its own harmonics have *risen* out of their recent trough, which a fresh
+   stroke does and a string that is still ringing, a drum or another note does not.
+   The rise must hold for two frames after a settle time that depends on pitch, and
+   the hit is timed from the attack, not from when the pitch became clear (±45 ms
+   perfect, 100 ms good, accepted from 130 ms early to 170 ms late). Guards reject
+   the octave above and below, let one stroke score a pitch once, ignore beating
+   between ringing strings, and tell chords that share notes apart (share of strings
+   struck, pitch classes left silent, energy foreign to the chord). Bends are judged
+   against the pitch to reach. The tracker listens through the count-in and across
+   loop wraps: when the song position steps back, what was heard is re-timed, not
+   discarded, and the last notes of a loop pass stay open until their sound has had
+   time to arrive. The latency setting is pure input/output delay, scaled by playback
+   speed; frames are judged at the time they were captured. Settings measures it with
+   a click-and-strum calibration (`calibration.ts`, `clickTrack.ts`): the clicks are a
+   piece of audio played by a media element, and the answers are timed on that
+   element's clock with the same sum the player uses for a song, so the number is the
+   delay of the very path a song takes. `PlaybackClock` smooths the element's clock
+   and keeps steering towards it (in its first 100 ms a browser's media clock is not
+   settled; an offset picked up there must not stay for the whole song). While the microphone scores, the
+   app's own songs and drills play their click track only; the guitar part is a
+   listening guide, because a phone speaker would play it into the microphone. A run
+   in which the microphone delivered nothing, or heard the app's own guitar part, is
+   shown as "not counted" and never saved (`runVerdict.ts`).
+
+   **The guitar voice.** `audio/guitar.ts` loads one MP3 (`public/samples`, 37 notes
+   of a recorded steel-string guitar, CC BY 3.0, built by
+   `scripts/build-guitar-samples.mjs`), decodes it once and hands the samples to
+   `synth.worker.ts`. Bundled songs, drill guides, the demo riff and ear-training
+   notes are rendered from it (`instrument/sampler.ts`: nearest recording, resampled,
+   with neighbouring recordings for repeated notes). If the pack cannot be loaded the
+   string model plays instead; a render waits at most 15 s for a slow download, a
+   failed load is tried again (after a while, when the connection returns, when the
+   app is reopened), and a worker that fails or goes silent is replaced by a render on
+   the main thread. Stored audio carries the renderer version and voice in its name,
+   and bundled charts carry a revision, so songs already in a library are brought up
+   to date in the background, also once the recordings arrive late.
 
 5. **Section practice.** `PlayPage` passes a bar range and pass count to the
    `Player`; on a loop finish the pure helpers in `sectionLoop.ts` step the speed
@@ -107,10 +135,8 @@ section looping, count-in, mic scoring) that `PlayPage`, the block runner and th
 test flow wrap. `ScoreTracker` reports timing statistics, per-bar accuracy and
 detection coverage, which become the `AttemptResult` the learner model consumes.
 Ear-training exercises (`interaction: 'ear'`) bypass the highway: `EarTrainer`
-plays each chart note as a synthesised reference and listens for a stable pitch,
-then hands the block runner the same `AttemptResult` shape. Attempts record how
-chords were scored (`chordScoring`), and only pitch-scored attempts keep the
-provisional cap on chord skills.
+plays each chart note on the app's guitar as a reference and listens for a stable pitch,
+then hands the block runner the same `AttemptResult` shape.
 
 ## iOS / PWA layer
 
@@ -129,10 +155,18 @@ provisional cap on chord skills.
   or iOS pauses the element behind its back. A saved input device that is gone falls
   back to the default microphone.
 - In production the worklet module is fetched (through the service worker, so it works
-  offline) and loaded from a blob URL; the service worker uses `prompt` update mode so a
-  deploy never reloads a session mid-song.
-- `app/useWakeLock.ts` keeps the screen on, with a hidden muted video fallback where the
-  Wake Lock API is missing; the shell pads for the safe areas; songs are stored as
+  offline) and loaded from a blob URL. The service worker uses `prompt` update mode so a
+  deploy never reloads a session mid-song; `app/appUpdate.ts` switches to a downloaded
+  version while the app is still opening, otherwise shows an "Update now" bar on the main
+  screens, and checks for a new version when the app returns to the foreground. Settings
+  shows the build and a "Check for updates" button. The reload that ends a switch goes
+  through the same check (`onNeedReload`): if the learner started something in the
+  moment the switch took, it waits for the next quiet moment instead.
+- `app/useWakeLock.ts` keeps the screen on. Where the Wake Lock API is missing or known
+  not to work (home-screen apps before iOS 18.4) `app/keepAwake.ts` plays a tiny silent
+  clip instead, un-muted and wound back before it ends, which is what makes an iPhone
+  hold the display (untested on hardware). `app/storage.ts` asks for persistent storage
+  where that shows no prompt. The shell pads for the safe areas; songs are stored as
   `ArrayBuffer`s.
 - `SAFARI_AUDIT.md` lists every finding of the code audit against iOS 16.4–18 and a
   15-minute device checklist. iOS has not been exercised on hardware yet.
@@ -158,6 +192,22 @@ provisional cap on chord skills.
   estimation, the importers (alphaTex → chart, MIDI → chart) and a model
   integration test that runs the real Basic Pitch weights on a synthetic signal
   with the TensorFlow.js CPU backend (~10 s).
+- `src/features/play/scoring.sim.test.ts` (part of `npm test`) is a virtual player: the
+  recorded guitar plays every lesson drill and lesson song through the same analyser
+  and tracker the app uses, at 44.1 and 48 kHz, with click-track bleed, a phone
+  microphone model, latency, slow speed, quiet playing, silence, the click alone,
+  wrong notes and skipped notes. `FULL_SIM=1 npx vitest run
+  src/features/play/scoring.matrix.test.ts` runs every song and exercise in every
+  scenario (about twenty minutes) and prints one line per case.
+- `npm run test:student` – the virtual student, end to end in Chromium: a new learner
+  goes through the set-up and lesson 1 while a recorded-guitar performance is fed in as
+  the microphone, in step with the song. The rig models a device with a long sound
+  round trip (about 270 ms); the app is not told and has to find it with its own
+  calibration, which the student runs first. Played right it must pass on screen and be judged in time (mostly "perfect", no
+  steady lead or lag); played on the wrong frets, or not at all, it must not pass. It
+  then plays the lesson's song at the lesson's slower speed and three bundled songs from
+  the library, strummed chords included. It builds the app first, so the performances
+  and the app always come from the same code.
 - `npm run test:e2e` – Playwright smoke test against the production build using
   Chromium's fake microphone: navigation, metronome, tuner, demo song play-through
   to the results screen, persistence, an end-to-end AI transcription of a

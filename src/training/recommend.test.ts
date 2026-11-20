@@ -42,8 +42,26 @@ const find = (recs: ReturnType<typeof recommendations>, id: string) => recs.find
 describe('song rules', () => {
   it('level up', () => {
     const r = find(recommendations(ctx([at({ kind: 'song', songId: 7, level: 3, accuracy: 0.93 })])), 'song-level-up')
-    expect(r?.title).toBe('Level 4 unlocked.')
+    // Level index 3 is what the learner sees as Level 4, so the next one is Level 5.
+    expect(r?.title).toBe('Level 5 unlocked.')
+    expect(r?.reason).toContain('on level 4.')
+    expect(r?.reason).toContain('Level 4 goes into your review schedule')
     expect(r?.action).toEqual({ type: 'song', songId: 7, level: 4, speed: 1 })
+  })
+  it('names levels the way the learner sees them, starting at 1', () => {
+    const first = find(recommendations(ctx([at({ kind: 'song', songId: 7, level: 0, accuracy: 0.95 })])), 'song-level-up')
+    expect(first?.title).toBe('Level 2 unlocked.')
+    expect(first?.reason).not.toMatch(/level 0/i)
+    expect(first?.reason).toContain('on level 1.')
+  })
+  it('does not announce a new level after the hardest one', () => {
+    const recs = recommendations(ctx([at({ kind: 'song', songId: 7, level: 5, accuracy: 0.95 })]))
+    expect(find(recs, 'song-level-up')).toBeUndefined()
+    expect(recs.some((r) => /unlocked/i.test(r.title))).toBe(false)
+    expect(find(recs, 'song-top-level')?.action).toBeUndefined()
+  })
+  it('a level-up needs full speed', () => {
+    expect(find(recommendations(ctx([at({ kind: 'song', songId: 7, level: 0, accuracy: 0.95, speed: 0.75 })])), 'song-level-up')).toBeUndefined()
   })
   it('loops weak bars', () => {
     const perBar = [0.9, 0.9, 0.9, 0.9, 0.55, 0.6, 0.57, 0.6]
@@ -64,6 +82,22 @@ describe('song rules', () => {
       'song-slow-down',
     )
     expect(two?.action).toMatchObject({ level: 2 })
+    expect(two?.title).toBe('Two misses at level 4: dropping to level 3.')
+    expect(two?.reason).toContain('on level 4')
+  })
+  it('drops from the second level to the first, and only slows down on the first', () => {
+    const miss = (level: number, when = NOW - 1000) => at({ at: when, kind: 'song', songId: 7, level, accuracy: 0.5 })
+    const second = find(recommendations(ctx([miss(1), miss(1, NOW - DAY)])), 'song-slow-down')
+    expect(second?.title).toBe('Two misses at level 2: dropping to level 1.')
+    expect(second?.action).toMatchObject({ level: 0 })
+    const first = find(recommendations(ctx([miss(0), miss(0, NOW - DAY)])), 'song-slow-down')
+    expect(first?.title).toBe('Let’s slow it down.')
+    expect(first?.action).toMatchObject({ level: 0, speed: 0.8 })
+    expect(first?.reason).toContain('on level 1')
+  })
+  it('counts two misses on the same level only', () => {
+    const mixed = [at({ kind: 'song', songId: 7, level: 3, accuracy: 0.5 }), at({ at: NOW - DAY, kind: 'song', songId: 7, level: 4, accuracy: 0.5 })]
+    expect(find(recommendations(ctx(mixed)), 'song-slow-down')?.action).toMatchObject({ level: 3, speed: 0.8 })
   })
   it('ignores songs older than 7 days', () => {
     const old = at({ at: NOW - 8 * DAY, kind: 'song', songId: 7, level: 3, accuracy: 0.95 })

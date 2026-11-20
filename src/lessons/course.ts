@@ -1,8 +1,14 @@
+import { fingeringSentence } from './fingering'
 import type { Lesson, LessonProgress } from './types'
 
 /**
  * The First steps course, in order. Card text is written for someone who has
  * never held a guitar: plain words, no jargon, string and finger numbers named.
+ *
+ * Where the fingers of a chord go is not typed here but written by `fingeringSentence` from the table
+ * the chord boxes are drawn from. A left or right that depends on how the guitar is held is written
+ * {left} or {right} and shown through `forHand`, so a left-handed learner reads what their mirrored
+ * pictures show.
  */
 export const COURSE: Lesson[] = [
   {
@@ -17,8 +23,8 @@ export const COURSE: Lesson[] = [
         illustration: 'sitting',
         paragraphs: [
           'Sit on a chair with your back fairly straight and both feet on the floor.',
-          'Rest the curve of the guitar on your right thigh, so the neck points slightly up and to your left.',
-          'Let your right forearm rest lightly on the top edge of the guitar.',
+          'Rest the curve of the guitar on your {right} thigh, so the neck points slightly up and to your {left}.',
+          'Let your {right} forearm rest lightly on the top edge of the guitar.',
           'Your shoulders should feel loose, not lifted.',
         ],
         mistakes: [
@@ -61,8 +67,16 @@ export const COURSE: Lesson[] = [
         mistakes: ['If the app seems deaf, then move the phone closer and pick a little more firmly.'],
       },
     ],
-    drill: { skillId: 'basics.open-strings', generatorId: 'openStrings', params: { strings: 2, noteValue: 'half' }, tempo: 50, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'open-strings-groove', level: 0, speed: 0.85 },
+    drill: {
+      skillId: 'basics.open-strings',
+      generatorId: 'openStrings',
+      params: { strings: 2, noteValue: 'half' },
+      tempo: 50,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'Pick the two thickest strings in turn, the 6th and then the 5th, without pressing anything. Play each note as it reaches the line and let it ring.',
+    },
+    play: { songId: 'open-strings-groove', level: 0, speed: 0.85, view: 'outline' },
     unlocks: ['open-strings-groove'],
     done: 'You held the guitar, picked open strings in time and played along with a drum beat. That is a real start.',
   },
@@ -70,7 +84,7 @@ export const COURSE: Lesson[] = [
     id: 'l02-tune',
     number: 2,
     title: 'In tune',
-    subtitle: 'Tune each string so everything sounds right',
+    subtitle: 'Tune each string so every note sounds as it should',
     minutes: 5,
     learn: [
       {
@@ -88,7 +102,7 @@ export const COURSE: Lesson[] = [
         paragraphs: [
           'Each peg tightens or loosens one string. Tighter makes the note higher, looser makes it lower.',
           'Turn slowly while you pluck the string, and watch the tuner.',
-          'Always finish by turning the peg upwards, from a little too low to just right.',
+          'Always finish by tightening the string: start a little too low and come up until the tuner shows a tick.',
           'A guitar slips out of tune easily, so tune it every time you sit down.',
         ],
         mistakes: [
@@ -98,7 +112,7 @@ export const COURSE: Lesson[] = [
       },
     ],
     drill: null,
-    play: { songId: 'open-strings-groove', level: 0, speed: 0.85 },
+    play: { songId: 'open-strings-groove', level: 0, speed: 0.85, view: 'outline' },
     unlocks: [],
     done: 'Your guitar is in tune, and the same groove now sounds much better. Tune up at the start of every practice.',
   },
@@ -106,7 +120,7 @@ export const COURSE: Lesson[] = [
     id: 'l03-first-frets',
     number: 3,
     title: 'First frets',
-    subtitle: 'Press a string down and play your first melody',
+    subtitle: 'Press a string down and play the notes of a famous tune',
     minutes: 6,
     learn: [
       {
@@ -124,17 +138,27 @@ export const COURSE: Lesson[] = [
         illustration: 'spot:5:1',
         paragraphs: [
           'Find the thinnest string, the 1st string, which is high E.',
-          'Place finger 1 just behind the first fret bar on that string.',
+          'Place finger 1 just behind the first fret bar on that string. This is fret 1.',
           'Pick the string and let it ring. You should hear a clear F note.',
-          'Frets 2 and 3 use fingers 2 and 3 in the same way.',
+          'Fret 2 is for finger 2 and fret 3 is for finger 3, in the same way.',
         ],
         mistakes: ['If it sounds dull, then move your fingertip closer to the fret bar.'],
+      },
+      {
+        title: 'The 2nd string',
+        illustration: 'spot:4:1',
+        paragraphs: [
+          'Your first tune also needs the string next to the thinnest one, the 2nd string.',
+          'It works in the same way: fret 1 with finger 1, and fret 3 with finger 3.',
+          'Look at the string you want before you pick it.',
+        ],
+        mistakes: ['If you pick the wrong string, then stop, look at the string you want, and pick again slowly.'],
       },
       {
         title: 'Fixing buzzing',
         paragraphs: [
           'A buzzing note means the string is touching a fret it should not.',
-          'Press a little harder and move your fingertip right up behind the fret bar.',
+          'Press a little harder and move your fingertip close up behind the fret bar.',
           'Make sure the finger is not touching the string next to it.',
         ],
         mistakes: [
@@ -144,10 +168,18 @@ export const COURSE: Lesson[] = [
         ],
       },
     ],
-    drill: { skillId: 'basics.first-frets', generatorId: 'firstFrets', params: { string: 5, maxFret: 3, noteValue: 'half' }, tempo: 50, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'ode-to-joy', level: 0, speed: 0.75 },
+    drill: {
+      skillId: 'basics.first-frets',
+      generatorId: 'firstFrets',
+      params: { string: 5, maxFret: 3, noteValue: 'half' },
+      tempo: 50,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'Start on the thinnest string: open, then frets 1, 2 and 3, one finger for each fret. The second half moves to the 2nd string, with frets 1 and 3. Let every note ring.',
+    },
+    play: { songId: 'ode-to-joy', level: 0, speed: 0.75, view: 'outline' },
     unlocks: ['ode-to-joy'],
-    done: 'That was the Ode to Joy, a real tune. Fretting a string cleanly is the skill almost everything else builds on.',
+    done: 'You pressed strings down and played the main notes of the Ode to Joy. The whole tune is waiting in your songs. Fretting a string cleanly is the skill almost everything else builds on.',
   },
   {
     id: 'l04-crossing',
@@ -176,11 +208,29 @@ export const COURSE: Lesson[] = [
         ],
         mistakes: ['If an old string keeps ringing under the new one, then lift your finger a little sooner.'],
       },
+      {
+        title: 'The 3rd string',
+        illustration: 'spot:3:2',
+        paragraphs: [
+          'Your next tune, Twinkle Twinkle, moves between the three thinnest strings: the 3rd, the 2nd and the 1st.',
+          'On the 3rd string there is one new place to learn: fret 2, pressed with finger 2.',
+          'The rest you already know: the open strings, and frets 1 and 3 on the 2nd string.',
+        ],
+        mistakes: ['If you lose your place, then stop and find the 3rd string again: it is the third one counting from the thinnest.'],
+      },
     ],
-    drill: { skillId: 'fret.cross-string', generatorId: 'melody', params: { noteValue: 'quarter', bars: 4, key: 'C' }, tempo: 55, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'twinkle-twinkle', level: 0, speed: 0.75 },
+    drill: {
+      skillId: 'fret.cross-string',
+      generatorId: 'melody',
+      params: { noteValue: 'half', bars: 8, key: 'C' },
+      tempo: 50,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'Move between the three thinnest strings. First they are all open, then come a few pressed notes, and the last part is the start of Twinkle Twinkle. Look at each string before you pick it.',
+    },
+    play: { songId: 'twinkle-twinkle', level: 0, speed: 0.75, view: 'outline' },
     unlocks: ['twinkle-twinkle', 'happy-birthday', 'jingle-bells'],
-    done: 'Three more songs are open to you: Twinkle Twinkle, Happy Birthday and Jingle Bells. Try them any time.',
+    done: 'You moved between three strings and played the main notes of Twinkle Twinkle. Three more songs are open to you now: Twinkle Twinkle, Happy Birthday and Jingle Bells.',
   },
   {
     id: 'l05-em',
@@ -195,10 +245,10 @@ export const COURSE: Lesson[] = [
         paragraphs: [
           'A chord box is a picture of the neck. The thick line at the top is the nut, and the strings run downwards.',
           'The dots say where to press, and the numbers inside them tell you which finger to use.',
-          'For E minor, press the 5th string at fret 2 with finger 2, and the 4th string at fret 2 with finger 3.',
+          `E minor needs two fingers. ${fingeringSentence('Em')}`,
           'All the other strings are played open.',
         ],
-        mistakes: ['If you are unsure which string is which, then count from the thickest, the 6th, on the left.'],
+        mistakes: ['If you are unsure which string is which, then count from the thickest, the 6th, on the {left}.'],
       },
       {
         title: 'Strum slowly',
@@ -210,12 +260,20 @@ export const COURSE: Lesson[] = [
         ],
         mistakes: [
           'If a string sounds dead, then check that your fingers are arched and not touching the strings next to them.',
-          'If it buzzes, then press a little harder, right behind the fret bar.',
+          'If it buzzes, then press a little harder, just behind the fret bar.',
         ],
       },
     ],
-    drill: { skillId: 'chord.open', generatorId: 'chordChanges', params: { chords: ['Em'] }, tempo: 50, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'em-groove', level: 0, speed: 0.85 },
+    drill: {
+      skillId: 'chord.open',
+      generatorId: 'chordChanges',
+      params: { chords: ['Em'] },
+      tempo: 50,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'Hold E minor and strum all six strings each time the notes reach the line. The first strums are far apart, so you can check your fingers in between.',
+    },
+    play: { songId: 'em-groove', level: 0, speed: 0.85, view: 'chords' },
     unlocks: ['em-groove'],
     done: 'You played a whole chord and strummed it in time. One chord is enough to make real music.',
   },
@@ -230,8 +288,7 @@ export const COURSE: Lesson[] = [
         title: 'A minor',
         illustration: 'chord:Am',
         paragraphs: [
-          'A minor uses three fingers. Press the 4th string at fret 2 with finger 2, and the 3rd string at fret 2 with finger 3.',
-          'Press the 2nd string at fret 1 with finger 1.',
+          `A minor uses three fingers. ${fingeringSentence('Am')}`,
           'Strum from the 5th string, the second thickest, and leave the 6th string alone.',
         ],
         mistakes: ['If the thickest string rings out, then aim your pick to start on the 5th string.'],
@@ -240,8 +297,8 @@ export const COURSE: Lesson[] = [
         title: 'Changing chords',
         illustration: 'chord:Em',
         paragraphs: [
-          'Look for a finger that can stay still when you change. This is your anchor finger.',
-          'Change by lifting all your fingers together and putting them down together.',
+          'Fingers 2 and 3 sit side by side in both chords. To go from E minor to A minor, move the pair one string towards the thinnest string, then add finger 1.',
+          'Move the fingers together, as one shape, and not one after the other.',
           'Try a one-minute challenge. Switch back and forth as many times as you can, slowly and cleanly.',
           'It will feel clumsy at first, and that is normal. It gets quicker every day.',
         ],
@@ -251,10 +308,18 @@ export const COURSE: Lesson[] = [
         ],
       },
     ],
-    drill: { skillId: 'chord.changes-open', generatorId: 'chordChanges', params: { chords: ['Em', 'Am'] }, tempo: 50, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'em-am-groove', level: 0, speed: 0.85 },
+    drill: {
+      skillId: 'chord.changes-open',
+      generatorId: 'chordChanges',
+      params: { chords: ['Em', 'Am'] },
+      tempo: 50,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'You strum E minor four times, then A minor four times. After that you change after every two strums. Keep going even if a chord comes a little late.',
+    },
+    play: { songId: 'em-am-groove', level: 0, speed: 0.85, view: 'chords' },
     unlocks: ['em-am-groove'],
-    done: 'Two chords and a smooth change between them. Most of the songs you know are built from just a few shapes like these.',
+    done: 'You played two chords and changed between them in time. Most of the songs you know are built from just a few shapes like these.',
   },
   {
     id: 'l07-d-a',
@@ -267,9 +332,9 @@ export const COURSE: Lesson[] = [
         title: 'The D chord',
         illustration: 'chord:D',
         paragraphs: [
-          'D uses the three thinnest strings. Press the 3rd string at fret 2 with finger 1, the 1st string at fret 2 with finger 2, and the 2nd string at fret 3 with finger 3.',
+          `D uses the three thinnest strings. ${fingeringSentence('D')}`,
           'The three fingers form a small triangle.',
-          'Strum from the 4th string, the one open below the shape, and skip the two thickest strings.',
+          'Strum from the 4th string, which stays open, and skip the two thickest strings.',
         ],
         mistakes: ['If it sounds muffled, then keep your fingertips arched so they do not touch each other.'],
       },
@@ -277,8 +342,7 @@ export const COURSE: Lesson[] = [
         title: 'The A chord',
         illustration: 'chord:A',
         paragraphs: [
-          'A is three fingers side by side at fret 2, on the 4th, 3rd and 2nd strings.',
-          'Fit them in neatly, using fingers 1, 2 and 3 in that order.',
+          `A is three fingers in a row at fret 2. ${fingeringSentence('A')}`,
           'Strum from the 5th string and leave the thickest string alone.',
         ],
         mistakes: [
@@ -287,10 +351,18 @@ export const COURSE: Lesson[] = [
         ],
       },
     ],
-    drill: { skillId: 'chord.changes-open', generatorId: 'chordChanges', params: { chords: ['D', 'A'] }, tempo: 50, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'd-a-groove', level: 0, speed: 0.85 },
+    drill: {
+      skillId: 'chord.changes-open',
+      generatorId: 'chordChanges',
+      params: { chords: ['D', 'A'] },
+      tempo: 50,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'You strum D four times, then A four times. After that you change after every two strums. D starts on the 4th string and A on the 5th.',
+    },
+    play: { songId: 'd-a-groove', level: 0, speed: 0.85, view: 'chords' },
     unlocks: ['d-a-groove'],
-    done: 'D and A are two of the most useful chords there are. Between them you can already play lots of songs.',
+    done: 'You played D and A and changed between them in time. They are two of the most useful chords there are.',
   },
   {
     id: 'l08-g-c',
@@ -303,7 +375,7 @@ export const COURSE: Lesson[] = [
         title: 'The G chord',
         illustration: 'chord:G',
         paragraphs: [
-          'G is a big stretch. Press the 6th string at fret 3 with finger 3, the 5th string at fret 2 with finger 2, and the 1st string at fret 3 with finger 4.',
+          `G is a big stretch. ${fingeringSentence('G')}`,
           'Spread your fingers wide and keep your thumb behind the neck.',
           'Strum all six strings.',
         ],
@@ -313,7 +385,7 @@ export const COURSE: Lesson[] = [
         title: 'The C chord',
         illustration: 'chord:C',
         paragraphs: [
-          'Press the 5th string at fret 3 with finger 3, the 4th string at fret 2 with finger 2, and the 2nd string at fret 1 with finger 1.',
+          fingeringSentence('C'),
           'Arch your fingers like little bridges so the open strings can ring.',
           'Strum from the 5th string and leave the thickest string alone.',
         ],
@@ -324,16 +396,25 @@ export const COURSE: Lesson[] = [
         illustration: 'chord:D7',
         paragraphs: [
           'D7 is a close cousin of D with a slightly bluesy sound.',
-          'Press the 3rd string at fret 2 with finger 2, the 2nd string at fret 1 with finger 1, and the 1st string at fret 2 with finger 3.',
+          fingeringSentence('D7'),
+          'Coming from G, finger 3 stays on the 1st string and only slides back one fret.',
           'Strum from the 4th string. It is a small, neat shape.',
         ],
         mistakes: ['If you mix up the shapes, then say each chord name out loud as you play it.'],
       },
     ],
-    drill: { skillId: 'chord.changes-open', generatorId: 'chordChanges', params: { chords: ['G', 'C', 'D'] }, tempo: 50, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'amazing-grace', level: 0, speed: 0.85 },
+    drill: {
+      skillId: 'chord.changes-open',
+      generatorId: 'chordChanges',
+      params: { chords: ['G', 'C', 'D7'] },
+      tempo: 50,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'These are the changes of your next song: from G to C and back, and from G to D7 and back. Each chord gets two strums, but D7 gets four. Keep going even if a chord comes a little late.',
+    },
+    play: { songId: 'saints', level: 0, speed: 0.85, view: 'chords' },
     unlocks: ['amazing-grace', 'saints', 'tom-dooley'],
-    done: 'Three chords means you can play real songs. Amazing Grace, When the Saints and Tom Dooley are all open to you now.',
+    done: 'You strummed When the Saints with three chords. Three chords are enough for many real songs: Amazing Grace and Tom Dooley are open to you now as well.',
   },
   {
     id: 'l09-rhythm',
@@ -349,6 +430,7 @@ export const COURSE: Lesson[] = [
           'Keep your strumming hand swinging down and up like a pendulum, all the time.',
           'Strum down on the beats and up in between, even when you do not touch the strings.',
           'Keep your wrist loose. The movement comes from the wrist and a little from the forearm.',
+          'On the way up the pick only catches the three thinnest strings. That is how it should sound.',
         ],
         mistakes: ['If your arm gets tired, then relax your shoulder and make the swing smaller.'],
       },
@@ -366,16 +448,24 @@ export const COURSE: Lesson[] = [
         ],
       },
     ],
-    drill: { skillId: 'chord.strum-patterns', generatorId: 'strumPattern', tempo: 60, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'saints', level: 0, speed: 0.85 },
+    drill: {
+      skillId: 'chord.strum-patterns',
+      generatorId: 'strumPattern',
+      params: { chord: 'Em', pattern: 'D-DUD-DU', bars: 8 },
+      tempo: 60,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'Hold E minor. Strum down on every count: 1, 2, 3, 4. After a little while an up strum comes in after 2 and after 4: down, down-up, down, down-up.',
+    },
+    play: { songId: 'tom-dooley', level: 0, speed: 0.85, view: 'whole' },
     unlocks: [],
-    done: 'Your strumming hand now has a steady swing. Rhythm is what makes a song sound like itself.',
+    done: 'You kept a strum going on every beat of Tom Dooley. Rhythm is what makes a song sound like itself.',
   },
   {
     id: 'l10-riff',
     number: 10,
     title: 'Your first riff',
-    subtitle: 'A short tune on one string, then on to daily practice',
+    subtitle: 'A short, catchy pattern on the two thickest strings',
     minutes: 6,
     learn: [
       {
@@ -383,7 +473,8 @@ export const COURSE: Lesson[] = [
         illustration: 'spot:0:3',
         paragraphs: [
           'A riff is a short, catchy pattern of notes that repeats.',
-          'This one lives on the two thickest strings. On the 6th string you play it open, then fret 3 with finger 3, then fret 5 with your little finger (finger 4).',
+          'This one lives on the two thickest strings. On the 6th string you play it open, then fret 3 with finger 1, then fret 5 with finger 3.',
+          'Slide your hand a little way up the neck so that finger 1 sits at fret 3. Finger 3 then reaches fret 5 without a stretch.',
           'Keep your picking steady and let each note ring until the next one.',
         ],
         mistakes: ['If the notes run together, then lift your finger just before the next pick.'],
@@ -392,17 +483,26 @@ export const COURSE: Lesson[] = [
         title: 'The next string',
         illustration: 'spot:1:3',
         paragraphs: [
-          'Halfway through it moves to the 5th string and plays the same three positions there: open, fret 3, fret 5.',
+          'Halfway through it moves to the 5th string and plays the same three places there: open, fret 3 with finger 1, and fret 5 with finger 3.',
           'Look at the string before you pick it, and keep your hand relaxed.',
           'Play it slowly first, then add speed a little at a time.',
         ],
         mistakes: ['If it feels rushed, then slow down. A slow riff played cleanly always sounds better.'],
       },
     ],
-    drill: { skillId: 'fret.single-string', generatorId: 'firstFrets', params: { string: 0, maxFret: 3, noteValue: 'quarter' }, tempo: 60, rounds: 3, passAccuracy: 0.7 },
-    play: { songId: 'first-riff', level: 0, speed: 0.85 },
+    drill: {
+      skillId: 'fret.single-string',
+      generatorId: 'firstFrets',
+      params: { string: 0, maxFret: 3, noteValue: 'quarter' },
+      tempo: 60,
+      rounds: 3,
+      passAccuracy: 0.7,
+      hint: 'First walk through the three places on each string: open, fret 3, fret 5. Then comes the riff itself: two quick open notes and a pressed one, over and over.',
+    },
+    // The song's own finger numbers assume the hand stays at the first frets; the lesson teaches the riff two frets higher.
+    play: { songId: 'first-riff', level: 0, speed: 0.85, view: 'whole', fingers: { 3: 1, 5: 3 } },
     unlocks: ['first-riff'],
-    done: 'You finished First steps! Next come daily sessions, short practices planned for you that build on everything you have learned.',
+    done: 'You played a whole riff, and you finished First steps! Next come daily sessions, short practices planned for you that build on everything you have learned.',
   },
 ]
 

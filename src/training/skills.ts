@@ -123,7 +123,8 @@ export const SKILLS: SkillDef[] = [
       'Move from the wrist with a loose forearm instead of the whole arm.',
       'Listen to the click and aim to pluck on it, not after it; a consistent small motion keeps timing steady.',
     ],
-    generators: ['powerChordRiff', 'metronomeSteady'],
+    // One open note per click: the palm-muted power chord riff belongs to chord.power, a tier later.
+    generators: ['metronomeSteady', 'openStrings'],
   }),
   def({
     id: 'pick.alternate-8',
@@ -475,6 +476,24 @@ export function getSkill(id: string): SkillDef {
 /** True when every prerequisite has a rating of at least UNLOCK_RATING (missing = 0). */
 export function isUnlocked(skillId: string, ratings: Record<string, number>): boolean {
   return getSkill(skillId).prerequisites.every((p) => (ratings[p] ?? 0) >= UNLOCK_RATING)
+}
+
+/**
+ * True when everything the skill builds on, all the way down, is rated at least UNLOCK_RATING.
+ * One strong rating in the middle of the chain is not enough: barre chords stay closed while
+ * open chords are still shaky, even if chord changes happen to rate well.
+ */
+export function prerequisitesSolid(skill: SkillDef, ratings: Record<string, number>, byId: ReadonlyMap<string, SkillDef>): boolean {
+  const seen = new Set<string>()
+  const solid = (s: SkillDef): boolean =>
+    s.prerequisites.every((p) => {
+      if (seen.has(p)) return true
+      seen.add(p)
+      if ((ratings[p] ?? 0) < UNLOCK_RATING) return false
+      const def = byId.get(p)
+      return def ? solid(def) : true
+    })
+  return solid(skill)
 }
 
 /** Prerequisites before dependants; ties broken by tier then id. Throws on a cycle or unknown prerequisite. */

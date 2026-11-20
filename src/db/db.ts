@@ -39,6 +39,8 @@ export interface SongRecord {
   bpm: number
   /** Id of the bundled song this record was created from (source 'builtin'). */
   builtinId?: string
+  /** Which version of the bundled song this copy (chart and audio together) was made from; missing on copies stored before charts carried one. */
+  builtinRev?: string
   /** Best result per level, keyed by level number. */
   bestScores: Record<string, ScoreRecord>
   lastLevel: number | null
@@ -46,7 +48,7 @@ export interface SongRecord {
   playCount: number
 }
 
-export type NewSong = Pick<SongRecord, 'title' | 'artist' | 'audioType' | 'audioName' | 'duration' | 'chart' | 'source' | 'bpm'> & { audio: Blob; builtinId?: string }
+export type NewSong = Pick<SongRecord, 'title' | 'artist' | 'audioType' | 'audioName' | 'duration' | 'chart' | 'source' | 'bpm'> & { audio: Blob; builtinId?: string; builtinRev?: string }
 
 /** The song's audio as a Blob, whichever way it was stored. */
 export function songAudioBlob(song: SongRecord): Blob | null {

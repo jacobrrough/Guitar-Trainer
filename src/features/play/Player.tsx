@@ -1,5 +1,5 @@
 import { ArrowLeft, Mic, MicOff, Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react'
-import { useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref, type RefObject } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react'
 import { updateSettings, useSettings } from '../../app/settings'
 import { useWakeLock } from '../../app/useWakeLock'
 import { audioEngine } from '../../audio/AudioEngine'
@@ -13,9 +13,16 @@ import { detectBleed } from './bleed'
 import { PitchSmoother } from './pitchTracker'
 import { scoreFrame } from './scoreFrame'
 import { ScoreTracker, type ScoreSummary } from './scoring'
+import { barStartTime } from './sectionLoop'
+import { primeMediaElement } from '../../audio/primeMedia'
 
 export type PlayerMode = 'song' | 'exercise' | 'test'
 export type PlayerPhase = 'ready' | 'countin' | 'playing' | 'paused' | 'finished'
+
+/** Seconds a section loop keeps listening after its last pass ends, for the notes played right at the end. */
+const LOOP_END_GRACE = 0.3
+/** With frames arriving about ninety times a second, a silence this long (ms) means the microphone has stopped. */
+const MIC_GAP_MS = 1000
 
 export interface PlayerHandle {
   /** Plays the guide track once, without the microphone or scoring. */
@@ -66,48 +73,6 @@ export interface PlayerProps {
   onExit: () => void
   onFinished: (summary: ScoreSummary, result: AttemptResult) => void
   onPhaseChange?: (phase: PlayerPhase) => void
-}
-
-/**
- * iOS Safari only lets a media element start from a user gesture, and our
- * count-in defers the real play() by a few seconds. Playing muted for an
- * instant inside the tap marks the element as user-activated so the later
- * programmatic play() is allowed.
- */
-function primeMediaElement(el: HTMLMediaElement, primed: RefObject<boolean>, playbackStarted: RefObject<boolean>): void {
-  if (primed.current) return
-  const wasMuted = el.muted
-  el.muted = true
-  const finish = () => {
-    primed.current = true
-    if (playbackStarted.current) return
-    el.pause()
-    try {
-      if (el.currentTime > 0 && el.currentTime < 0.5) el.currentTime = 0
-    } catch {
-      /* not seekable yet */
-    }
-    el.muted = wasMuted
-  }
-  let promise: Promise<void> | undefined
-  try {
-    promise = el.play()
-  } catch {
-    el.muted = wasMuted
-    return
-  }
-  if (promise && typeof promise.then === 'function') {
-    promise.then(finish).catch(() => {
-      if (!playbackStarted.current) el.muted = wasMuted
-    })
-  } else {
-    finish()
-  }
-}
-
-function barStartTime(chart: Chart, bar: number): number | null {
-  const beat = chart.beats.find((b) => b.bar === bar && b.beatInBar === 0) ?? chart.beats.find((b) => b.bar === bar)
-  return beat ? beat.time : null
 }
 
 /** Reusable play-along engine: highway, mic scoring, transport. Song, exercise and test pages wrap it. */
@@ -172,6 +137,15 @@ export function Player({
   /** Bumped by every start, restart, pause and unmount: an older start() that is still awaiting gives up when it changes. */
   const runIdRef = useRef(0)
   const startingRef = useRef(false)
+  /** During the count-in: when (audio clock) the song is due to start, and at which song position. */
+  const songStartRef = useRef<{ ctx: number; song: number } | null>(null)
+  /**
+   * The run covers only part of what is on screen: it began in the middle, was moved, changed speed, or
+   * the microphone was off or silent for a stretch. Such a run is practice; its result is not saved.
+   */
+  const partialRef = useRef(false)
+  /** When the last microphone frame of this run arrived (performance.now()). */
+  const lastFrameAtRef = useRef(0)
   /** Analysis frames scored in this run; none means the microphone never delivered anything. */
   const framesRef = useRef(0)
   /** The user switched the microphone off: runs are for listening, not for scoring. */
@@ -198,6 +172,7 @@ export function Player({
   const cancelCountIn = useCallback(() => {
     countInGainRef.current?.disconnect()
     countInGainRef.current = null
+    songStartRef.current = null
     setCountdown(null)
   }, [])
 
@@ -222,7 +197,10 @@ export function Player({
       setPhase('paused')
     }
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') interrupted()
+      if (document.visibilityState !== 'hidden') return
+      // Put away during the count-in: call it off, or the song would start by itself on return.
+      if (phaseRef.current === 'countin') restartRef.current()
+      else interrupted()
     }
     const el = audioRef.current
     el?.addEventListener('pause', interrupted)
@@ -269,7 +247,11 @@ export function Player({
     })
     tracker.setSpeed(speed)
     const el = audioRef.current
-    if (el && el.currentTime > 0.05) armTracker(tracker, el.currentTime)
+    if (el && el.currentTime > 0.05) {
+      armTracker(tracker, el.currentTime)
+      // A new tracker in the middle of a run (the speed or the level changed): what was judged before is gone.
+      if (startedAtRef.current !== null) partialRef.current = true
+    }
     trackerRef.current = tracker
   }, [notes, chart, speed, armTracker])
 
@@ -321,7 +303,8 @@ export function Player({
     tracker.advance(Number.POSITIVE_INFINITY)
     const p = propsRef.current
     const durationSec = startedAtRef.current ? (performance.now() - startedAtRef.current) / 1000 : (el?.currentTime ?? 0)
-    const result = tracker.toAttemptResult({ playedTempo: p.playedTempo, targetTempo: p.targetTempo, speed: p.speed, durationSec })
+    const scored = tracker.toAttemptResult({ playedTempo: p.playedTempo, targetTempo: p.targetTempo, speed: p.speed, durationSec })
+    const result = partialRef.current ? { ...scored, partial: true } : scored
     onFinished(tracker.summary(), bleedRef.current ? { ...result, bleed: true } : result)
   }, [endListen, onFinished, setPhase])
   const finishRef = useRef(finish)
@@ -347,19 +330,27 @@ export function Player({
           const loopStart = barStartTime(c, lb[0]) ?? 0
           const loopEnd = barStartTime(c, lb[1] + 1) ?? duration
           if (t >= loopEnd - 0.02) {
-            loopsDoneRef.current += 1
-            if (loopsDoneRef.current >= lc) {
-              void finishRef.current()
-              return
+            if (loopsDoneRef.current + 1 >= lc) {
+              // The last pass: its final notes are still on their way through the microphone, so the
+              // run closes a moment after the loop's end.
+              if (t >= loopEnd + LOOP_END_GRACE * sp || el.ended) {
+                loopsDoneRef.current += 1
+                void finishRef.current()
+                return
+              }
+            } else {
+              loopsDoneRef.current += 1
+              el.currentTime = loopStart
+              clock.reset()
+              tracker.nextPass()
+              judgementRef.current = null
+              t = loopStart
             }
-            el.currentTime = loopStart
-            clock.reset()
-            tracker.nextPass()
-            judgementRef.current = null
-            t = loopStart
           }
         }
         if (!listenOnlyRef.current) {
+          // The microphone was delivering and has gone quiet for over a second: what passes meanwhile is not the learner's fault.
+          if (framesRef.current > 0 && performance.now() - lastFrameAtRef.current > MIC_GAP_MS) partialRef.current = true
           const missed = tracker.advance(t - lagRef.current())
           if (missed.length) judgementRef.current = { text: 'Miss', at: t }
         }
@@ -403,6 +394,14 @@ export function Player({
           const age = Math.min(0.25, Math.max(0, audioEngine.context.currentTime - frame.time))
           songTime = now - age * propsRef.current.speed - lagRef.current()
           framesRef.current++
+          lastFrameAtRef.current = performance.now()
+        } else if (phaseRef.current === 'countin' && songStartRef.current && !listening) {
+          // The tracker already listens during the count-in, on the timeline the song is about to
+          // continue: it has to know what the room sounded like before the first note, and a first
+          // note played a touch early must not fall into a gap.
+          const pre = songStartRef.current
+          now = pre.song
+          songTime = pre.song + (frame.time - pre.ctx) * propsRef.current.speed - lagRef.current()
         }
         const out = scoreFrame(listening ? null : trackerRef.current, smootherRef.current, frame, songTime, st)
         detectedRef.current.midi = out.midi
@@ -473,6 +472,7 @@ export function Player({
     trackerRef.current?.reset()
     judgementRef.current = null
     bleedRef.current = false
+    partialRef.current = false
     framesRef.current = 0
     clockRef.current?.reset()
     setPhase('ready')
@@ -506,7 +506,13 @@ export function Player({
       const atStart = el.currentTime <= loopStart + 0.05
       if (atStart) {
         bleedRef.current = false
+        partialRef.current = false
         framesRef.current = 0
+        // Armed here, before the count-in, so that what the tracker hears during it is kept.
+        if (trackerRef.current) armTracker(trackerRef.current, loopStart)
+      } else if (startedAtRef.current === null && !opts.listen) {
+        // Begun from the middle (the position was moved first): practice, not a result for the song.
+        partialRef.current = true
       }
       if (!opts.listen && atStart && countIn && !skipCountInRef.current) {
         setPhase('countin')
@@ -515,6 +521,7 @@ export function Player({
         const interval = 60 / bpm / p.speed
         const beats = 4
         const t0 = ctx.currentTime + 0.15
+        songStartRef.current = { ctx: t0 + beats * interval, song: loopStart }
         // Through its own gain node, so leaving or restarting can silence clicks that are already scheduled.
         const gain = ctx.createGain()
         gain.connect(ctx.destination)
@@ -528,6 +535,13 @@ export function Player({
         }
         await new Promise((r) => setTimeout(r, Math.max(0, (t0 + beats * interval - ctx.currentTime) * 1000)))
         if (stale()) return
+        // The count-in only happened if the audio clock ran through it. A phone call or the voice assistant
+        // can hold the sound while the page stays on screen: then nothing was counted in, so start over.
+        if (ctx.state !== 'running' || ctx.currentTime < t0 + beats * interval - 0.1) {
+          restart()
+          setNotice('The sound was interrupted. Tap play to start again.')
+          return
+        }
         setCountdown(null)
         // Hearing our own clicks only matters when what plays next has pitches in it: the guitar part,
         // or a real recording. The click track alone cannot score notes.
@@ -546,8 +560,11 @@ export function Player({
       } catch (err) {
         if (stale()) return
         playbackStartedRef.current = false
-        skipCountInRef.current = true
-        setNotice(err instanceof DOMException && err.name === 'NotAllowedError' ? 'Tap the play button once more to start.' : `Playback failed: ${err instanceof Error ? err.message : String(err)}`)
+        const blocked = err instanceof DOMException && err.name === 'NotAllowedError'
+        // Only a start the browser refused for want of a tap skips the count-in next time (it was already heard).
+        skipCountInRef.current = blocked
+        cancelCountIn()
+        setNotice(blocked ? 'Tap the play button once more to start.' : `Playback failed: ${err instanceof Error ? err.message : String(err)}`)
         setPhase('ready')
         return
       }
@@ -556,22 +573,19 @@ export function Player({
         return
       }
       skipCountInRef.current = false
-      const tracker = trackerRef.current
-      if (atStart) {
-        if (tracker) armTracker(tracker, loopStart)
-        startedAtRef.current = performance.now()
-      } else if (startedAtRef.current === null) {
-        startedAtRef.current = performance.now()
-      }
+      if (atStart || startedAtRef.current === null) startedAtRef.current = performance.now()
       clockRef.current?.reset()
       smootherRef.current.reset()
+      // The silence check counts from here: a pause is not the microphone going quiet.
+      lastFrameAtRef.current = performance.now()
       setPhase('playing')
+      songStartRef.current = null
       if (opts.listen) setNotice('Listen first: the part is played for you and nothing is scored.')
     } finally {
       startingRef.current = false
       setStarting(false)
     }
-  }, [armTracker, countIn, endListen, micStatus, restart, setPhase, startMic])
+  }, [armTracker, cancelCountIn, countIn, endListen, micStatus, restart, setPhase, startMic])
 
   /** Plays the guide track once without the microphone or scoring, then returns to ready. */
   const listen = useCallback(() => {
@@ -602,17 +616,36 @@ export function Player({
   const seek = useCallback(
     (t: number) => {
       const el = audioRef.current
-      if (!el || mode === 'test') return
+      // A finished run stays finished: the result on screen offers the ways on (again, next, continue).
+      if (!el || mode === 'test' || phaseRef.current === 'finished') return
       el.currentTime = t
       if (trackerRef.current) armTracker(trackerRef.current, t)
       clockRef.current?.reset()
       judgementRef.current = null
-      if (phaseRef.current === 'finished') setPhase('paused')
+      // Moved in the middle of a run: what was judged so far is gone, so the run no longer stands for the whole song.
+      if (startedAtRef.current !== null) partialRef.current = true
     },
-    [armTracker, mode, setPhase],
+    [armTracker, mode],
   )
 
-  useImperativeHandle(ref, () => ({ start: () => void start(), listen, pause, restart, seek }), [start, listen, pause, restart, seek])
+  // Carrying on from a pause keeps the mode the run was in, whoever asks for the start.
+  const resume = useCallback(() => void start(phaseRef.current === 'paused' ? { listen: listenOnlyRef.current } : {}), [start])
+  useImperativeHandle(ref, () => ({ start: resume, listen, pause, restart, seek }), [resume, listen, pause, restart, seek])
+
+  // The section on repeat was switched or moved in the middle of a run (it can be, while paused): the
+  // tracker follows what is on screen, and the run no longer stands for one thing, so it is practice.
+  const loopKey = loopBars ? loopBars.join('-') : ''
+  const firstLoopRef = useRef(true)
+  useEffect(() => {
+    if (firstLoopRef.current) {
+      firstLoopRef.current = false
+      return
+    }
+    if (startedAtRef.current === null || phaseRef.current === 'finished') return
+    partialRef.current = true
+    const el = audioRef.current
+    if (el && trackerRef.current) armTracker(trackerRef.current, el.currentTime)
+  }, [loopKey, armTracker])
 
   // External reset (new rep, level change). Depends on resetKey only: parent
   // re-renders must never restart a run in progress.
@@ -627,9 +660,14 @@ export function Player({
     restartRef.current()
   }, [resetKey])
 
+  const overlayRef = useRef(false)
+  overlayRef.current = !!resultsOverlay
+
   const togglePlayPause = useCallback(() => {
     if (phaseRef.current === 'playing') pause()
-    else if (phaseRef.current === 'paused' || phaseRef.current === 'ready') void start()
+    // Carrying on after a pause stays in the mode it was in: a listen-through must not turn into a scored run.
+    else if (phaseRef.current === 'paused') void start({ listen: listenOnlyRef.current })
+    else if (phaseRef.current === 'ready') void start()
   }, [pause, start])
 
   useEffect(() => {
@@ -638,8 +676,10 @@ export function Player({
       if (e.code === 'Space') {
         e.preventDefault()
         togglePlayPause()
-      } else if ((e.key === 'r' || e.key === 'R') && mode !== 'test') restart()
-      else if (e.key === 'Escape') onExit()
+      } else if ((e.key === 'r' || e.key === 'R') && mode !== 'test') {
+        // Like the restart button: not while a result is on screen, which offers the ways on.
+        if (!(phaseRef.current === 'finished' && overlayRef.current)) restart()
+      } else if (e.key === 'Escape') onExit()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -647,7 +687,7 @@ export function Player({
 
   const duration = chart.duration
   const busy = phase === 'playing' || phase === 'countin'
-  const canSeek = mode !== 'test' && !busy
+  const canSeek = mode !== 'test' && !busy && phase !== 'finished'
   const notesCount = notes.length
 
   return (
@@ -688,6 +728,8 @@ export function Player({
           variant={micStatus === 'on' ? 'secondary' : 'primary'}
           disabled={busy || starting}
           onClick={() => {
+            // Switched in the middle of a run: part of it had no microphone, so it cannot count as a whole.
+            if (startedAtRef.current !== null) partialRef.current = true
             if (micStatus === 'on') {
               micOffRef.current = true
               audioEngine.stopMic()
@@ -779,7 +821,7 @@ export function Player({
           {phase === 'playing' ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </Button>
         {mode !== 'test' && (
-          <Button variant="ghost" size="sm" onClick={restart} aria-label="Restart" className="h-10 w-10 px-0">
+          <Button variant="ghost" size="sm" onClick={restart} disabled={phase === 'finished' && !!resultsOverlay} aria-label="Restart" className="h-10 w-10 px-0">
             <RotateCcw className="h-4 w-4" />
           </Button>
         )}

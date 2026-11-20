@@ -20,7 +20,8 @@ export const jingleBells = () =>
           B3(), B3(), B3(2), B3(), B3(), B3(2),
           B3(), D4(), G3(1.5), A3(0.5), B3(4),
           C4(), C4(), C4(1.5), C4(0.5), C4(), B3(), B3(), B3(0.5), B3(0.5),
-          B3(), A3(), A3(), B3(), A3(2), G3(2),
+          // The chorus is played once, so it takes its last ending: "one-horse open sleigh" comes home to G.
+          D4(), D4(), C4(), A3(), G3(4),
         ],
       }),
   )

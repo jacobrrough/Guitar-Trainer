@@ -8,6 +8,9 @@ import { GuidedTunerPage } from './features/tuner/GuidedTuner'
 import { registerSW } from 'virtual:pwa-register'
 import './index.css'
 import { AppLayout } from './app/AppLayout'
+import { connectUpdates } from './app/appUpdate'
+import { audioEngine } from './audio/AudioEngine'
+import { metronome } from './audio/metronome/Metronome'
 import { LibraryPage } from './features/library/LibraryPage'
 import { MetronomePage } from './features/metronome/MetronomePage'
 import { PlayPage } from './features/play/PlayPage'
@@ -40,8 +43,11 @@ const router = createHashRouter([
   { path: '/today/block/:blockId', element: <BlockRunner /> },
 ])
 
-// Offline support + installability; updates apply on the next launch.
-registerSW({ immediate: true })
+// Offline support + installability. A new version is switched to at launch or on request (see appUpdate).
+connectUpdates(
+  (callbacks) => registerSW({ immediate: true, ...callbacks }),
+  () => audioEngine.micActive || metronome.running,
+)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

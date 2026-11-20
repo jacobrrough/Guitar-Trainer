@@ -11,9 +11,13 @@ permissions:
   pages: write
   id-token: write
 
+# Runs only wait behind runs for the same branch or pull request, so work on one branch can never
+# push a queued default-branch run (the one that publishes) out of the queue. A newer push replaces
+# an older run of the same branch, except on the default branch, where a run may be half way
+# through publishing and must be left to finish.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
 
 jobs:
   test:
@@ -42,6 +46,10 @@ jobs:
     if: github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
+    # One publish at a time, never cut off half way.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

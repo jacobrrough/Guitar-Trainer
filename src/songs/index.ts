@@ -1,6 +1,6 @@
 import type { Chart } from '../chart/types'
-import { addSong, db, type SongRecord } from '../db/db'
-import { guitarVoice, loadGuitar, renderChartAudio } from '../audio/guitar'
+import { addSong, db, type NewSong, type SongRecord } from '../db/db'
+import { guitarVoice, recordingsOrTimeout, renderChartVoiced } from '../audio/guitar'
 import { SYNTH_SAMPLE_RATE, encodeWav, isStaleRender, renderDrums, synthAudioName } from '../audio/synth'
 import { amazingGrace } from './tunes/amazingGrace'
 import { dAGroove } from './tunes/dAGroove'
@@ -11,6 +11,7 @@ import { happyBirthday } from './tunes/happyBirthday'
 import { jingleBells } from './tunes/jingleBells'
 import { odeToJoy } from './tunes/odeToJoy'
 import { openStringsGroove } from './tunes/openStringsGroove'
+import { contentRevision } from './revision'
 import { saints } from './tunes/saints'
 import { tomDooley } from './tunes/tomDooley'
 import { twinkleTwinkle } from './tunes/twinkleTwinkle'
@@ -50,8 +51,30 @@ export function builtInSong(id: string): BuiltInSong | undefined {
   return BUILT_IN_SONGS.find((s) => s.id === id)
 }
 
+const revisions = new Map<string, string>()
+
+/**
+ * Fingerprint of the song as this build ships it. A stored copy made from other notes, another tempo or
+ * another title carries a different one (or none, if it was stored before copies carried one).
+ */
+export function builtInRevision(song: BuiltInSong): string {
+  let rev = revisions.get(song.id)
+  if (rev === undefined) {
+    rev = contentRevision(song)
+    revisions.set(song.id, rev)
+  }
+  return rev
+}
+
 const SEED = 1000
 const installing = new Map<string, Promise<SongRecord>>()
+
+/** The bundled song played by the app's guitar with its click, and the name that says what rendered it. */
+async function renderSong(song: BuiltInSong): Promise<{ wav: Blob; audioName: string }> {
+  // Named after the voice that really played it: a render that had to fall back to the string model is made again later.
+  const { samples, voice } = await renderChartVoiced(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
+  return { wav: encodeWav(samples, SYNTH_SAMPLE_RATE), audioName: synthAudioName(song.id, voice) }
+}
 
 async function findRecord(id: string): Promise<SongRecord | undefined> {
   return db.songs.where('builtinId').equals(id).first()
@@ -63,21 +86,22 @@ function install(song: BuiltInSong): Promise<SongRecord> {
   const job = (async () => {
     const existing = await findRecord(song.id)
     if (existing) return existing
-    await loadGuitar()
-    const voice = guitarVoice()
-    const samples = await renderChartAudio(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
-    const key = await addSong({
+    const { wav, audioName } = await renderSong(song)
+    // addSong stores every field it is given, so the revision lands in the same write as the chart and the audio.
+    const copy: NewSong = {
       title: song.title,
       artist: song.artist,
       audioType: 'audio/wav',
-      audioName: synthAudioName(song.id, voice),
+      audioName,
       duration: song.chart.duration,
       chart: song.chart,
       source: 'builtin',
       bpm: song.bpm,
       builtinId: song.id,
-      audio: encodeWav(samples, SYNTH_SAMPLE_RATE),
-    })
+      builtinRev: builtInRevision(song),
+      audio: wav,
+    }
+    const key = await addSong(copy)
     const record = await db.songs.get(key)
     if (!record) throw new Error(`Built-in song ${song.id} could not be saved`)
     return record
@@ -93,41 +117,63 @@ export async function installBuiltInSongs(): Promise<void> {
 }
 
 /**
- * True when the record's audio should be rendered again (older renderer, or the string model while
- * the recorded guitar is available now). Call after `loadGuitar()` has settled.
+ * True when the stored copy of a bundled song should be made again: its chart is not the one this build
+ * ships (a corrected tune, or a copy from before charts carried a revision), or its audio came from an
+ * older renderer, or from the string model while the recorded guitar is available now. Call after
+ * `loadGuitar()` has settled.
  */
-export function hasStaleAudio(record: Pick<SongRecord, 'builtinId' | 'audioName'>): boolean {
-  return !!record.builtinId && isStaleRender(record.audioName, record.builtinId, guitarVoice())
+export function hasStaleAudio(record: Pick<SongRecord, 'builtinId' | 'audioName' | 'builtinRev'>): boolean {
+  if (!record.builtinId) return false
+  const song = builtInSong(record.builtinId)
+  if (song && record.builtinRev !== builtInRevision(song)) return true
+  return isStaleRender(record.audioName, record.builtinId, guitarVoice())
 }
 
 const rerendering = new Map<number, Promise<SongRecord>>()
 
-/** Renders the bundled song again with the current voice and stores it on the existing record (scores and play count stay). */
+/**
+ * Makes the stored copy of a bundled song match this build: the chart, its tempo, length and names, and
+ * audio rendered from that same chart with the current voice. Scores, play count and the last level and
+ * speed stay.
+ */
 export function rerenderBuiltIn(record: SongRecord): Promise<SongRecord> {
   const song = record.builtinId ? builtInSong(record.builtinId) : undefined
   if (!song) return Promise.resolve(record)
   const running = rerendering.get(record.id)
   if (running) return running
   const job = (async () => {
-    await loadGuitar()
-    const voice = guitarVoice()
-    const samples = await renderChartAudio(song.chart, { sampleRate: SYNTH_SAMPLE_RATE, seed: SEED, plucks: true, click: true })
-    const audioData = await encodeWav(samples, SYNTH_SAMPLE_RATE).arrayBuffer()
-    // The song may have been deleted while it rendered: update only what is still there.
-    const changed = await db.songs.update(record.id, { audioData, audio: undefined, audioType: 'audio/wav', audioName: synthAudioName(song.id, voice), updatedAt: Date.now() })
+    const { wav, audioName } = await renderSong(song)
+    const audioData = await wav.arrayBuffer()
+    // One write for the chart and the audio made from it: a copy can never hold the notes of one version
+    // and the sound of another. The song may have been deleted while it rendered: update only what is still there.
+    const changed = await db.songs.update(record.id, {
+      title: song.title,
+      artist: song.artist,
+      bpm: song.bpm,
+      duration: song.chart.duration,
+      chart: song.chart,
+      builtinRev: builtInRevision(song),
+      audioData,
+      audio: undefined,
+      audioType: 'audio/wav',
+      audioName,
+      updatedAt: Date.now(),
+    })
     return (changed ? await db.songs.get(record.id) : undefined) ?? record
   })().finally(() => rerendering.delete(record.id))
   rerendering.set(record.id, job)
   return job
 }
 
-/** The library record for a bundled song, installing it first if needed and refreshing audio from an older renderer. */
+/** The library record for a bundled song, installing it first if needed and bringing an older copy (chart or audio) up to date. */
 export async function builtInSongRecord(id: string): Promise<SongRecord> {
   const song = builtInSong(id)
   if (!song) throw new Error(`Unknown built-in song ${id}`)
   const existing = await findRecord(id)
   if (!existing) return install(song)
-  await loadGuitar()
+  // A screen is waiting for this: on a stalled first download it gets the copy there is, and the
+  // refresh that runs when the recordings arrive brings it up to date.
+  await recordingsOrTimeout()
   return hasStaleAudio(existing) ? rerenderBuiltIn(existing) : existing
 }
 

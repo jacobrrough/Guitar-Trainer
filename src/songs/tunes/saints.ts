@@ -1,6 +1,12 @@
 import { lazySong, strumChart, uniqueChords } from './util'
 
-const BARS: string[] = ['G', 'G', 'G', 'G', 'C', 'C', 'G', 'G', 'G', 'G', 'D7', 'D7', 'G', 'C', 'D7', 'G']
+// Bar 1 is "saints"; "Oh when the" is sung over the count-in.
+const BARS: string[] = [
+  'G', 'G', 'G', 'G', // saints | go marching | in | oh when the
+  'G', 'G', 'D7', 'D7', // saints go | marching | in | oh Lord I
+  'G', 'G', 'C', 'C', // want to | be in | that num- | -ber, when the
+  'G', 'D7', 'G', 'G', // saints go | marching | in
+]
 
 export const saints = () =>
   lazySong(

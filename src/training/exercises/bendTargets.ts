@@ -32,7 +32,8 @@ function candidatesFor(string: number, key: string, position: number, semis: num
   const rootPc = pitchClassOf(key)
   const pcs = new Set(SCALE_INTERVALS['minor-pentatonic'].map((i) => (rootPc + i) % 12))
   const out: Candidate[] = []
-  for (let fret = position; fret <= position + SPAN; fret++) {
+  // An open string cannot be bent or shaken: the lowest fret that counts is 1.
+  for (let fret = Math.max(1, position); fret <= position + SPAN; fret++) {
     if (fret + semis > 24) continue
     if (!pcs.has((tuning[string] + fret) % 12)) continue
     if (needTarget && !pcs.has((tuning[string] + fret + semis) % 12)) continue
@@ -46,7 +47,7 @@ function bendPool(strings: number[], key: string, position: number, semis: numbe
   if (strict.length) return strict
   const loose = strings.flatMap((s) => candidatesFor(s, key, position, semis, tuning, false))
   if (loose.length) return loose
-  return strings.map((string) => ({ string, fret: Math.min(position, 24 - semis) }))
+  return strings.map((string) => ({ string, fret: Math.max(1, Math.min(position, 24 - semis)) }))
 }
 
 /** Bend targets (play the target, then bend up to it) and vibrato control. */
@@ -81,7 +82,7 @@ export const bendTargetsGenerator: ExerciseGenerator = {
       for (let bar = 0; bar < bars; bar++) {
         for (let half = 0; half < 2; half++) {
           const pool = pools[half]
-          const c = pool.length ? pool[(bar * 2 + half) % pool.length] : { string: lanes[half], fret: position }
+          const c = pool.length ? pool[(bar * 2 + half) % pool.length] : { string: lanes[half], fret: Math.max(1, position) }
           builder.note(builder.at(bar, half * 2), 2, c.string, c.fret, { tech: { vibrato: true } })
         }
       }

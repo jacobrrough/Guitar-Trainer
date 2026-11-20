@@ -29,6 +29,8 @@ export function weeklyMinutes(attempts: Attempt[], now: number, weeks = 8): { we
   }
   const index = new Map(buckets.map((b, i) => [b.weekStart, i]))
   for (const a of attempts) {
+    // A run in which the microphone heard the app's own playing was not practice that counted.
+    if (a.bleed) continue
     const i = index.get(dayKey(mondayOf(a.at)))
     if (i !== undefined) buckets[i].minutes += a.durationSec / 60
   }
@@ -80,7 +82,7 @@ export function categorySummary(
 
 /** Consecutive local days with at least one attempt, ending today or yesterday. */
 export function practiceStreakDays(attempts: Attempt[], now: number): number {
-  const days = new Set(attempts.map((a) => dayKey(new Date(a.at))))
+  const days = new Set(attempts.filter((a) => !a.bleed).map((a) => dayKey(new Date(a.at))))
   const today = new Date(now)
   let cursor = new Date(today.getFullYear(), today.getMonth(), today.getDate())
   if (!days.has(dayKey(cursor))) cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() - 1)

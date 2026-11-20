@@ -5,6 +5,7 @@ import {
   COMEBACK_TEMPO_FACTOR,
   MIN_COVERAGE,
   REP_UP_ACCURACY,
+  SONG_FULL_SPEED,
   SONG_LEVEL_UP_ACCURACY,
   SONG_SLOW_DOWN_ACCURACY,
   TEST_PASS,
@@ -18,6 +19,8 @@ const DAY_MS = 86_400_000
 const MAX_RECOMMENDATIONS = 6
 const SONG_WINDOW_DAYS = 7
 const PLAY_MUSIC_AFTER_DAYS = 14
+/** Levels a song has when the library entry does not say (Level 1 to 5 and Full). */
+const DEFAULT_LEVEL_COUNT = 6
 
 export interface RecommendContext {
   model: LearnerModel
@@ -59,14 +62,27 @@ function songRules(ctx: RecommendContext, desc: Attempt[]): Recommendation[] {
   for (const list of bySong.values()) {
     const a = list[0]
     const songId = a.songId as number
-    const level = a.level ?? 1
+    // `level` is the 0-based index used everywhere in the training layer; the learner sees it as level + 1.
+    const level = a.level ?? 0
+    const shown = level + 1
     const title = titleOf(songId)
-    if (a.accuracy >= SONG_LEVEL_UP_ACCURACY && a.speed >= 0.99) {
+    const levelCount = ctx.library.find((s) => s.id === songId)?.levelNoteCounts.length || DEFAULT_LEVEL_COUNT
+    if (a.accuracy >= SONG_LEVEL_UP_ACCURACY && a.speed >= SONG_FULL_SPEED) {
+      if (level >= levelCount - 1) {
+        // Nothing above the full version to unlock.
+        out.push({
+          id: 'song-top-level',
+          priority: 50,
+          title: 'You played the full song well.',
+          reason: `${title}: ${pct(a.accuracy)} % at full speed on the hardest level. A good moment to pick a new song.`,
+        })
+        continue
+      }
       out.push({
         id: 'song-level-up',
         priority: 50,
-        title: `Level ${level + 1} unlocked.`,
-        reason: `${title}: ${pct(a.accuracy)} % at full speed on level ${level}. Level ${level} goes into your review schedule.`,
+        title: `Level ${shown + 1} unlocked.`,
+        reason: `${title}: ${pct(a.accuracy)} % at full speed on level ${shown}. Level ${shown} goes into your review schedule.`,
         action: { type: 'song', songId, level: level + 1, speed: 1 },
       })
     } else if (a.accuracy >= SONG_SLOW_DOWN_ACCURACY && a.accuracy < SONG_LEVEL_UP_ACCURACY) {
@@ -88,15 +104,19 @@ function songRules(ctx: RecommendContext, desc: Attempt[]): Recommendation[] {
         action: { type: 'song', songId, level, speed: 0.85, loopBars: [first + 1, last + 1] },
       })
     } else if (a.accuracy < SONG_SLOW_DOWN_ACCURACY) {
-      const prevFailed = list.length > 1 && list[1].accuracy < SONG_SLOW_DOWN_ACCURACY
-      const dropLevel = prevFailed && level > 1
+      // Same rule as the planner: two results in a row under 70 % on this level send the song back one level.
+      const previous = list.slice(1).find((b) => (b.level ?? 0) === level)
+      const prevFailed = previous !== undefined && previous.accuracy < SONG_SLOW_DOWN_ACCURACY
+      const dropLevel = prevFailed && level > 0
       out.push({
         id: 'song-slow-down',
         priority: 50,
         title: dropLevel
-          ? `Two misses at level ${level}: dropping to level ${level - 1}.`
-          : 'Let’s slow it down before dropping a level.',
-        reason: `${title}: ${pct(a.accuracy)} % on level ${level}${prevFailed ? ' after another result under 70 %' : ''}.`,
+          ? `Two misses at level ${shown}: dropping to level ${shown - 1}.`
+          : level > 0
+            ? 'Let’s slow it down before dropping a level.'
+            : 'Let’s slow it down.',
+        reason: `${title}: ${pct(a.accuracy)} % on level ${shown}${prevFailed ? ' after another result under 70 %' : ''}.`,
         action: dropLevel
           ? { type: 'song', songId, level: level - 1, speed: 1 }
           : { type: 'song', songId, level, speed: 0.8 },

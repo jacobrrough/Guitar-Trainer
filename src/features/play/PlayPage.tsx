@@ -1,7 +1,7 @@
 import { Repeat, RotateCcw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { LEVELS, generateLevels, suggestedLevel } from '../../chart/difficulty'
+import { LEVELS, distinctLevels, generateLevels, suggestedLevel } from '../../chart/difficulty'
 import { chartBpm } from '../../chart/types'
 import { Button, Select, cx } from '../../components/ui'
 import { recordResult, type SongRecord } from '../../db/db'
@@ -9,6 +9,9 @@ import { useSong } from '../../db/useSongs'
 import { tuningLabel } from '../../music/tunings'
 import { getSettings, useSettings } from '../../app/settings'
 import { songPlayback } from '../../songs/playback'
+import { NotCountedCard } from './NotCountedCard'
+import { runVerdict, type RunVerdict } from './runVerdict'
+import { useHeld } from './useHeld'
 import { recordSongPlay } from '../../training/coach'
 import type { AttemptResult } from '../../training/types'
 import { Player, type PlayerHandle } from './Player'
@@ -24,19 +27,22 @@ function stars(accuracy: number): number {
 function LevelPicker({
   levelIdx,
   counts,
+  offered,
   disabled,
   onPick,
   compact,
 }: {
   levelIdx: number | null
   counts: number[] | null
+  /** Indexes of the levels to offer: a short tune has fewer different levels than six. */
+  offered: number[]
   disabled: boolean
   onPick: (idx: number) => void
   compact?: boolean
 }) {
   return (
     <div className={cx('flex items-center gap-1', compact && 'flex-1 justify-between')} role="group" aria-label="Difficulty level">
-      {LEVELS.map((l, i) => (
+      {LEVELS.map((l, i) => (offered.includes(i) || levelIdx === i) && (
         <button
           key={l.level}
           type="button"
@@ -60,20 +66,25 @@ function LevelPicker({
 export function ResultsOverlay({
   summary,
   levelIndex,
+  up,
+  down,
   onRetry,
   onLevel,
   loop,
 }: {
   summary: ScoreSummary
   levelIndex: number
+  /** The next level up and down that really differ from this one (null: there is none). */
+  up: number | null
+  down: number | null
   onRetry: () => void
   onLevel: (idx: number) => void
   /** Section-loop run: shows the auto-step message and a "Go again" primary button. */
   loop?: { message: string; onAgain: () => void }
 }) {
   const s = stars(summary.accuracy)
-  const canUp = levelIndex < LEVELS.length - 1
-  const canDown = levelIndex > 0
+  const canUp = up !== null
+  const canDown = down !== null
   const simple = useSettings().simpleFeedback
   const hit = summary.perfects + summary.goods
   const suggestion = summary.accuracy >= 0.9 && canUp ? 'up' : summary.accuracy < 0.6 && canDown ? 'down' : null
@@ -110,8 +121,8 @@ export function ResultsOverlay({
           ))}
         </dl>
         {loop && <p className="mt-4 text-sm font-medium text-accent">{loop.message}</p>}
-        {!loop && suggestion === 'up' && <p className="mt-4 text-sm text-green-200">Great run! You are ready for {LEVELS[levelIndex + 1].label}.</p>}
-        {!loop && suggestion === 'down' && <p className="mt-4 text-sm text-amber-200">Tough one. Try {LEVELS[levelIndex - 1].label} or slow the song down.</p>}
+        {!loop && suggestion === 'up' && up !== null && <p className="mt-4 text-sm text-green-200">Great run! You are ready for {LEVELS[up].label}.</p>}
+        {!loop && suggestion === 'down' && down !== null && <p className="mt-4 text-sm text-amber-200">Tough one. Try {LEVELS[down].label} or slow the song down.</p>}
         <div className="mt-5 flex flex-wrap justify-center gap-2">
           {loop ? (
             <Button variant="primary" onClick={loop.onAgain} data-testid="loop-again">
@@ -122,12 +133,12 @@ export function ResultsOverlay({
               <RotateCcw className="h-4 w-4" /> Play again
             </Button>
           )}
-          {canUp && (
-            <Button onClick={() => onLevel(levelIndex + 1)} variant={!loop && suggestion === 'up' ? 'primary' : 'secondary'}>
+          {up !== null && (
+            <Button onClick={() => onLevel(up)} variant={!loop && suggestion === 'up' ? 'primary' : 'secondary'}>
               Level up
             </Button>
           )}
-          {canDown && <Button onClick={() => onLevel(levelIndex - 1)}>Easier</Button>}
+          {down !== null && <Button onClick={() => onLevel(down)}>Easier</Button>}
           <Link to="/songs">
             <Button variant="ghost">Songs</Button>
           </Link>
@@ -143,8 +154,12 @@ export function PlayPage() {
   const id = Number(songId)
   const navigate = useNavigate()
   const songQuery = useSong(Number.isFinite(id) ? id : null)
-  const song: SongRecord | null = songQuery === 'loading' ? null : songQuery
+  const [inRun, setInRun] = useState(false)
+  // The record is a live query: while a run is in progress keep the one it started with, so a
+  // background update (a re-rendered sound, a corrected chart) cannot restart the score mid-song.
+  const song: SongRecord | null = useHeld(songQuery === 'loading' ? null : songQuery, inRun)
   const levels = useMemo(() => (song ? generateLevels(song.chart) : null), [song])
+  const offered = useMemo(() => (levels ? distinctLevels(levels) : LEVELS.map((_, i) => i)), [levels])
   // The app's own songs store the guitar part itself; while the microphone scores only their click track plays (see songPlayback).
   const playback = useMemo(() => (song ? songPlayback(song) : null), [song])
   const audio = playback?.audio ?? null
@@ -153,6 +168,7 @@ export function PlayPage() {
   const [speed, setSpeed] = useState(1)
   const [busy, setBusy] = useState(false)
   const [results, setResults] = useState<ScoreSummary | null>(null)
+  const [verdict, setVerdict] = useState<RunVerdict>('counted')
   const [resetKey, setResetKey] = useState(0)
   const [loopOn, setLoopOn] = useState(false)
   const [loopRange, setLoopRange] = useState<[number, number]>([0, 3])
@@ -182,7 +198,11 @@ export function PlayPage() {
 
   const onFinished = useCallback(
     (summary: ScoreSummary, result: AttemptResult) => {
+      const counts = runVerdict(summary, result)
+      setVerdict(counts)
       setResults(summary)
+      // A run the app could not hear, or one where it heard its own guitar part, is neither shown as a score nor saved.
+      if (counts !== 'counted') return
       if (result.perBar) setLastPerBar(result.perBar)
       if (loopOn) {
         // A partial-song pass: show the loop message but never record it.
@@ -190,7 +210,7 @@ export function PlayPage() {
         return
       }
       const s = songRef.current
-      if (s && levelIdx !== null && summary.total > 0) {
+      if (s && levelIdx !== null) {
         void recordSongPlay(s, levelIdx, result, getSettings()).catch(() => {})
         void recordResult(s.id, {
           level: LEVELS[levelIdx].level,
@@ -233,6 +253,11 @@ export function PlayPage() {
     setResults(null)
     startAfterReset.current = true
     setResetKey((k) => k + 1)
+  }
+  const playAgain = () => {
+    setResults(null)
+    playerRef.current?.restart()
+    playerRef.current?.start()
   }
   const li = levelIdx ?? suggestedLevel(song.chart) - 1
   const counts = levels.map((l) => l.notes.length)
@@ -357,7 +382,7 @@ export function PlayPage() {
       readyHint={loopOn ? loopHint(range, passes, speed) : `${LEVELS[li].label} · ${counts[li]} notes · ${Math.round(speed * 100)}% speed`}
       headerControls={
         <>
-          <LevelPicker levelIdx={li} counts={counts} disabled={busy} onPick={pickLevel} />
+          <LevelPicker levelIdx={li} counts={counts} offered={offered} disabled={busy} onPick={pickLevel} />
           {speedSelect}
           {loopToggle()}
           {loopOptions}
@@ -366,7 +391,7 @@ export function PlayPage() {
       mobileControls={
         <div className="flex w-full min-w-0 flex-col gap-1.5 short-landscape:gap-1">
           <div className="flex flex-wrap items-center gap-2">
-            <LevelPicker levelIdx={li} counts={counts} disabled={busy} onPick={pickLevel} compact />
+            <LevelPicker levelIdx={li} counts={counts} offered={offered} disabled={busy} onPick={pickLevel} compact />
             {speedSelect}
             {loopToggle(true)}
           </div>
@@ -374,15 +399,19 @@ export function PlayPage() {
         </div>
       }
       resultsOverlay={
-        results ? (
+        results && verdict !== 'counted' ? (
+          <NotCountedCard verdict={verdict} onRetry={playAgain}>
+            <Link to="/songs">
+              <Button variant="ghost">Songs</Button>
+            </Link>
+          </NotCountedCard>
+        ) : results ? (
           <ResultsOverlay
             summary={results}
             levelIndex={li}
-            onRetry={() => {
-              setResults(null)
-              playerRef.current?.restart()
-              playerRef.current?.start()
-            }}
+            up={offered.find((i) => i > li) ?? null}
+            down={[...offered].reverse().find((i) => i < li) ?? null}
+            onRetry={playAgain}
             onLevel={pickLevel}
             loop={loopOn && loopNext ? { message: loopNext.message, onAgain: goAgain } : undefined}
           />
@@ -392,6 +421,7 @@ export function PlayPage() {
       onFinished={onFinished}
       onPhaseChange={(p) => {
         setBusy(p === 'playing' || p === 'countin')
+        setInRun(p === 'playing' || p === 'countin' || p === 'paused')
         if (p !== 'finished') setResults(null)
       }}
     />

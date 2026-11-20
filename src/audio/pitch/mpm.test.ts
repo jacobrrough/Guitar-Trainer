@@ -81,6 +81,23 @@ describe('McLeodDetector', () => {
     expect(r.clarity).toBeLessThan(0.6)
   })
 
+  it('reports nothing for a tone below its range (mains hum), instead of a confident wrong pitch', () => {
+    for (const sr of [44100, 48000]) {
+      const d = new McLeodDetector(2048, sr, { minFreq: 55, maxFreq: 1500 })
+      for (const hum of [50, 45, 40]) {
+        const buf = new Float32Array(2048)
+        for (let i = 0; i < buf.length; i++) buf[i] = 0.3 * Math.sin((2 * Math.PI * hum * i) / sr)
+        const r = d.detect(buf)
+        expect(r.clarity < 0.5 || r.freq === 0, `${hum} Hz at ${sr}: ${r.freq.toFixed(1)} Hz, clarity ${r.clarity.toFixed(2)}`).toBe(true)
+      }
+      // The lowest note it is asked for still reads right.
+      const buf = new Float32Array(2048)
+      for (let i = 0; i < buf.length; i++) buf[i] = 0.3 * Math.sin((2 * Math.PI * 82.41 * i) / sr)
+      const r = d.detect(buf)
+      expect(Math.abs(1200 * Math.log2(r.freq / 82.41))).toBeLessThan(5)
+    }
+  })
+
   it('returns silence for an empty buffer', () => {
     const r = detector.detect(new Float32Array(N))
     expect(r.freq).toBe(0)

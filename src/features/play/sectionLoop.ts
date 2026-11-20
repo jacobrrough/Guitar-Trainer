@@ -46,6 +46,12 @@ export function weakestRange(perBar: number[], threshold = WEAK_BAR_ACCURACY, ma
   return best
 }
 
+/** Song time at which a bar (0-based) starts, or null when the chart has no such bar. */
+export function barStartTime(chart: Pick<Chart, 'beats'>, bar: number): number | null {
+  const beat = chart.beats.find((b) => b.bar === bar && b.beatInBar === 0) ?? chart.beats.find((b) => b.bar === bar)
+  return beat ? beat.time : null
+}
+
 /** Number of bars in a chart (from the last beat's bar index), at least 1. */
 export function barCount(chart: Pick<Chart, 'beats'>): number {
   const last = chart.beats[chart.beats.length - 1]

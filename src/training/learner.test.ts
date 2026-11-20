@@ -7,8 +7,11 @@ import {
   masteryBand,
   newSkillState,
   ratingDelta,
+  runScore,
   updateTempoCeiling,
 } from './learner'
+import { attemptPerformance } from './performance'
+import { RATING_HEADROOM, UNLOCK_RATING } from './constants'
 import type { Attempt, LearnerModel, SkillDef } from './types'
 
 const DAY = 86400000
@@ -68,7 +71,8 @@ describe('effectiveRating (rust)', () => {
 describe('ratingDelta', () => {
   it('is K·(p − E)·gain', () => {
     expect(ratingDelta(confident, attempt())).toBeCloseTo(6, 10)
-    expect(ratingDelta(confident, attempt({ performance: 0 }))).toBeCloseTo(-6, 10)
+    // A run with no performance hit no notes either (the fixture's default is every note hit).
+    expect(ratingDelta(confident, attempt({ performance: 0, accuracy: 0 }))).toBeCloseTo(-6, 10)
   })
   it('doubles for tests', () => {
     expect(ratingDelta(confident, attempt({ kind: 'test' }))).toBeCloseTo(2 * ratingDelta(confident, attempt()), 10)
@@ -98,7 +102,7 @@ describe('applyAttempt', () => {
 
   it('clamps to 0..100', () => {
     expect(applyAttempt({ ...confident, rating: 99.5 }, attempt({ difficulty: 99.5 }), skill).rating).toBe(100)
-    expect(applyAttempt({ ...confident, rating: 0.5 }, attempt({ performance: 0, difficulty: 0.5 }), skill).rating).toBe(0)
+    expect(applyAttempt({ ...confident, rating: 0.5 }, attempt({ performance: 0, accuracy: 0, difficulty: 0.5 }), skill).rating).toBe(0)
   })
 
   it('caps provisional skills at 75', () => {
@@ -161,5 +165,142 @@ describe('applyToModel', () => {
     expect(out.skills['alt-picking'].attempts).toBe(1)
     expect(out.skills['alt-picking'].rating).toBeGreaterThan(0)
     expect(out.songItems).toBe(model.songItems)
+  })
+})
+
+describe('a run the app scored from its own speaker (bleed)', () => {
+  const heardItself = attempt({ bleed: true, reliable: false, playedTempo: 200, at: NOW })
+
+  it('leaves the skill state untouched', () => {
+    const state = { ...confident, lastPracticedAt: NOW - 3 * DAY, tempoCeiling: 90, attempts: 4 }
+    expect(applyAttempt(state, heardItself, skill, [], NOW)).toEqual(state)
+    const model: LearnerModel = { skills: {}, songItems: {}, profile: { id: 1, goals: [], dailyMinutes: 20, startedAt: 0, streak: 0, longestStreak: 0, sessionsSinceTest: 0 } }
+    expect(applyToModel(model, heardItself, skill)).toEqual(model)
+  })
+
+  it('never sets the tempo ceiling, even from the history of a later run', () => {
+    expect(updateTempoCeiling([heardItself], NOW)).toBe(0)
+    const played = attempt({ playedTempo: 80, at: NOW + 1000 })
+    expect(updateTempoCeiling([heardItself, played], NOW + 1000)).toBe(80)
+    expect(applyAttempt(confident, played, skill, [heardItself], NOW + 1000).tempoCeiling).toBe(80)
+  })
+
+  it('does not push real runs out of the recent window', () => {
+    const real = attempt({ playedTempo: 120, at: NOW - 20 * 1000 })
+    const noise = Array.from({ length: 10 }, (_, i) => attempt({ bleed: true, accuracy: 0.2, playedTempo: 60, at: NOW - i * 1000 }))
+    expect(updateTempoCeiling([real, ...noise], NOW)).toBe(120)
+  })
+})
+
+describe('the rating behaves like a sensible teacher', () => {
+  /** A run as the app records it: 40 notes, `accuracy` of them hit, timing spread `sigma` ms, at the asked tempo. */
+  const run = (accuracy: number, sigma: number, difficulty: number, over: Partial<Attempt> = {}): Attempt => {
+    const perfects = Math.round(accuracy * 40)
+    const result = { perfects, goods: 0, misses: 40 - perfects, total: 40, timingMedianMs: 5, timingStdevMs: sigma, coverage: 0.9, durationSec: 30, playedTempo: 60, targetTempo: 60, speed: 1 }
+    const perf = attemptPerformance(result)
+    return { ...result, at: NOW, kind: 'practice', difficulty, performance: perf.p, accuracy: perf.acc, reliable: true, ...over }
+  }
+  const rated = (rating: number) => ({ ...confident, rating })
+
+  it('a clean run is a full score, however real the timing', () => {
+    expect(runScore(run(0.97, 20, 10).performance)).toBe(1)
+    expect(runScore(run(0.95, 30, 10).performance)).toBe(1)
+    expect(runScore(1)).toBe(1)
+    expect(runScore(0)).toBe(0)
+  })
+
+  it('a clean run never lowers a rating, even on an item far below it', () => {
+    for (const rating of [20, 40, 60, 80, 95]) {
+      for (const difficulty of [0, 5, 12, 20, 40]) {
+        expect(ratingDelta(rated(rating), run(0.97, 20, difficulty)), `r ${rating} d ${difficulty}`).toBeGreaterThanOrEqual(0)
+        expect(ratingDelta(rated(rating), run(0.95, 30, difficulty)), `r ${rating} d ${difficulty}`).toBeGreaterThanOrEqual(0)
+      }
+    }
+  })
+
+  it('a good run costs next to nothing on an easy item, where it used to cost about three points', () => {
+    expect(ratingDelta(rated(60), run(0.85, 30, 12))).toBeGreaterThan(-0.6)
+  })
+
+  it('a weak run still lowers the rating, and more the worse it was', () => {
+    const fair = ratingDelta(rated(50), run(0.6, 30, 30))
+    const poor = ratingDelta(rated(50), run(0.3, 60, 30))
+    expect(fair).toBeLessThan(-0.5)
+    expect(poor).toBeLessThan(fair)
+  })
+
+  it('easy material cannot run a rating up: gains stop a fixed distance above the item', () => {
+    let s = rated(10)
+    for (let i = 0; i < 300; i++) s = applyAttempt(s, run(0.97, 20, 12, { at: NOW + i * 1000 }), skill)
+    expect(s.rating).toBeLessThanOrEqual(12 + RATING_HEADROOM)
+    expect(s.rating).toBeLessThan(UNLOCK_RATING)
+    expect(s.rating).toBeGreaterThan(40)
+    // The last step lands on the bound and does not jump over it.
+    expect(ratingDelta(rated(12 + RATING_HEADROOM - 0.2), run(0.97, 20, 12, { kind: 'test' }))).toBeLessThanOrEqual(0.2 + 1e-9)
+  })
+
+  it('steady clean rounds at a tempo a little above the reference pass the unlock line; 60 % playing never does', () => {
+    // A tier 1 exercise a little above its reference tempo has a difficulty of about 30.
+    let good = rated(30)
+    let rounds = 0
+    while (good.rating < UNLOCK_RATING && rounds < 200) good = applyAttempt(good, run(0.95, 30, 30, { at: NOW + ++rounds * 1000 }), skill)
+    expect(rounds).toBeLessThan(40)
+    let weak = rated(30)
+    for (let i = 0; i < 200; i++) weak = applyAttempt(weak, run(0.6, 30, 30, { at: NOW + i * 1000 }), skill)
+    expect(weak.rating).toBeLessThan(UNLOCK_RATING - 10)
+  })
+})
+
+describe('a run at the mark that raises the tempo (85 % of the notes) is good practice, not a setback', () => {
+  /** A run as the app records it: 40 notes, timing spread `sigma` ms, played at `speed` times the asked tempo. */
+  const run = (accuracy: number, sigma: number, difficulty: number, over: Partial<Attempt> = {}, speed = 1): Attempt => {
+    const perfects = Math.round(accuracy * 40)
+    const result = { perfects, goods: 0, misses: 40 - perfects, total: 40, timingMedianMs: 5, timingStdevMs: sigma, coverage: 0.9, durationSec: 30, playedTempo: 60 * speed, targetTempo: 60, speed }
+    const perf = attemptPerformance(result)
+    return { ...result, at: NOW, kind: 'practice', difficulty, performance: perf.p, accuracy: perf.acc, reliable: true, ...over }
+  }
+  const rated = (rating: number) => ({ ...confident, rating })
+
+  it('never lowers a rating, whatever the timing spread within the hits, and can reach the same bound as a cleaner run', () => {
+    for (const rating of [40, 60, 80]) {
+      for (const difficulty of [5, 12, 20]) {
+        expect(ratingDelta(rated(rating), run(0.85, 30, difficulty)), `r ${rating} d ${difficulty}`).toBeGreaterThanOrEqual(0)
+        expect(ratingDelta(rated(rating), run(0.88, 45, difficulty)), `r ${rating} d ${difficulty}`).toBeGreaterThanOrEqual(0)
+      }
+    }
+    // At a tier 1 skill's reference tempo (difficulty 20) it gets all the way to the unlock line.
+    let s = rated(30)
+    for (let i = 0; i < 300; i++) s = applyAttempt(s, run(0.85, 30, 20, { at: NOW + i * 1000 }), skill)
+    expect(s.rating).toBeGreaterThanOrEqual(UNLOCK_RATING)
+    expect(s.rating).toBeLessThanOrEqual(20 + RATING_HEADROOM)
+  })
+
+  it('just under that mark the score follows the performance as before', () => {
+    expect(ratingDelta(rated(60), run(0.8, 30, 12))).toBeLessThan(0)
+  })
+
+  it('slowing the exercise down does not make it a full score: the item was rated for the tempo that was asked', () => {
+    expect(ratingDelta(rated(60), run(0.95, 30, 12, {}, 0.5))).toBeLessThan(0)
+  })
+
+  it('a skill check keeps the whole measure, timing included', () => {
+    expect(ratingDelta(rated(60), run(0.85, 70, 12, { kind: 'test' }))).toBeLessThan(0)
+  })
+})
+
+describe('warm-ups and the tempo ceiling', () => {
+  const warm = (tempo: number, accuracy: number, at: number): Attempt => attempt({ kind: 'warmup', playedTempo: tempo, targetTempo: tempo, accuracy, performance: accuracy, at })
+
+  it('clean warm-up rounds, played below the ceiling on purpose, do not talk the ceiling down', () => {
+    // The skill was played cleanly at 63 bpm; since then it has only been the warm-up, at nine tenths of that.
+    const history = [attempt({ playedTempo: 63, targetTempo: 63, accuracy: 0.86, at: NOW - 5 * DAY }), ...Array.from({ length: 10 }, (_, i) => warm(57, 0.86, NOW - DAY + i * 1000))]
+    const state = { ...confident, tempoCeiling: 63, lastPracticedAt: NOW - DAY }
+    expect(applyAttempt(state, warm(57, 0.86, NOW), skill, history, NOW).tempoCeiling).toBe(63)
+  })
+
+  it('a clean warm-up above the ceiling raises it, and a weak one still lowers it', () => {
+    const state = { ...confident, tempoCeiling: 63, lastPracticedAt: NOW - DAY }
+    expect(applyAttempt(state, warm(66, 0.95, NOW), skill, [], NOW).tempoCeiling).toBe(66)
+    expect(applyAttempt(state, warm(57, 0.5, NOW), skill, [], NOW).tempoCeiling).toBeLessThan(57)
   })
 })

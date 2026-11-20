@@ -7,6 +7,8 @@ import { masteryBand, effectiveRating } from '../../training/learner'
 import { SKILLS } from '../../training/skills'
 import { exportTrainingData, importTrainingData, resetTrainingData, saveProfile } from '../../training/store'
 import { useLearnerModel, useMilestones, useRecentAttempts, useTests } from '../../training/useTraining'
+import { ImportConfirm } from '../settings/ImportConfirm'
+import { RESET_WARNING, importFlow, type ImportEvent, type ImportFlow } from '../settings/importConfirm'
 import { practiceStreakDays, ratingSeries, weeklyMinutes } from './progressStats'
 import { MilestoneList } from './MilestoneList'
 import { SkillMap } from './SkillMap'
@@ -67,6 +69,8 @@ export function ProgressPage() {
   const milestones = useMilestones(12)
   const fileRef = useRef<HTMLInputElement>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [importing, setImporting] = useState<ImportFlow<File>>({ step: 'idle' })
+  const [busy, setBusy] = useState(false)
   const now = useMemo(() => Date.now(), [])
 
   const stats = useMemo(() => {
@@ -94,7 +98,8 @@ export function ProgressPage() {
     void saveProfile({ ...model.profile, pinnedSkillId: skillId })
   }
 
-  const onExport = async () => {
+  /** Resolves to whether a file was handed over (false when the share sheet was closed). */
+  const onExport = async (): Promise<boolean> => {
     const json = await exportTrainingData()
     const name = `guitar-trainer-progress-${new Date().toISOString().slice(0, 10)}.json`
     const blob = new Blob([json], { type: 'application/json' })
@@ -105,8 +110,9 @@ export function ProgressPage() {
         await navigator.share({ files: [file], title: name })
       } catch (err) {
         if (!(err instanceof DOMException && err.name === 'AbortError')) throw err
+        return false
       }
-      return
+      return true
     }
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -117,25 +123,41 @@ export function ProgressPage() {
     a.remove()
     // Safari cancels the download if the URL is revoked synchronously.
     setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    return true
   }
 
-  const onImport = async (file: File | undefined) => {
-    if (!file) return
-    if (!window.confirm('Importing replaces all current training data. Continue?')) {
-      if (fileRef.current) fileRef.current.value = ''
-      return
-    }
+  const doImport = async (file: File) => {
+    setBusy(true)
     try {
       const res = await importTrainingData(await file.text())
       setMessage(`Imported ${res.attempts} attempts and ${res.skills} skills.`)
     } catch (e) {
       setMessage(`Import failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBusy(false)
     }
-    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  // Same steps as Settings: a picked file only waits here, and the data is replaced on a yes.
+  const onImport = (event: ImportEvent<File>) => {
+    const next = importFlow(importing, event)
+    setImporting(next.state)
+    if (next.importFile) void doImport(next.importFile)
+  }
+
+  const backUpFirst = async () => {
+    setBusy(true)
+    try {
+      if (await onExport()) setImporting((flow) => importFlow(flow, { type: 'backedUp' }).state)
+    } catch (e) {
+      setMessage(`Export failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const onReset = async () => {
-    if (!window.confirm('Reset all training progress? This cannot be undone.')) return
+    if (!window.confirm(`${RESET_WARNING} Reset now?`)) return
     await resetTrainingData()
     setMessage('Training data reset.')
   }
@@ -237,9 +259,24 @@ export function ProgressPage() {
                 accept="application/json,.json"
                 className="hidden"
                 aria-label="Training data file"
-                onChange={(e) => void onImport(e.target.files?.[0])}
+                onChange={(e) => {
+                  onImport({ type: 'picked', file: e.target.files?.[0] })
+                  e.target.value = ''
+                }}
               />
             </div>
+            {importing.step === 'confirm' && (
+              <div className="mt-3">
+                <ImportConfirm
+                  fileName={importing.file.name}
+                  backedUp={importing.backedUp}
+                  busy={busy}
+                  onBackup={() => void backUpFirst()}
+                  onConfirm={() => onImport({ type: 'confirmed' })}
+                  onCancel={() => onImport({ type: 'cancelled' })}
+                />
+              </div>
+            )}
             {message && (
               <p className="mt-3 text-sm text-muted" role="status">
                 {message}

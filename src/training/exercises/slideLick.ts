@@ -34,8 +34,10 @@ export const slideLickGenerator: ExerciseGenerator = {
     /** Pentatonic frets on a string within a four-fret window starting at `start`. */
     const pool = (string: number, start: number): number[] => {
       const frets: number[] = []
-      for (let f = start; f <= Math.min(start + 4, maxFret); f++) if (pcs.has((tuning[string] + f) % 12)) frets.push(f)
-      return frets
+      // A finger has to be on the string to slide: the open string is left out.
+      const from = Math.max(1, start)
+      for (let f = from; f <= Math.min(start + 4, maxFret); f++) if (pcs.has((tuning[string] + f) % 12)) frets.push(f)
+      return frets.length ? frets : [from]
     }
 
     const beatsPer = NOTE_VALUE_BEATS[noteValue]

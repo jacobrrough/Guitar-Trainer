@@ -1,8 +1,14 @@
 import { db } from '../db/db'
+import { COURSE } from '../lessons/course'
+import { initialiseCourse } from '../lessons/store'
+import type { LessonProgress } from '../lessons/types'
+import { DRILL_REV } from './constants'
+import { migrateStoredTempos } from './migrate'
 import type { Attempt, LearnerModel, Milestone, Profile, SessionRecord, SkillState, SongItemState, TestRecord } from './types'
 
 const DAY_MS = 24 * 60 * 60 * 1000
-const TRAINING_TABLES = [db.skillStates, db.songItems, db.attempts, db.sessions, db.tests, db.profile, db.milestones]
+// Lesson progress belongs here too: the profile says whether the course is running, and the two must be reset, saved and restored together.
+const TRAINING_TABLES = [db.skillStates, db.songItems, db.attempts, db.sessions, db.tests, db.profile, db.milestones, db.lessons]
 
 function clearTrainingTables(): Promise<unknown> {
   return Promise.all(TRAINING_TABLES.map((t) => t.clear()))
@@ -17,6 +23,7 @@ export function defaultProfile(now = Date.now()): Profile {
     streak: 0,
     longestStreak: 0,
     sessionsSinceTest: 0,
+    drillRev: DRILL_REV,
   }
 }
 
@@ -67,12 +74,17 @@ export async function recordAttempt(attempt: Attempt): Promise<number> {
   return (await db.attempts.add(rest as Attempt)) as number
 }
 
+/**
+ * Newest first. `countedOnly` leaves out runs that did not count (the microphone was hearing the
+ * app's own guitar part); they stay in the history but nothing may be worked out from them.
+ */
 export async function recentAttempts(
-  opts: { skillId?: string; songId?: number; sinceDays?: number; limit?: number; kinds?: Attempt['kind'][] } = {},
+  opts: { skillId?: string; songId?: number; sinceDays?: number; limit?: number; kinds?: Attempt['kind'][]; countedOnly?: boolean } = {},
 ): Promise<Attempt[]> {
-  const { skillId, songId, sinceDays, limit, kinds } = opts
+  const { skillId, songId, sinceDays, limit, kinds, countedOnly } = opts
   const since = sinceDays === undefined ? undefined : Date.now() - sinceDays * DAY_MS
   let collection = db.attempts.orderBy('at').reverse().filter((a) => {
+    if (countedOnly && a.bleed) return false
     if (skillId !== undefined && a.skillId !== skillId) return false
     if (songId !== undefined && a.songId !== songId) return false
     if (since !== undefined && a.at < since) return false
@@ -85,6 +97,27 @@ export async function recentAttempts(
 
 export function attemptsForSkill(skillId: string, limit = 50): Promise<Attempt[]> {
   return recentAttempts({ skillId, limit })
+}
+
+/**
+ * For each skill, on how many days before `date` (a local date, YYYY-MM-DD) it was practised. The
+ * planner walks a drill through its variations with this number: the same notes all day, the next
+ * variation on the next day the skill comes up.
+ */
+export async function practiceDaysBySkill(date: string): Promise<Record<string, number>> {
+  const days = new Map<string, Set<string>>()
+  await db.attempts
+    .where('skillId')
+    .above('')
+    .each((a) => {
+      if (!a.skillId) return
+      const day = localDateString(new Date(a.at))
+      if (day >= date) return
+      let set = days.get(a.skillId)
+      if (!set) days.set(a.skillId, (set = new Set()))
+      set.add(day)
+    })
+  return Object.fromEntries([...days].map(([id, set]) => [id, set.size]))
 }
 
 function pad(n: number): string {
@@ -166,15 +199,16 @@ export async function markSessionDay(date: string): Promise<Profile> {
 
 export async function exportTrainingData(): Promise<string> {
   const profile = await loadProfile()
-  const [skillStates, songItems, attempts, sessions, tests, milestones] = await Promise.all([
+  const [skillStates, songItems, attempts, sessions, tests, milestones, lessons] = await Promise.all([
     db.skillStates.toArray(),
     db.songItems.toArray(),
     db.attempts.toArray(),
     db.sessions.toArray(),
     db.tests.toArray(),
     db.milestones.toArray(),
+    db.lessons.toArray(),
   ])
-  return JSON.stringify({ version: 1, exportedAt: Date.now(), profile, skillStates, songItems, attempts, sessions, tests, milestones })
+  return JSON.stringify({ version: 1, exportedAt: Date.now(), profile, skillStates, songItems, attempts, sessions, tests, milestones, lessons })
 }
 
 function asArray<T>(value: unknown, name: string): T[] {
@@ -192,6 +226,8 @@ export async function importTrainingData(json: string): Promise<{ attempts: numb
   const tests = asArray<TestRecord>(data.tests, 'tests')
   // Milestones arrived after the first exports; older backups simply have none.
   const milestones = data.milestones === undefined ? [] : asArray<Milestone>(data.milestones, 'milestones')
+  // So did lesson progress.
+  const lessons = data.lessons === undefined ? [] : asArray<LessonProgress>(data.lessons, 'lessons')
   const profile = data.profile as Profile | undefined
   if (!profile || typeof profile !== 'object') throw new Error('Invalid training data: profile missing')
   await db.transaction('rw', TRAINING_TABLES, async () => {
@@ -202,8 +238,14 @@ export async function importTrainingData(json: string): Promise<{ attempts: numb
     await db.sessions.bulkPut(sessions)
     await db.tests.bulkPut(tests)
     await db.milestones.bulkPut(milestones)
+    await db.lessons.bulkPut(lessons)
     await db.profile.put({ ...profile, id: 1 })
+    // A backup taken mid-course may carry no lesson rows (older backups) or rows with nothing left to
+    // start; Today would then show the course with no lesson. Give the course a lesson, or end it.
+    if (profile.firstStepsStartedAt && !profile.firstStepsDoneAt) await initialiseCourse(COURSE.map((l) => l.id))
   })
+  // A backup from an earlier version carries tempos earned on that version's drills.
+  await migrateStoredTempos()
   return { attempts: attempts.length, skills: skillStates.length }
 }
 

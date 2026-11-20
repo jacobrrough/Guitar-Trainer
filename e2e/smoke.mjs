@@ -343,6 +343,11 @@ try {
   const exportStatus = await page.getByTestId('data-status').innerText()
   check(/^Export/.test(exportStatus), `training data export: ${exportStatus}`)
 
+  // Settings shows which build is running, so an owner can tell whether an update has arrived
+  const buildId = (await page.getByTestId('build-id').innerText()).trim()
+  check(/^\d{4}-\d{2}-\d{2}/.test(buildId), `Settings shows the version (${buildId})`)
+  check((await page.getByTestId('version-row').getByRole('button').count()) === 1, 'Settings offers a check for updates')
+
   // Sync your sound (latency calibration): a second browser whose fake microphone plays a burst every
   // 300 ms, so every click finds a sound in its window and the dialog must finish with a steady result.
   {

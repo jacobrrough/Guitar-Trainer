@@ -7,13 +7,13 @@ import { Button, Card, cx } from '../../components/ui'
 import { midiToName } from '../../music/pitch'
 import { EAR_RESPONSE_SECONDS } from '../../training/constants'
 import type { AttemptResult, GeneratedExercise } from '../../training/types'
-import { PitchSmoother } from '../play/pitchTracker'
 import type { ScoreSummary } from '../play/scoring'
-import { earAttemptResult, earSummary, feedbackText, judgeCents, judgePrompt, stablePitch, type EarJudgement } from './earTrainer'
+import { EarListener, RunGuard, answerText, prepareRun, type EarAnswer } from './earListening'
+import { earAttemptResult, earSummary, type EarJudgement } from './earTrainer'
 
 const REFERENCE_SECONDS = 1.2
-const SETTLE_MS = 150
 const ADVANCE_MS = 1000
+const RESPONSE_MS = EAR_RESPONSE_SECONDS * 1000
 
 type Phase = 'intro' | 'starting' | 'listen' | 'turn' | 'feedback' | 'error'
 
@@ -33,6 +33,8 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
   const [judgement, setJudgement] = useState<EarJudgement | null>(null)
   const [feedback, setFeedback] = useState('')
   const [errorText, setErrorText] = useState('')
+  // The answer-time bar: `run` restarts it, `delayMs` holds it full while a replayed reference sounds.
+  const [bar, setBar] = useState({ run: 0, delayMs: 0 })
 
   const judgements = useRef<EarJudgement[]>([])
   const heard = useRef(0)
@@ -42,9 +44,10 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
   const unsub = useRef<(() => void) | null>(null)
   const source = useRef<AudioBufferSourceNode | null>(null)
   const references = useRef(new Map<number, Float32Array<ArrayBuffer>>())
-  const ignoreUntil = useRef(0)
-  const history = useRef<number[]>([])
-  const heardThis = useRef(false)
+  const listener = useRef<EarListener | null>(null)
+  // Ends with the run (Back, a new round): work that finishes later checks it and does nothing.
+  const guard = useRef(new RunGuard())
+  const alive = useRef<() => boolean>(() => false)
   const phaseRef = useRef<Phase>('intro')
   const indexRef = useRef(0)
   const exerciseRef = useRef(exercise)
@@ -63,10 +66,18 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
     timers.current = []
   }
   const later = (fn: () => void, ms: number) => {
-    timers.current.push(window.setTimeout(fn, ms))
+    const stillThisRun = alive.current
+    timers.current.push(
+      window.setTimeout(() => {
+        if (stillThisRun()) fn()
+      }, ms),
+    )
   }
 
   const cleanup = useCallback(() => {
+    guard.current.end()
+    listener.current?.close()
+    listener.current = null
     clearTimers()
     unsub.current?.()
     unsub.current = null
@@ -99,19 +110,14 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
     return REFERENCE_SECONDS * 1000
   }
 
-  const finishPrompt = (i: number, j: EarJudgement, played: number | null) => {
+  const finishPrompt = (i: number, answer: EarAnswer) => {
     if (phaseRef.current !== 'turn') return
     clearTimers()
+    listener.current?.close()
+    const j = answer.judgement
     judgements.current.push(j)
-    if (heardThis.current) heard.current += 1
-    const target = targets[i]
-    const name = midiToName(target)
-    if (played === null) {
-      setFeedback(`No note heard. It was ${name}.`)
-    } else {
-      const { cents, octaves } = judgeCents(played, target)
-      setFeedback(`${feedbackText(cents, octaves)} (${name})`)
-    }
+    if (answer.heard) heard.current += 1
+    setFeedback(answerText(answer, midiToName(targets[i]), targets[i]))
     setJudgement(j)
     setPhaseBoth('feedback')
     later(() => {
@@ -130,21 +136,30 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
     }, ADVANCE_MS)
   }
 
+  /** (Re)starts the timer and the bar for the open turn, from the listener's deadline. */
+  const armDeadline = (i: number) => {
+    const l = listener.current
+    if (!l) return
+    clearTimers()
+    const left = l.deadline - performance.now()
+    setBar((b) => ({ run: b.run + 1, delayMs: Math.max(0, left - RESPONSE_MS) }))
+    // Normally a microphone frame ends the turn at the deadline; this covers a microphone that has gone quiet.
+    later(() => finishPrompt(i, l.expire()), left)
+  }
+
   playPromptRef.current = (i: number) => {
     clearTimers()
+    listener.current?.close()
     indexRef.current = i
     setIndex(i)
     setJudgement(null)
     setFeedback('')
-    history.current = []
-    heardThis.current = false
     setPhaseBoth('listen')
     const ms = playReference(targets[i])
     later(() => {
-      history.current = []
-      ignoreUntil.current = performance.now() + SETTLE_MS
+      listener.current?.open(targets[i], performance.now())
       setPhaseBoth('turn')
-      later(() => finishPrompt(i, 'miss', null), EAR_RESPONSE_SECONDS * 1000)
+      armDeadline(i)
     }, ms)
   }
 
@@ -152,32 +167,30 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
     audioEngine.unlock()
     const settings = getSettings()
     setPhaseBoth('starting')
-    audioEngine
-      .startMic({ deviceId: settings.inputDeviceId || undefined, echoCancellation: settings.echoCancellation })
-      .then(async () => {
-        // The reference notes, played by the recorded guitar.
-        const rate = audioEngine.context.sampleRate
-        await Promise.all(
-          [...new Set(targets)].map(async (midi) => {
-            if (references.current.has(midi)) return
-            const pcm = await renderNoteAudio(midi, REFERENCE_SECONDS, rate).catch(() => null)
-            if (pcm) references.current.set(midi, new Float32Array(pcm))
-          }),
-        )
-        if (phaseRef.current !== 'starting') return
-        const smoother = new PitchSmoother()
+    const thisRun = guard.current.begin()
+    alive.current = thisRun
+    // The reference notes, played by the recorded guitar.
+    const renderReferences = async () => {
+      const rate = audioEngine.context.sampleRate
+      await Promise.all(
+        [...new Set(targets)].map(async (midi) => {
+          if (references.current.has(midi)) return
+          const pcm = await renderNoteAudio(midi, REFERENCE_SECONDS, rate).catch(() => null)
+          if (pcm) references.current.set(midi, new Float32Array(pcm))
+        }),
+      )
+    }
+    prepareRun(thisRun, () => audioEngine.startMic({ deviceId: settings.inputDeviceId || undefined, echoCancellation: settings.echoCancellation }), renderReferences)
+      .then((ready) => {
+        // Left or started over while the microphone was coming up: leaving has already closed the microphone
+        // (or cancelled its start). Stopping it again here could cut it from under the screen that came next.
+        if (!ready || phaseRef.current !== 'starting') return
+        const l = new EarListener({ responseMs: RESPONSE_MS })
+        listener.current = l
         unsub.current = audioEngine.subscribe((frame) => {
-          if (phaseRef.current !== 'turn' || performance.now() < ignoreUntil.current) return
-          const { midi } = smoother.push(frame, getSettings().clarityThreshold)
-          if (midi === null) return
-          heardThis.current = true
-          history.current.push(midi)
-          if (history.current.length > 16) history.current.shift()
-          const stable = stablePitch(history.current)
-          if (stable !== null) {
-            const i = indexRef.current
-            finishPrompt(i, judgePrompt(stable, targets[i]), stable)
-          }
+          // Every frame goes in, also between turns: the listener needs the level before a turn opens.
+          const answer = l.frame(frame, performance.now(), getSettings().clarityThreshold)
+          if (answer) finishPrompt(indexRef.current, answer)
         })
         judgements.current = []
         heard.current = 0
@@ -186,6 +199,7 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
         playPromptRef.current(0)
       })
       .catch((err) => {
+        if (!thisRun()) return
         setErrorText(err instanceof Error ? err.message : 'The microphone could not be started.')
         setPhaseBoth('error')
       })
@@ -207,11 +221,27 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
   }, [resetKey, cleanup])
 
   const replay = () => {
-    if (phaseRef.current !== 'turn') return
-    history.current = []
-    const ms = playReference(targets[index])
-    ignoreUntil.current = performance.now() + ms + SETTLE_MS
+    const l = listener.current
+    if (phaseRef.current !== 'turn' || !l) return
+    const i = indexRef.current
+    const ms = playReference(targets[i])
+    // Hearing it again does not cost answer time: the listener waits for the note to end, then the full time starts again.
+    l.replay(performance.now(), ms)
+    armDeadline(i)
   }
+
+  // Runs the bar down over the answer time. Stable between renders, so only a new turn or a Replay restarts it.
+  const runBar = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el || phase !== 'turn') return
+      el.style.transition = 'none'
+      el.style.width = '100%'
+      void el.offsetWidth
+      el.style.transition = `width ${RESPONSE_MS}ms linear ${bar.delayMs}ms`
+      el.style.width = '0%'
+    },
+    [phase, bar],
+  )
 
   const tone = judgement === 'perfect' ? 'text-emerald-300' : judgement === 'good' ? 'text-amber-200' : 'text-red-300'
   return (
@@ -241,17 +271,10 @@ export function EarTrainer({ exercise, onFinished, onExit, resetKey }: Props) {
           </div>
           <div className="h-2 w-full max-w-md overflow-hidden rounded-full bg-panel-2" aria-hidden>
             <div
-              key={`${index}-${phase === 'turn'}`}
+              key={`${index}-${phase === 'turn'}-${bar.run}`}
               className="h-full bg-accent"
               style={{ width: phase === 'feedback' ? '0%' : '100%' }}
-              ref={(el) => {
-                if (!el || phase !== 'turn') return
-                el.style.transition = 'none'
-                el.style.width = '100%'
-                void el.offsetWidth
-                el.style.transition = `width ${EAR_RESPONSE_SECONDS * 1000}ms linear`
-                el.style.width = '0%'
-              }}
+              ref={runBar}
             />
           </div>
           <div className={cx('min-h-6 text-base', tone)} data-testid="ear-feedback" aria-live="polite">

@@ -6,6 +6,8 @@ import { Button, Card, PageHeader, cx } from '../../components/ui'
 import { COURSE, nextAvailableLesson, unlockedSongIds } from '../../lessons/course'
 import { courseProgress, initialiseCourse } from '../../lessons/store'
 import { builtInSong, builtInSongRecord } from '../../songs'
+import { useProfile } from '../../training/useTraining'
+import { resumeNote } from '../today/courseEntry'
 import { lessonStatus } from './lessonUtils'
 
 export function ProgressBar({ value, max, label }: { value: number; max: number; label: string }) {
@@ -23,6 +25,7 @@ export function ProgressBar({ value, max, label }: { value: number; max: number;
 export function CoursePage() {
   const navigate = useNavigate()
   const progress = useLiveQuery(() => courseProgress(), [])
+  const profile = useProfile()
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -33,6 +36,8 @@ export function CoursePage() {
   const next = progress ? nextAvailableLesson(progress) : undefined
   const label = doneCount >= COURSE.length ? `All ${COURSE.length} lessons done` : `Lesson ${next?.number ?? doneCount + 1} of ${COURSE.length}`
   const songs = (progress ? unlockedSongIds(progress) : []).map((id) => builtInSong(id)).filter((s) => !!s)
+  // Someone who skipped the course and came back: say that carrying on is fine.
+  const resume = resumeNote(profile, progress)
 
   const playSong = async (id: string) => {
     setError(null)
@@ -49,12 +54,18 @@ export function CoursePage() {
       <PageHeader title="First steps" subtitle="Ten short lessons, from holding the guitar to playing your first songs." />
       <Card className="mb-4">
         <ProgressBar value={doneCount} max={COURSE.length} label={label} />
+        {resume && (
+          <p className="mt-3 text-sm text-muted" data-testid="course-resume">
+            {resume}
+          </p>
+        )}
       </Card>
 
       <ol className="space-y-2">
         {COURSE.map((lesson) => {
           const status = lessonStatus(lesson.id, progress)
-          const open = status !== 'locked'
+          // After the course (finished or skipped) every lesson can be opened, to look something up.
+          const open = status !== 'locked' || !!profile?.firstStepsDoneAt
           const body = (
             <>
               <div
@@ -73,7 +84,7 @@ export function CoursePage() {
               <div className="shrink-0 text-sm">
                 {status === 'done' && <span className="text-green-300">Done</span>}
                 {status === 'available' && <span className="rounded-lg bg-accent px-3 py-1.5 font-medium text-slate-950">Start</span>}
-                {status === 'locked' && <Lock className="h-4 w-4 text-muted" aria-label="Locked" />}
+                {!open && <Lock className="h-4 w-4 text-muted" aria-label="Locked" />}
               </div>
             </>
           )

@@ -50,7 +50,11 @@ describe('todayUtils', () => {
     expect(blockTitle(song, 'Demo')).toBe('Demo · Level 3 · 80% speed')
     expect(blockTitle({ ...song, speed: 1 } as Block, 'Demo')).toBe('Demo · Level 3')
     const test = { id: 't', kind: 'test', status: 'pending', minutes: 6, test: 'checkpoint', reason: '' } as Block
-    expect(blockTitle(test)).toBe('Skill check: checkpoint')
+    // A name a learner can read, not the internal type.
+    expect(blockTitle(test)).toBe('Weekly skill check')
+    expect(blockTitle({ ...test, test: 'monthly' } as Block)).toBe('Monthly skill check')
+    // Ear training has no tempo to show.
+    expect(blockTitle({ ...exBlock, kind: 'ear' } as Block)).toBe('nope')
   })
 
   it('describes timing and reps', () => {

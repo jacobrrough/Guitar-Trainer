@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SKILLS, SKILLS_BY_ID, getSkill, isUnlocked, skillsForCategory, topologicalOrder } from './skills'
+import { SKILLS, SKILLS_BY_ID, getSkill, isUnlocked, prerequisitesSolid, skillsForCategory, topologicalOrder } from './skills'
 
 const GENERATORS = [
   'chromatic',
@@ -60,6 +60,25 @@ describe('skills', () => {
 
   it('getSkill throws on unknown id', () => {
     expect(() => getSkill('nope')).toThrow()
+  })
+
+  it('starts downstrokes with single notes on the click, and keeps the power chord riff for power chords', () => {
+    expect(getSkill('pick.downstrokes').generators[0]).toBe('metronomeSteady')
+    expect(getSkill('pick.downstrokes').generators).not.toContain('powerChordRiff')
+    expect(getSkill('chord.power').generators).toContain('powerChordRiff')
+    // No tier 0 or tier 1 skill uses the riff: it needs palm muting and two-string shapes.
+    for (const s of SKILLS.filter((x) => x.tier <= 1)) expect(s.generators, s.id).not.toContain('powerChordRiff')
+  })
+
+  it('checks the whole chain under a skill, not only the skill right below it', () => {
+    const byId = new Map(SKILLS.map((s) => [s.id, s]))
+    const barre = getSkill('chord.barre')
+    const solid = { 'chord.changes-open': 75, 'chord.open': 60, 'fret.cross-string': 60, 'fret.single-string': 60 }
+    expect(prerequisitesSolid(barre, solid, byId)).toBe(true)
+    expect(prerequisitesSolid(barre, { ...solid, 'chord.open': 29 }, byId)).toBe(false)
+    expect(prerequisitesSolid(barre, { ...solid, 'fret.single-string': 59 }, byId)).toBe(false)
+    expect(prerequisitesSolid(barre, { 'chord.changes-open': 75 }, byId)).toBe(false)
+    expect(prerequisitesSolid(getSkill('fret.single-string'), {}, byId)).toBe(true)
   })
 
   it('computes unlocks from ratings', () => {

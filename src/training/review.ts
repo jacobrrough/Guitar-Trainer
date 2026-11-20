@@ -5,6 +5,8 @@ import {
   REVIEW_MIN_EASE,
   REVIEW_PASS_P,
   REVIEW_START_EASE,
+  SONG_FULL_SPEED,
+  SONG_SLOW_DOWN_ACCURACY,
   WEAK_BAR_ACCURACY,
 } from './constants'
 import type { Attempt, LearnerModel, SongItemState } from './types'
@@ -21,9 +23,16 @@ export function startReview(now: number): ReviewSchedule {
   return { ease: REVIEW_START_EASE, intervalDays: REVIEW_FIRST_INTERVAL_DAYS, nextReviewAt: now + REVIEW_FIRST_INTERVAL_DAYS * DAY_MS }
 }
 
-/** SM-2-style update (docs §4.4). */
-export function nextReview(current: { ease: number; intervalDays: number }, p: number, now: number): ReviewSchedule {
+/**
+ * SM-2-style update (docs §4.4). Pass `nextReviewAt` with the current schedule: a good recap before
+ * the review is due is extra practice, so it leaves the schedule alone instead of pushing the date away.
+ * A recap that goes badly still brings the review forward.
+ */
+export function nextReview(current: { ease: number; intervalDays: number; nextReviewAt?: number }, p: number, now: number): ReviewSchedule {
   let { ease, intervalDays } = current
+  if (current.nextReviewAt !== undefined && now < current.nextReviewAt && p >= REVIEW_HOLD_P) {
+    return { ease, intervalDays, nextReviewAt: current.nextReviewAt }
+  }
   if (p >= REVIEW_PASS_P) {
     intervalDays = Math.max(1, Math.round(intervalDays * ease))
     ease = Math.min(REVIEW_MAX_EASE, ease + 0.05)
@@ -53,16 +62,28 @@ export function newSongItem(songId: number, level: number): SongItemState {
   }
 }
 
+/** Plays in a row under the slow-down accuracy; older items only know their best result. */
+export function songLowStreak(item: SongItemState): number {
+  if (item.lowStreak !== undefined) return item.lowStreak
+  return item.bestAccuracy !== null && item.bestAccuracy < SONG_SLOW_DOWN_ACCURACY ? 1 : 0
+}
+
 export function applySongAttempt(item: SongItemState, attempt: Attempt, now = attempt.at): SongItemState {
   const weakBars: number[] = []
   attempt.perBar?.forEach((acc, i) => {
     if (acc < WEAK_BAR_ACCURACY) weakBars.push(i)
   })
+  // Items stored before speeds were tracked keep their old best as a full-speed result.
+  const fullSpeedBefore = item.fullSpeedBest ?? (item.lastSpeed === undefined ? (item.bestAccuracy ?? 0) : 0)
   const next: SongItemState = {
     ...item,
     bestAccuracy: Math.max(item.bestAccuracy ?? 0, attempt.accuracy),
     lastAt: now,
     weakBars,
+    fullSpeedBest: attempt.speed >= SONG_FULL_SPEED ? Math.max(fullSpeedBefore, attempt.accuracy) : fullSpeedBefore,
+    lastAccuracy: attempt.accuracy,
+    lastSpeed: attempt.speed,
+    lowStreak: attempt.accuracy < SONG_SLOW_DOWN_ACCURACY ? songLowStreak(item) + 1 : 0,
   }
   if (item.nextReviewAt !== undefined) {
     return { ...next, ...nextReview(item, attempt.performance, now) }

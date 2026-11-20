@@ -19,8 +19,19 @@ export const LOW_CONFIDENCE_ATTEMPTS = 5
 export const LOW_CONFIDENCE_MULTIPLIER = 1.5
 export const UNRELIABLE_K_DIVISOR = 3
 export const ELO_SCALE = 25
-/** Rating change = K · (p − expected) · RATING_GAIN */
+/** Rating change = K · (score − expected) · RATING_GAIN */
 export const RATING_GAIN = 2
+/**
+ * A run with at least this performance is a clean run and counts as a full score for the rating.
+ * It is the mark that passes a review: about 90 % of the notes with ordinary timing.
+ */
+export const CLEAN_PERFORMANCE = 0.85
+/**
+ * A run can lift a rating to this many points above the item's difficulty and no further.
+ * It is the distance from a tier 1 exercise at its reference tempo (20) to the unlock line (60):
+ * playing a skill cleanly at that tempo is just enough to open what builds on it.
+ */
+export const RATING_HEADROOM = 40
 
 /** Performance weights (docs §4.2). */
 export const PERF_WEIGHTS = { acc: 0.6, tim: 0.25, tmp: 0.15 } as const
@@ -75,8 +86,13 @@ export const PLACEMENT_MINUTES = 7
 
 /** In-session adaptation (docs §6.4). */
 export const START_TEMPO_FACTOR = 1.05
+/**
+ * A clean warm-up (the mark that counts for the tempo ceiling) is an ordinary day. The line used to be
+ * 0.9: a learner playing a steady 85 to 89 % was slowed by 5 % every day, which cancelled the 5 % step
+ * of START_TEMPO_FACTOR, so their tempo never rose and their skills never reached the unlock line.
+ */
 export const DAY_FACTOR_BY_WARMUP = [
-  { minAcc: 0.9, factor: 1.0 },
+  { minAcc: CEILING_MIN_ACCURACY, factor: 1.0 },
   { minAcc: 0.75, factor: 0.95 },
   { minAcc: 0, factor: 0.9 },
 ]
@@ -97,6 +113,12 @@ export const FOCUS_REPEAT_LIMIT_DAYS = 2
 export const SONG_LEVEL_UP_ACCURACY = 0.9
 export const SONG_TARGET_ACCURACY = 0.85
 export const SONG_SLOW_DOWN_ACCURACY = 0.7
+/** Song speeds the Coach uses, slowest first. A song moves one step at a time, and only one of level or speed changes. */
+export const SONG_SPEED_STEPS = [0.75, 0.85, 1]
+/** Speeds from here up count as full speed (rounding in the speed control). */
+export const SONG_FULL_SPEED = 0.99
+/** This many results in a row under SONG_SLOW_DOWN_ACCURACY on one level send the song back a level. */
+export const SONG_LEVEL_DOWN_MISSES = 2
 export const WEAK_BAR_ACCURACY = 0.7
 
 /** Tests (docs §7). */
@@ -107,6 +129,13 @@ export const TEST_PASS: { minAccuracy: number; maxMedianMs: number; maxStdevMs: 
 export const PLACEMENT_STOP_AFTER_FAILS = 2
 export const PLACEMENT_PASS_OFFSET = 10
 export const PLACEMENT_INHERIT_OFFSET = 15
+/**
+ * A passed placement task rates its skills, and everything they build on, at least this high:
+ * above UNLOCK_RATING, so a player is never locked out of something they have just shown they can do.
+ */
+export const PLACEMENT_PASS_MIN_RATING = 65
+/** A placement task that was not passed never rates its skills above this: a miss means "not yet", however hard the task was. */
+export const PLACEMENT_MISS_MAX_RATING = 55
 
 /** Plateau detection (docs §8.1). */
 export const PLATEAU_MIN_ATTEMPTS = 8
@@ -144,11 +173,24 @@ export const MILESTONE_TEMPO_STEP = 10
 export const STREAK_MILESTONES = [3, 7, 14, 30, 60, 100]
 
 /**
- * First steps (tier 0). A learner whose best rating is below BEGINNER_MAX_RATING
+ * First steps (tier 0). A learner whose best tier 0–1 rating is below BEGINNER_MAX_RATING
  * gets tier 0–1 skills only, the sparsest song level slowed to BEGINNER_SONG_SPEED,
  * and a warm-up on something comfortable rather than the chromatic spider.
+ * Only the foundation skills count: one early lesson on a harder skill does not end beginner mode.
+ * From this rating on a skill also counts as something the learner "can do" when the planner
+ * decides how far up the tiers the next exercise may reach.
  */
 export const BEGINNER_MAX_RATING = 25
+/** A skill stops being "new to the learner" after this many recorded rounds, or once it reaches UNLOCK_RATING. */
+export const FAMILIAR_ATTEMPTS = 10
+/** While this many skills are still new to the learner, the planner does not start another brand-new one. */
+export const MAX_SKILLS_BEING_LEARNED = 2
 export const BEGINNER_SONG_SPEED = 0.75
 /** A skill rated at least this is "comfortable" enough to warm up on. */
 export const WARMUP_COMFORT_RATING = 40
+
+/**
+ * Revision of the default drills. Raised when a drill changes so much that a tempo earned on the old
+ * one no longer means the same (migrate.ts corrects the stored tempos once).
+ */
+export const DRILL_REV = 1

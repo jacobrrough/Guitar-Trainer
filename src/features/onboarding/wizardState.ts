@@ -81,6 +81,19 @@ export function toSetup(state: WizardState): FirstStepsSetup {
   }
 }
 
+/**
+ * What to save when the wizard is left early. Every answer given so far is kept (a left-handed
+ * player must not end up with right-handed diagrams); only unanswered questions get the beginner default.
+ */
+export function skipSetup(state: WizardState): FirstStepsSetup {
+  return toSetup(state)
+}
+
+/** The tuning and last screens have their own way out, so "Skip setup" is not offered there. */
+export function canSkipSetup(step: WizardStep): boolean {
+  return step !== 'tune' && step !== 'finish'
+}
+
 export function summarise(state: WizardState): string {
   const exp = { new: 'New to guitar', some: 'Played a little', played: 'Has played before' }[state.experience ?? 'new']
   return `${exp} · ${state.guitarType} · ${state.handedness}-handed · ${state.dailyMinutes} min a day`

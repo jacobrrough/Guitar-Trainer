@@ -1,23 +1,26 @@
 import { ArrowLeft, Check, Mic } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { useSettings } from "../../app/settings";
 import { useWakeLock } from "../../app/useWakeLock";
 import { audioEngine } from "../../audio/AudioEngine";
 import { useMicActive } from "../../audio/useMicActive";
 import { Illustration } from "../../components/diagrams";
 import { Button, Card, PageHeader, cx } from "../../components/ui";
-import { centsOff } from "../../music/pitch";
 import { midiToName } from "../../music/pitch";
-import { getTuning } from "../../music/tunings";
 import { Gauge } from "./TunerGauge";
+import { tunerMinFreq, tunerTuning } from "./tunerRange";
 import {
   MNEMONIC_WORDS,
   STRING_MNEMONIC,
-  WRONG_STRING_CENTS,
+  canGoBack,
   holdInTune,
   ordinal,
-  verdictFor,
+  otherStringHeard,
+  recordReading,
+  targetVerdict,
+  type HoldSample,
+  type Verdict,
   type VerdictTone,
 } from "./tuningGuide";
 import { useTuner } from "./useTuner";
@@ -31,7 +34,8 @@ const toneClass: Record<VerdictTone, string> = {
   "wrong-string": "text-bad",
 };
 
-const FAR_MS = 1200;
+/** A pitch must sound like another string for this long before we say so (a pluck starts untidily). */
+const OTHER_STRING_MS = 1200;
 const TICK_MS = 900;
 
 export interface GuidedTunerProps {
@@ -43,38 +47,49 @@ export interface GuidedTunerProps {
 
 export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
   const settings = useSettings();
-  const tuning = getTuning(settings.tunerTuningId);
+  const tuning = tunerTuning(settings.tunerTuningId);
+  const minFreq = tunerMinFreq(tuning.strings, settings.a4);
   const total = tuning.strings.length;
   // Follows the audio engine, so a microphone that another screen closed never shows as listening.
   const listening = useMicActive();
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [ticked, setTicked] = useState(false);
-  const [farOff, setFarOff] = useState(false);
+  /** The other string the pitch has been sounding like for a while, if any. */
+  const [other, setOther] = useState<number | null>(null);
   const { reading } = useTuner(
     listening,
     settings.a4,
     settings.clarityThreshold,
   );
 
-  const history = useRef<Array<{ at: number; cents: number }>>([]);
-  const farSince = useRef<number | null>(null);
+  const history = useRef<HoldSample[]>([]);
+  const otherSince = useRef<number | null>(null);
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latest = useRef<{ cents: number | null }>({ cents: null });
+  const latest = useRef<{ heard: number; cents: number; at: number } | null>(
+    null,
+  );
 
   const finished = step >= total;
   const targetMidi = finished ? 0 : tuning.strings[step];
   const active = !!reading && !reading.stale;
-  const cents =
-    active && !finished
-      ? centsOff(reading.freq, targetMidi, settings.a4)
-      : null;
+  // The pitch as a fractional note number, and how far it is from this step's string.
+  const heard = active && !finished ? reading.midiFloat : null;
+  const cents = heard === null ? null : (heard - targetMidi) * 100;
+  const heardAt = reading?.at ?? 0;
 
   useEffect(() => {
-    latest.current.cents = cents;
-  }, [cents]);
+    latest.current =
+      heard === null || cents === null ? null : { heard, cents, at: heardAt };
+  }, [heard, cents, heardAt]);
 
   useWakeLock(listening);
+
+  // A microphone taken over from another screen was opened with that screen's range: make the
+  // detector reach this tuning's lowest string.
+  useEffect(() => {
+    if (listening) audioEngine.configureDetector({ minFreq });
+  }, [listening, minFreq]);
 
   // Take over the microphone from the screen before (the wizard's mic check, the tuner), or open it:
   // permission was given there, so no tap is needed.
@@ -91,32 +106,33 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
     advanceTimer.current = null;
     history.current = [];
-    farSince.current = null;
-    latest.current.cents = null;
+    otherSince.current = null;
+    latest.current = null;
     setTicked(false);
-    setFarOff(false);
+    setOther(null);
     setStep(i);
   }, []);
 
-  // Sample the pitch ten times a second: detect "far off" and "held in tune".
+  // Look at the pitch ten times a second: "sounds like another string" and "held in tune".
   useEffect(() => {
     if (!listening || finished || ticked) return;
     const id = setInterval(() => {
       const now = performance.now();
-      const c = latest.current.cents;
-      if (c === null) {
-        farSince.current = null;
-        setFarOff(false);
+      const cur = latest.current;
+      if (!cur) {
+        otherSince.current = null;
+        setOther(null);
         return;
       }
-      history.current.push({ at: now, cents: c });
-      if (history.current.length > 200) history.current.shift();
-      if (Math.abs(c) > WRONG_STRING_CENTS) {
-        farSince.current ??= now;
-        setFarOff(now - farSince.current >= FAR_MS);
+      // Only a reading that is new since the last look counts towards the hold.
+      recordReading(history.current, { at: cur.at, cents: cur.cents });
+      const sounds = otherStringHeard(cur.heard, tuning.strings, step);
+      if (sounds !== null) {
+        otherSince.current ??= now;
+        setOther(now - otherSince.current >= OTHER_STRING_MS ? sounds : null);
       } else {
-        farSince.current = null;
-        setFarOff(false);
+        otherSince.current = null;
+        setOther(null);
       }
       if (holdInTune(history.current, now)) {
         setTicked(true);
@@ -124,7 +140,7 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
       }
     }, 100);
     return () => clearInterval(id);
-  }, [listening, finished, ticked, step, goTo]);
+  }, [listening, finished, ticked, step, goTo, tuning]);
 
   const start = async () => {
     setError(null);
@@ -132,6 +148,7 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
     try {
       await audioEngine.startMic({
         deviceId: settings.inputDeviceId || undefined,
+        minFreq,
         threshold: 0.93,
         echoCancellation: settings.echoCancellation,
       });
@@ -166,13 +183,15 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
             <Button variant="secondary" onClick={() => goTo(0)}>
               Tune again
             </Button>
-            <Button
-              variant="primary"
-              onClick={onDone}
-              data-testid="guided-done"
-            >
-              Done
-            </Button>
+            {onDone && (
+              <Button
+                variant="primary"
+                onClick={onDone}
+                data-testid="guided-done"
+              >
+                Done
+              </Button>
+            )}
           </div>
         </Card>
       </div>
@@ -187,15 +206,9 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
         ? " (the thinnest one)"
         : "";
   const name = midiToName(targetMidi, false);
-  const hint =
-    step === 0
-      ? "the thickest one"
-      : step === total - 1
-        ? "the thinnest one"
-        : `the ${ordinal(n)} string`;
-  const verdict = ticked
-    ? { text: "In tune", tone: "ok" as const }
-    : verdictFor(cents, farOff, hint);
+  const verdict: Verdict = ticked
+    ? { text: "In tune", tone: "ok" }
+    : targetVerdict(heard, tuning.strings, step, other);
   const mnemonicOn =
     tuning.id === "standard" && total === MNEMONIC_WORDS.length;
   const inTune = ticked || (cents !== null && Math.abs(cents) <= 5);
@@ -258,6 +271,14 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
             >
               {verdict.text}
             </p>
+            {verdict.detail && (
+              <p
+                data-testid="guided-detail"
+                className="max-w-sm text-sm text-muted"
+              >
+                {verdict.detail}
+              </p>
+            )}
             {(verdict.tone === "low" || verdict.tone === "high") && (
               <div className="w-48 text-muted">
                 <Illustration
@@ -309,6 +330,15 @@ export function GuidedTuner({ onDone, onSkip, autoStart }: GuidedTunerProps) {
 }
 
 export function GuidedTunerPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  // Finished tuning: close the microphone and go back to where the learner came from (Today, the
+  // tuner). Opened directly, there is nothing to go back to, so go home.
+  const done = () => {
+    audioEngine.stopMic();
+    if (canGoBack(location.key)) void navigate(-1);
+    else void navigate("/", { replace: true });
+  };
   return (
     <div>
       <Link
@@ -317,7 +347,7 @@ export function GuidedTunerPage() {
       >
         <ArrowLeft className="h-4 w-4" /> Back to tuner
       </Link>
-      <GuidedTuner onDone={undefined} autoStart />
+      <GuidedTuner onDone={done} autoStart />
     </div>
   );
 }

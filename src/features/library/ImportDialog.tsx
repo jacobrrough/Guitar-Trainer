@@ -1,5 +1,7 @@
 import { useState } from 'react'
+import { useHoldUpdates } from '../../app/appUpdate'
 import { useSettings } from '../../app/settings'
+import { protectStorage } from '../../app/storage'
 import { loadScoreFile, scoreToChart, type LoadedScore } from '../../chart/importers/guitarpro'
 import { loadMidiFile, midiToChart, type LoadedMidi } from '../../chart/importers/midi'
 import { decodeAudio, resampleForModel, runTranscriptionWorker, transcriptionToChart } from '../../chart/importers/transcribe'
@@ -44,6 +46,8 @@ function audioTypeFromName(name: string): string {
 
 export function ImportDialog({ onClose, onImported }: { onClose: () => void; onImported: (id: number) => void }) {
   const settings = useSettings()
+  // A waiting app update must not reload the page while a song is being chosen, read or transcribed.
+  useHoldUpdates()
   const [audioFile, setAudioFile] = useState<File | null>(null)
   const [title, setTitle] = useState('')
   const [artist, setArtist] = useState('')
@@ -105,7 +109,7 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
       let chart: Chart
       if (mode === 'score' && score) {
         setStatus({ stage: 'Reading the tab…', progress: null })
-        chart = await scoreToChart(score, trackIndex)
+        chart = await scoreToChart(score, trackIndex, tuning)
       } else if (mode === 'midi' && midi) {
         setStatus({ stage: 'Reading MIDI…', progress: null })
         chart = midiToChart(midi, trackIndex, tuning, { title, artist })
@@ -132,6 +136,8 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
         source: chart.source,
         bpm: chartBpm(chart),
       })
+      // A song of the learner's own is now stored here: ask the browser to keep this app's data (no prompt is shown).
+      void protectStorage()
       onImported(id)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -140,6 +146,9 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
   }
 
   const tracks = mode === 'score' ? score?.tracks : mode === 'midi' ? midi?.tracks : undefined
+  // A part written in notation only (no strings): the importer places its notes for the chosen tuning.
+  const chosenTrack = tracks?.find((t) => t.index === trackIndex)
+  const noTab = mode === 'score' && !!chosenTrack && 'strings' in chosenTrack && chosenTrack.strings === 0
 
   return (
     <Modal title="Add a song" onClose={busy ? undefined : onClose} wide>
@@ -194,15 +203,15 @@ export function ImportDialog({ onClose, onImported }: { onClose: () => void; onI
             <Select value={trackIndex} onChange={(e) => setTrackIndex(Number(e.target.value))} disabled={busy}>
               {tracks.map((t) => (
                 <option key={t.index} value={t.index}>
-                  {t.name} · {t.noteCount} notes{'strings' in t ? ` · ${t.strings} strings` : ''}{t.isPercussion ? ' · drums' : ''}
+                  {t.name} · {t.noteCount} notes{'strings' in t ? (t.strings > 0 ? ` · ${t.strings} strings` : ' · notes only, no tab') : ''}{t.isPercussion ? ' · drums' : ''}
                 </option>
               ))}
             </Select>
           </Field>
         )}
         <div className="grid gap-3 sm:grid-cols-2">
-          {mode !== 'score' && (
-            <Field label="Your tuning" hint="Used to place notes on the fretboard.">
+          {(mode !== 'score' || noTab) && (
+            <Field label="Your tuning" hint={noTab ? 'This part has no tab: the notes are placed on the fretboard for this tuning.' : 'Used to place notes on the fretboard.'}>
               <Select value={tuningId} onChange={(e) => setTuningId(e.target.value)} disabled={busy}>
                 {TUNINGS.map((t) => (
                   <option key={t.id} value={t.id}>

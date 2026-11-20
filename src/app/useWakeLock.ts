@@ -1,52 +1,35 @@
 import { useEffect } from 'react'
+import { keepAwakeVideo, videoFallbackNeeded } from './keepAwake'
 import { iosVersion, isIOS, isStandalone } from './platform'
 
 /**
  * iOS home-screen web apps (and WKWebView wrappers, which have no `navigator.wakeLock` at all)
  * cannot hold a screen wake lock before iOS 18.4: the request resolves in a standalone app
- * but the screen still auto-locks. Playing a muted inline video keeps the screen on instead.
+ * but the screen still auto-locks. A silent video keeps the screen on instead (see keepAwake.ts).
  */
-function needsVideoFallback(): boolean {
-  if (!isIOS()) return false
-  if (!('wakeLock' in navigator)) return true
-  const v = iosVersion()
-  return isStandalone() && v !== null && v < 18.04
+function needsVideoFallback(refused = false): boolean {
+  if (typeof navigator === 'undefined') return false
+  return videoFallbackNeeded({ ios: isIOS(), hasWakeLock: 'wakeLock' in navigator, standalone: isStandalone(), iosVersion: iosVersion(), refused })
 }
 
-/** Muted 2x2 canvas stream played in a hidden <video>. Returns a disposer, or null if unsupported. */
+/** Sets the silent video up where it is needed, so that taps can unlock it. Plays nothing. */
+function prepareVideoFallback(): void {
+  if (!needsVideoFallback()) return
+  try {
+    keepAwakeVideo()?.prepare()
+  } catch {
+    /* no video support: the screen may lock, nothing else breaks */
+  }
+}
+
+// Done when the app loads, not when a screen that needs it opens: guided tuning starts listening by
+// itself, so the taps that can unlock the video all happen on the screens before it.
+prepareVideoFallback()
+
+/** Starts the silent video. Returns the function that stops it, or null if it could not be set up. */
 function startVideoFallback(): (() => void) | null {
   try {
-    const canvas = document.createElement('canvas')
-    canvas.width = canvas.height = 2
-    const g = canvas.getContext('2d')
-    if (!g || typeof canvas.captureStream !== 'function') return null
-    let flip = false
-    const paint = () => {
-      flip = !flip
-      g.fillStyle = flip ? '#000' : '#010101'
-      g.fillRect(0, 0, 2, 2)
-    }
-    paint()
-    const video = document.createElement('video')
-    video.muted = true
-    video.loop = true
-    video.playsInline = true
-    video.setAttribute('playsinline', '')
-    video.setAttribute('aria-hidden', 'true')
-    video.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none'
-    video.srcObject = canvas.captureStream(5)
-    document.body.appendChild(video)
-    const timer = window.setInterval(paint, 500)
-    const play = () => void video.play().catch(() => undefined)
-    play()
-    document.addEventListener('visibilitychange', play)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', play)
-      video.pause()
-      video.srcObject = null
-      video.remove()
-    }
+    return keepAwakeVideo()?.acquire() ?? null
   } catch {
     return null
   }
@@ -54,16 +37,23 @@ function startVideoFallback(): (() => void) | null {
 
 /**
  * Keeps the screen on while `active` (playing a song, tuning, metronome running).
- * Re-acquires the lock when the tab becomes visible again; falls back to a muted video on iOS
- * where the Wake Lock API is missing or ineffective; no-op elsewhere.
+ * Re-acquires the lock when the tab becomes visible again; falls back to a silent video on iOS
+ * where the Wake Lock API is missing, does not work or refuses; no-op elsewhere.
  */
 export function useWakeLock(active: boolean): void {
+  // Normally done already when the app loaded. Repeated here in case that was too early for the
+  // page; a second call does nothing.
+  useEffect(prepareVideoFallback, [])
+
   useEffect(() => {
     if (!active || typeof navigator === 'undefined') return
     let sentinel: WakeLockSentinel | null = null
     let cancelled = false
     let stopFallback: (() => void) | null = null
-    if (needsVideoFallback()) stopFallback = startVideoFallback()
+    const switchToVideo = () => {
+      if (!cancelled && !stopFallback) stopFallback = startVideoFallback()
+    }
+    if (needsVideoFallback()) switchToVideo()
     const request = async () => {
       if (!('wakeLock' in navigator)) return
       try {
@@ -76,7 +66,8 @@ export function useWakeLock(active: boolean): void {
         }
         sentinel = lock
       } catch {
-        /* denied (low battery) or unsupported */
+        // Denied or unsupported. A request made while hidden always fails, so only a refusal on a visible page counts.
+        if (document.visibilityState === 'visible' && needsVideoFallback(true)) switchToVideo()
       }
     }
     const onVisibility = () => {

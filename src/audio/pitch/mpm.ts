@@ -100,6 +100,9 @@ export class McLeodDetector {
         }
         pos++
       }
+      // A lobe still climbing where the search stops has its real maximum beyond the range (a tone
+      // below it, such as mains hum): its last sample is not a peak.
+      if (pos >= maxLag && maxIdx === pos - 1) break
       if (maxIdx >= this.minLag) {
         peaks.push(maxIdx)
         if (maxV > bestVal) bestVal = maxV
@@ -122,7 +125,7 @@ export class McLeodDetector {
     const y1 = nsdf[chosen]
     const y2 = nsdf[chosen + 1]
     const denom = y0 - 2 * y1 + y2
-    const delta = denom !== 0 ? (0.5 * (y0 - y2)) / denom : 0
+    const delta = denom !== 0 ? Math.max(-1, Math.min(1, (0.5 * (y0 - y2)) / denom)) : 0
     const tau = chosen + delta
     const peak = y1 - 0.25 * (y0 - y2) * delta
     return { freq: this.sampleRate / tau, clarity: Math.min(1, Math.max(0, peak)), rms }

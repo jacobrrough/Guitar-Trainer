@@ -9,6 +9,7 @@ import type { SampleBank } from '../../audio/instrument/bank'
 import { loadRealBank } from '../../audio/instrument/realBank.testutil'
 import { renderStrings } from '../../audio/synth'
 import { constantBeatGrid } from '../../chart/timing'
+import { groupNotes } from '../../chart/events'
 import type { Chart, ChartNote } from '../../chart/types'
 import { atSpeed, clickTrack, delayed, everyOtherGroup, lessonCases, mix, perform, phoneMic, skillCases, transposed, type SimCase } from './simCases.testutil'
 import { simulateRun, type SimulationResult } from './simulate'
@@ -37,8 +38,9 @@ describe('a learner who plays what is written', () => {
     expect(r.result.coverage).toBe(1)
   })
 
-  // Every drill and every third song: the heavier scenario.
-  const noisy = cases.filter((c, i) => c.kind === 'lesson-drill' || i % 3 === 0)
+  // The heavier scenario: every drill, every song that asks for whole chords (a phone hears least of
+  // their low strings, and a phone is what a learner plays into), and every third of the other songs.
+  const noisy = cases.filter((c, i) => c.kind === 'lesson-drill' || i % 3 === 0 || c.notes.some((n) => n.chordName))
   it.each(noisy.map((c) => [c.name, c] as const))('%s: also through a phone microphone in a living room, at 48 kHz, with the click track playing', (_name, c) => {
     const mic = phoneMic(mix(perform(c, bank, 48000), clickTrack(c, 48000), 0.5), 48000)
     const r = simulateRun(c.notes, c.chart.beats, mic, { sampleRate: 48000 })
@@ -86,6 +88,57 @@ describe('what must not score', () => {
     })
     expect(unplayed).toBe(0)
     expect(played).toBeGreaterThanOrEqual(Math.floor(0.9 * half.playedIds.size))
+  })
+
+  // The chord lessons used to ask for one open or root note per bar. Now they ask for the chord, and
+  // these are the two ways of not playing it that a beginner falls into.
+  const chordSongs = cases.filter((c) => c.kind === 'lesson-song' && c.notes.some((n) => n.chordName))
+  it('the chord lessons 5 to 9 each have a song that asks for chords', () => {
+    expect(chordSongs.map((c) => c.name.split(' ')[1])).toEqual(['5', '6', '7', '8', '9'])
+  })
+
+  /** Every strum of the chord songs played with nothing pressed down: per chord, how many strums there are and how many still count. */
+  function strummedOpen(): Record<string, { strums: number; heard: number }> {
+    const byChord: Record<string, { strums: number; heard: number }> = {}
+    for (const c of chordSongs) {
+      const open = c.notes.map((n) => ({ ...n, midi: n.midi - n.fret, fret: 0 }))
+      const r = simulateRun(c.notes, c.chart.beats, perform(c, bank, 44100, open), { sampleRate: 44100 })
+      groupNotes(c.notes).forEach((g, i) => {
+        const chord = (byChord[g.notes[0].chordName ?? '?'] ??= { strums: 0, heard: 0 })
+        chord.strums++
+        if (r.statuses[i] === 'hit') chord.heard++
+      })
+    }
+    return byChord
+  }
+  let heardOpen: ReturnType<typeof strummedOpen> = {}
+  beforeAll(() => {
+    heardOpen = strummedOpen()
+  }, 60_000)
+
+  it.each(['Am', 'D', 'A', 'C', 'D7'])('strumming without pressing any string down is not %s', (chord) => {
+    const { strums, heard } = heardOpen[chord]
+    expect(strums).toBeGreaterThan(0)
+    expect(heard, `${heard} of ${strums}`).toBeLessThanOrEqual(0.1 * strums)
+  })
+
+  // Known gap in the scorer (scoring.ts), written down here so it cannot be forgotten. The six open
+  // strings share four strings with E minor and three with G; with one string forgiven as muted and
+  // one as extra, they are heard as E minor every time (16 of 16 strums) and as G two times in three
+  // (29 of 43). The lessons now ask for the whole chord, but until the scorer tells these apart a
+  // learner who presses nothing still passes lessons 5 and 6. When it does, these turn red: then
+  // change `it.fails` to `it`.
+  it.fails.each(['Em', 'G'])('strumming without pressing any string down is not %s either', (chord) => {
+    const { strums, heard } = heardOpen[chord]
+    expect(strums).toBeGreaterThan(0)
+    expect(heard, `${heard} of ${strums}`).toBeLessThanOrEqual(0.1 * strums)
+  })
+
+  it.each(chordSongs.map((c) => [c.name, c] as const))('%s: picking only the lowest string of each chord is not the chord', (_name, c) => {
+    const lowest = new Map<number, ChartNote>()
+    for (const n of c.notes) if (!lowest.has(n.chordId) || n.midi < lowest.get(n.chordId)!.midi) lowest.set(n.chordId, n)
+    const r = simulateRun(c.notes, c.chart.beats, perform(c, bank, 44100, [...lowest.values()]), { sampleRate: 44100 })
+    expect(hits(r) / r.summary.total, `${hits(r)} of ${r.summary.total}`).toBeLessThan(0.5)
   })
 
   it.each(sample.map((c) => [c.name, c] as const))('%s: the wrong fret does not count', (_name, c) => {

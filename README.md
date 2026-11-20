@@ -27,15 +27,18 @@ subscription, no servers: your audio and progress never leave your device.
 - **Play along with difficulty levels** – every song gets six auto-generated levels, from a
   sparse "one note per bar" skeleton up to the full transcription. Low levels keep the
   structurally important notes (downbeats, long notes, phrase starts) and simplify chords
-  (root → power chord → triad → full voicing). Yousician-style progression, Rocksmith-style
-  note thinning.
+  (root → two neighbouring strings → triad → full voicing). Yousician-style progression,
+  Rocksmith-style note thinning.
 - **Scrolling note highway** – strings as colour-coded lanes, fret numbers (or note names),
   sustain tails, chord names, technique marks (hammer-on, slide, bend…), count-in, streaks and
   multipliers, results with per-level best scores.
-- **Real-time pitch scoring** – McLeod pitch detection running in an AudioWorklet on the audio
-  thread; timing windows, repeated-note attack gating, a latency calibration wizard for
-  Bluetooth headphones and USB interfaces. Strummed chords are judged on a 12-bin chroma
-  profile (are the chord's notes actually ringing?), bends on the pitch you reach.
+- **Real-time scoring that listens for your stroke** – an AudioWorklet analyses the
+  microphone on the audio thread. A note or chord counts when its own harmonics rise out of
+  what was ringing a moment before, and it is timed from the attack, so a string that is
+  still ringing, the drums or a different chord do not score. A latency calibration wizard
+  covers Bluetooth headphones and USB interfaces. Bends are judged on the pitch you reach.
+  The scoring is checked by a virtual player: a recorded guitar plays every lesson through
+  the same code, right, wrong and not at all.
 - **Slow-down and section practice** – 50–100 % speed without changing pitch; loop any bar
   range, and let the player step the speed up when a pass is clean or down when it is not.
 - **Three ways to get a chart**
@@ -48,8 +51,8 @@ subscription, no servers: your audio and progress never leave your device.
   ukulele tunings; adjustable reference pitch.
 - **Metronome** – 30–300 bpm, time signatures, subdivisions, accents, tap tempo, keyboard
   control, sample-accurate clicks.
-- **Demo song and starter songs** – synthesised with a physical string model (so they sound
-  like a plucked guitar, not a beep) so you can try everything without any files.
+- **Demo song and starter songs** – played by a recorded steel-string guitar, so you can
+  try everything without any files and hear what each part should sound like.
 - **Installable PWA** – offline-capable service worker, home-screen icons, iOS audio
   session handling, wake lock, phone layout with tap-to-pause, and an icon badge while
   today's session is still waiting.
@@ -63,8 +66,9 @@ publishes every push to the default branch).
 Guitar Trainer is built iPhone-first as an installable web app: open it in Safari, tap
 **Share → Add to Home Screen**, and it runs full screen, offline, with your songs saved on
 the device. Plug a guitar in through a class-compliant interface or use wired headphones
-with the built-in mic; calibrate once in Settings. Details, limitations and the optional
-native build with Capacitor are in [docs/IOS.md](docs/IOS.md).
+with the built-in mic; calibrate once in Settings. New versions arrive by themselves
+(Settings → About shows the version and can check for a newer one). Details, limitations
+and the optional native build with Capacitor are in [docs/IOS.md](docs/IOS.md).
 
 ## Quick start
 
@@ -80,6 +84,7 @@ npm test           # unit tests (Vitest)
 npm run build      # production build in dist/
 npm run preview    # serve the production build
 npm run test:e2e   # Playwright smoke test against the build (uses a fake microphone)
+npm run test:student   # a recorded guitar "plays" lesson 1 and songs into the real app, end to end
 npm run typecheck
 ```
 
@@ -105,10 +110,11 @@ Source: GitHub Actions*). For hosting under a sub-path, build with `BASE_PATH=/y
 
 Plug the guitar in through an audio interface for the cleanest detection; a laptop microphone
 works for acoustic and clean tones. Distorted tones: lower *Detection sensitivity* in Settings.
-Use headphones when scoring: a speaker next to the microphone would score the song itself.
-The app plays drums-only backing for synthesised content while the mic is on (the speaker
-icon brings the part back), warns when the count-in is heard through the speaker, and does
-not let such a run move your ratings.
+Use headphones when scoring a real recording: a speaker next to the microphone would score
+the song itself. For its own songs and drills the app plays only the click track while the
+microphone listens (the speaker icon brings the guitar part back for listening). If the
+microphone hears the guitar part during the count-in, the run is shown as "did not count"
+and nothing is saved.
 
 ## Built on open source
 

@@ -3,15 +3,15 @@ import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { audioEngine } from '../../audio/AudioEngine'
 import { getSettings } from '../../app/settings'
+import { protectStorage } from '../../app/storage'
 import { Button, Card, cx } from '../../components/ui'
 import { Illustration } from '../../components/diagrams'
 import { BUILT_IN_SONGS } from '../../songs'
 import { startFirstSteps } from '../../training/coach'
 import type { FirstStepsSetup } from '../../training/coach'
 import { GuidedTuner } from '../tuner/GuidedTuner'
-import { initialWizardState, stepOrder, summarise, toSetup, wizardReducer } from './wizardState'
-
-const DEFAULT_SETUP: FirstStepsSetup = { experience: 'new', handedness: 'right', guitarType: 'acoustic', dailyMinutes: 10 }
+import { WIZARD_FRAME_STYLE } from './wizardLayout'
+import { canSkipSetup, initialWizardState, skipSetup, stepOrder, summarise, toSetup, wizardReducer } from './wizardState'
 
 function Choice({ id, selected, title, hint, onClick }: { id: string; selected: boolean; title: string; hint?: string; onClick: () => void }) {
   return (
@@ -107,6 +107,8 @@ export function StartHere() {
     setError(null)
     try {
       await startFirstSteps(setup)
+      // There is now something worth keeping: ask the browser not to clear it. Never waits, never shows a prompt.
+      void protectStorage()
       navigate('/')
     } catch {
       setError('Something went wrong saving your setup. Please try again.')
@@ -228,16 +230,18 @@ export function StartHere() {
   }
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-md flex-col gap-4 p-4 pb-8" data-testid="start-here">
+    <div className="mx-auto flex min-h-full w-full max-w-md flex-col gap-4" style={WIZARD_FRAME_STYLE} data-testid="start-here">
       <div className="flex items-center justify-between">
         <div className="flex gap-1.5" role="progressbar" aria-valuemin={1} aria-valuemax={order.length} aria-valuenow={index + 1} aria-label="Setup progress">
           {order.map((s, i) => (
             <span key={s} className={cx('h-2 w-2 rounded-full', i <= index ? 'bg-accent' : 'bg-line')} />
           ))}
         </div>
-        <button type="button" data-testid="start-skip" className="text-sm text-muted underline" disabled={busy} onClick={() => void finish(DEFAULT_SETUP)}>
-          Skip setup
-        </button>
+        {canSkipSetup(state.step) && (
+          <button type="button" data-testid="start-skip" className="text-sm text-muted underline" disabled={busy} onClick={() => void finish(skipSetup(state))}>
+            Skip setup
+          </button>
+        )}
       </div>
       <div className="flex flex-1 flex-col">{body}</div>
       <div className="flex gap-3">

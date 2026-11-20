@@ -84,6 +84,11 @@ export interface AttemptResult {
   chordScoring?: 'pitch' | 'chroma'
   /** The microphone was hearing the device's own playback (speaker bleed): the run scored itself. */
   bleed?: boolean
+  /**
+   * The run did not cover the whole piece as shown: it began in the middle, was moved or changed
+   * speed on the way, or the microphone was off or silent for a stretch. Practice, not a result.
+   */
+  partial?: boolean
 }
 
 export interface Performance {
@@ -179,6 +184,13 @@ export interface SongItemState {
   intervalDays: number
   nextReviewAt?: number
   weakBars: number[]
+  /** Best accuracy at full speed only. Absent on items stored before speeds were tracked. */
+  fullSpeedBest?: number
+  /** Accuracy and speed of the most recent play. */
+  lastAccuracy?: number
+  lastSpeed?: number
+  /** How many plays in a row, up to the most recent, scored under the slow-down accuracy. */
+  lowStreak?: number
 }
 
 export interface SongSummary {
@@ -189,6 +201,9 @@ export interface SongSummary {
   bpm: number
   /** Note counts per level index 0..5 (from generateLevels). */
   levelNoteCounts: number[]
+  /** Bundled songs: its id, and the lesson after which a beginner can play it (1 = after lesson 1). */
+  builtinId?: string
+  lessonLevel?: number
 }
 
 export interface Prefs {
@@ -216,6 +231,8 @@ export interface Profile {
   firstStepsDoneAt?: number
   /** Built-in song the learner picked as a target during setup. */
   goalSongId?: string
+  /** Revision of the drills the stored tempos were earned on (see migrate.ts); missing = before revisions. */
+  drillRev?: number
 }
 
 export interface LearnerModel {
@@ -251,6 +268,8 @@ export interface SongBlock {
   speed: number
   /** Inclusive bar range to loop for the first half of the block. */
   loopBars?: [number, number]
+  /** How many times the song is played through, so the block lasts about its minutes. Absent = once. */
+  passes?: number
   reason: string
 }
 

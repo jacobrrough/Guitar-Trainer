@@ -1,33 +1,7 @@
+import { chordFingers } from '../../lessons/fingering'
 import { CHORD_SHAPES } from '../../music/chords'
 import { stringColor } from '../../music/strings'
 import type { ChordBoxProps } from './types'
-
-/** Finger numbers (string index -> finger) for the beginner chords. */
-const FINGERS: Record<string, Record<number, number>> = {
-  Em: { 1: 2, 2: 3 },
-  E: { 1: 2, 2: 3, 3: 1 },
-  Am: { 2: 2, 3: 3, 4: 1 },
-  A: { 2: 1, 3: 2, 4: 3 },
-  D: { 3: 1, 5: 2, 4: 3 },
-  Dm: { 3: 2, 4: 3, 5: 1 },
-  G: { 0: 2, 1: 1, 5: 3 },
-  C: { 1: 3, 2: 2, 4: 1 },
-  D7: { 3: 2, 4: 1, 5: 3 },
-  A7: { 2: 2, 4: 3 },
-  E7: { 1: 2, 3: 1 },
-  G7: { 0: 3, 1: 2, 5: 1 },
-}
-
-function fingersFor(name: string, shape: Array<[number, number]>): Record<number, number> {
-  const known = FINGERS[name]
-  if (known) return known
-  const fretted = shape.filter(([, f]) => f > 0).sort((a, b) => a[1] - b[1] || a[0] - b[0])
-  const out: Record<number, number> = {}
-  fretted.forEach(([s], i) => {
-    out[s] = Math.min(i + 1, 4)
-  })
-  return out
-}
 
 const W = 160
 const H = 200
@@ -56,7 +30,8 @@ export function ChordBox({ name, handedness = 'right', size = 160, className }: 
   const minFret = fretNums.length ? Math.min(...fretNums) : 0
   const base = maxFret <= FRETS || minFret <= 1 ? 1 : minFret
   const hasNut = base === 1
-  const fingers = fingersFor(name, shape)
+  // The same table the lesson text is written from, so box and words always name the same finger.
+  const fingers = chordFingers(name)
   const xs = (s: number) => X0 + GAP * (left ? 5 - s : s)
   const fretY = (row: number) => NUT_Y + FRET_H * row
   const played = new Map(shape)

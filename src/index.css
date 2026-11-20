@@ -44,6 +44,20 @@ select {
   font: inherit;
 }
 
+/*
+ * An iPhone zooms the whole page when a focused field has text smaller than 16px, and an installed
+ * app does not zoom back out. The test below is only true on iOS.
+ * Keep this after the rule above and outside any @layer: that order, plus the extra `html` in each
+ * selector, is what lets it win over `font: inherit` and over text-size classes such as text-sm.
+ */
+@supports (-webkit-touch-callout: none) {
+  html input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  html select,
+  html textarea {
+    font-size: 16px;
+  }
+}
+
 input[type="range"] {
   accent-color: var(--color-accent);
 }

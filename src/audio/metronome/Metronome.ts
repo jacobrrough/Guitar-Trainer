@@ -1,5 +1,5 @@
 import { audioEngine } from '../AudioEngine'
-import { scheduleWindow, type ClickEvent, type MetronomeSettings, type SchedulerState } from './scheduler-core'
+import { scheduleWindow, skipMissed, type ClickEvent, type MetronomeSettings, type SchedulerState } from './scheduler-core'
 
 export type BeatListener = (event: ClickEvent) => void
 
@@ -28,6 +28,8 @@ export class Metronome {
   private master: GainNode | null = null
   private readonly listeners = new Set<BeatListener>()
   private readonly uiTimers = new Set<ReturnType<typeof setTimeout>>()
+  /** Changes on every start and stop, so a start that was waiting for the audio to wake up knows it has been overtaken. */
+  private startToken = 0
   readonly lookaheadMs = 25
   readonly scheduleAheadSec = 0.12
 
@@ -44,7 +46,10 @@ export class Metronome {
 
   async start(): Promise<void> {
     if (this.timer) return
+    const token = ++this.startToken
     await audioEngine.resume()
+    // Stopped, or started again, while the audio was waking up: this call is no longer wanted.
+    if (token !== this.startToken || this.timer) return
     const ctx = audioEngine.context
     if (!this.master) {
       this.master = ctx.createGain()
@@ -57,6 +62,7 @@ export class Metronome {
   }
 
   stop(): void {
+    this.startToken++
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     this.state = null
@@ -83,7 +89,7 @@ export class Metronome {
   private tick(): void {
     if (!this.state || !this.master) return
     const ctx = audioEngine.context
-    const { events, state } = scheduleWindow(this.state, this.settings, ctx.currentTime + this.scheduleAheadSec)
+    const { events, state } = scheduleWindow(skipMissed(this.state, this.settings, ctx.currentTime), this.settings, ctx.currentTime + this.scheduleAheadSec)
     this.state = state
     for (const ev of events) {
       playClick(ctx, this.master, ev.time, ev.accent)

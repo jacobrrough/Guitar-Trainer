@@ -90,4 +90,18 @@ describe('bendTargets', () => {
     expect(ex.chart.beats.length).toBeGreaterThan(0)
     expect(ex.instructions.length).toBeGreaterThan(0)
   })
+
+  it('never asks for a bend or vibrato on an open string, even in open position', () => {
+    for (const sk of [bends, vibrato]) {
+      for (const bendSemis of [1, 2]) {
+        for (const key of ['A', 'E', 'G']) {
+          const params = { ...gen.defaults(sk, 60), position: 0, key, bendSemis, bars: 8 }
+          const { chart } = gen.generate(sk, params, DEFAULT_TUNING)
+          for (const n of chart.notes) {
+            if (n.tech?.bend || n.tech?.vibrato) expect(n.fret, `${sk.id} ${key}`).toBeGreaterThan(0)
+          }
+        }
+      }
+    }
+  })
 })

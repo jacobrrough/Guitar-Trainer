@@ -13,22 +13,27 @@ import {
   Select,
   cx,
 } from "../../components/ui";
-import { centsOff, midiToFreq, midiToName } from "../../music/pitch";
+import { midiToFreq, midiToName } from "../../music/pitch";
 import { stringColor } from "../../music/strings";
-import { TUNINGS, getTuning } from "../../music/tunings";
 import { Gauge } from "./TunerGauge";
-import { stringLabel, verdictFor, WRONG_STRING_CENTS } from "./tuningGuide";
+import { TUNER_TUNINGS, tunerMinFreq, tunerTuning } from "./tunerRange";
+import {
+  GAUGE_CENTS,
+  stringLabel,
+  tunerView,
+  verdictFor,
+  type TunerMode,
+} from "./tuningGuide";
 import { useTuner } from "./useTuner";
-
-type Target = "auto" | "chromatic" | number;
 
 export function TunerPage() {
   const settings = useSettings();
-  const tuning = getTuning(settings.tunerTuningId);
+  const tuning = tunerTuning(settings.tunerTuningId);
+  const minFreq = tunerMinFreq(tuning.strings, settings.a4);
   // Follows the audio engine, so a microphone that another screen closed never shows as listening.
   const listening = useMicActive();
   const [error, setError] = useState<string | null>(null);
-  const [target, setTarget] = useState<Target>("auto");
+  const [target, setTarget] = useState<TunerMode>("auto");
   const [details, setDetails] = useState(false);
   const { reading, level } = useTuner(
     listening,
@@ -43,12 +48,19 @@ export function TunerPage() {
     return () => audioEngine.releaseMic();
   }, []);
 
+  // A microphone taken over from another screen, or opened under another tuning, has the wrong
+  // range: make the detector reach this tuning's lowest string.
+  useEffect(() => {
+    if (listening) audioEngine.configureDetector({ minFreq });
+  }, [listening, minFreq]);
+
   const start = async () => {
     setError(null);
     audioEngine.unlock();
     try {
       await audioEngine.startMic({
         deviceId: settings.inputDeviceId || undefined,
+        minFreq,
         threshold: 0.93,
         echoCancellation: settings.echoCancellation,
       });
@@ -60,59 +72,18 @@ export function TunerPage() {
   };
   const stop = () => audioEngine.stopMic();
 
-  // Which string are we tuning, and how far off is it?
-  const view = useMemo(() => {
-    if (!reading) return null;
-    let stringIndex: number | null = null;
-    if (typeof target === "number") stringIndex = target;
-    else if (target === "auto") {
-      let best = 0;
-      for (let i = 1; i < tuning.strings.length; i++) {
-        if (
-          Math.abs(tuning.strings[i] - reading.midiFloat) <
-          Math.abs(tuning.strings[best] - reading.midiFloat)
-        )
-          best = i;
-      }
-      stringIndex = best;
-    }
-    const chromatic = {
-      label: reading.name,
-      octave: reading.octave,
-      cents: reading.cents,
-      stringIndex: null as number | null,
-      targetFreq: midiToFreq(reading.midi, settings.a4),
-      offString: null as string | null,
-    };
-    if (stringIndex === null) return chromatic;
-    const midi = tuning.strings[stringIndex];
-    const cents = centsOff(reading.freq, midi, settings.a4);
-    // In auto mode a pitch more than a semitone from every string is some other note
-    // (a fretted note, another instrument): show it chromatically and name the nearest string.
-    if (target === "auto" && Math.abs(cents) > 100)
-      return { ...chromatic, offString: midiToName(midi) };
-    return {
-      label: midiToName(midi, false),
-      octave: Math.floor(midi / 12) - 1,
-      cents,
-      stringIndex,
-      targetFreq: midiToFreq(midi, settings.a4),
-      offString: null,
-    };
-  }, [reading, target, tuning, settings.a4]);
+  // Which string are we tuning, how far off is it, and what should the player do?
+  const view = useMemo(
+    () =>
+      reading ? tunerView(reading.midiFloat, target, tuning.strings) : null,
+    [reading, target, tuning],
+  );
 
   const active = !!reading && !reading.stale;
-  const inTune = !!view && Math.abs(view.cents) <= 5;
-  const farOff = !!view && Math.abs(view.cents) > 50;
-  const wrongString =
-    !!view &&
-    view.stringIndex !== null &&
-    Math.abs(view.cents) > WRONG_STRING_CENTS;
-  const verdict = verdictFor(
-    active && view ? view.cents : null,
-    wrongString,
-    "the string you chose",
-  );
+  const inTune = !!view && view.inTune;
+  const farOff = !!view && Math.abs(view.cents) > GAUGE_CENTS;
+  const verdict = active && view ? view.verdict : verdictFor(null);
+  const targetFreq = view ? midiToFreq(view.targetMidi, settings.a4) : 0;
 
   return (
     <div>
@@ -188,7 +159,7 @@ export function TunerPage() {
               )}
               data-testid="tuner-verdict"
             >
-              {listening || view
+              {listening
                 ? verdict.text
                 : "Press “Start listening” and pluck a string"}
             </span>
@@ -226,24 +197,19 @@ export function TunerPage() {
                   <span className="mx-2">·</span>
                   {reading!.freq.toFixed(1)} Hz
                   <span className="mx-2">·</span>
-                  target {view.targetFreq.toFixed(1)} Hz
+                  target {targetFreq.toFixed(1)} Hz
                 </>
               ) : (
                 "No pitch yet"
               )}
             </div>
           )}
-          {farOff && active && view?.stringIndex !== null && (
-            <div className="text-xs text-amber-300">
-              Far from {view?.label}: you may be on a different string. Tune{" "}
-              {view!.cents > 0 ? "down" : "up"} or pick the string manually.
-            </div>
-          )}
-          {active && view?.offString && (
-            <div className="text-xs text-muted">
-              Hearing {view.label}
-              {view.octave}; the nearest open string is {view.offString}. Play
-              an open string, or pick one below.
+          {active && verdict.detail && (
+            <div
+              className="max-w-sm text-center text-xs text-muted"
+              data-testid="tuner-detail"
+            >
+              {verdict.detail}
             </div>
           )}
           <div className="mt-4 h-1.5 w-48 overflow-hidden rounded-full bg-line">
@@ -318,12 +284,12 @@ export function TunerPage() {
           <Card>
             <Field label="Tuning">
               <Select
-                value={settings.tunerTuningId}
+                value={tuning.id}
                 onChange={(e) =>
                   updateSettings({ tunerTuningId: e.target.value })
                 }
               >
-                {TUNINGS.map((t) => (
+                {TUNER_TUNINGS.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
                   </option>

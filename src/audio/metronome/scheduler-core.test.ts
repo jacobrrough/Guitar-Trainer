@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { scheduleWindow, tapTempo, type MetronomeSettings } from './scheduler-core'
+import { scheduleWindow, skipMissed, tapTempo, type MetronomeSettings } from './scheduler-core'
 
 describe('scheduleWindow', () => {
   const settings: MetronomeSettings = { bpm: 120, beatsPerBar: 4, subdivision: 2, accentFirst: true }
@@ -27,6 +27,28 @@ describe('scheduleWindow', () => {
     const { events, state } = scheduleWindow({ nextTime: 5, beat: 1, sub: 0 }, settings, 4.9)
     expect(events).toEqual([])
     expect(state).toEqual({ nextTime: 5, beat: 1, sub: 0 })
+  })
+})
+
+describe('skipMissed', () => {
+  const settings = { bpm: 120, beatsPerBar: 4, subdivision: 2, accentFirst: true }
+
+  it('leaves the state alone while the next click is still ahead, or only just due', () => {
+    const state = { nextTime: 10, beat: 1, sub: 1 }
+    expect(skipMissed(state, settings, 9.9)).toEqual(state)
+    expect(skipMissed(state, settings, 10.01)).toEqual(state)
+  })
+
+  it('after a stall drops the clicks that are already past and keeps the bar position', () => {
+    // Eighth notes at 120 bpm are 0.25 s apart. The timer stalled for 3 s.
+    const state = { nextTime: 10, beat: 0, sub: 0 }
+    const next = skipMissed(state, settings, 13.1)
+    expect(next.nextTime).toBeCloseTo(13.25, 9)
+    // 13 clicks were skipped: 13 eighths after beat 0 is beat 2, second half (6 full beats and one eighth).
+    expect(next.beat).toBe(2)
+    expect(next.sub).toBe(1)
+    const { events } = scheduleWindow(next, settings, 13.1 + 0.12)
+    expect(events.length).toBeLessThanOrEqual(1)
   })
 })
 

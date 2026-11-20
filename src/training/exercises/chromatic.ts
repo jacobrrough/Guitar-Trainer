@@ -5,12 +5,26 @@ import { ChartBuilder, NOTE_VALUE_BEATS, hashParams } from './builder'
 
 const ID = 'chromatic'
 
+/** The note value the skill is named after; a first-tier learner gets one note per beat. */
 function defaultNoteValue(skill: SkillDef): NoteValue {
+  if (/-16$/.test(skill.id)) return 'sixteenth'
+  if (skill.tier <= 1) return 'quarter'
   return /alternate|pent|chromatic/.test(skill.id) ? 'eighth' : 'quarter'
 }
 
 function defaultBars(noteValue: NoteValue, tempo: number): number {
   return (noteValue === 'quarter' || noteValue === 'eighth') && tempo <= 100 ? 4 : 8
+}
+
+/** Where a round of `slots` notes goes, in words: a short round does not get to the thinnest string. */
+export function routeOf(slots: number, stringCount: number): string {
+  const up = stringCount * 4
+  if (stringCount === 1) return 'on the thickest string'
+  if (slots >= up * 2) return 'climbing from the thickest string to the thinnest and back down'
+  if (slots > up) return 'climbing from the thickest string to the thinnest and starting back down'
+  if (slots === up) return 'climbing from the thickest string to the thinnest'
+  const reached = Math.max(1, Math.ceil(slots / 4))
+  return reached === 1 ? 'on the thickest string' : `climbing across the ${reached} thickest strings`
 }
 
 export const chromaticGenerator: ExerciseGenerator = {
@@ -47,9 +61,7 @@ export const chromaticGenerator: ExerciseGenerator = {
       params,
       backing: null,
       backingSampleRate: BACKING_SAMPLE_RATE,
-      instructions:
-        'Play one finger per fret (1-2-3-4) on each string, climbing from the low string to the high string and back down. ' +
-        'Your note accuracy and timing against the click are measured.',
+      instructions: `Play one finger per fret (1-2-3-4) on each string, ${routeOf(slots, stringCount)}. Your note accuracy and timing against the click are measured.`,
     }
   },
 }

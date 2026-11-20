@@ -74,3 +74,15 @@ describe('categorySummary', () => {
     expect(res[1]).toMatchObject({ mean: 0, mastered: 0, total: 1 })
   })
 })
+
+describe('runs that did not count', () => {
+  const at = new Date(2026, 4, 13, 10).getTime()
+  const base = { at, kind: 'practice', perfects: 4, goods: 0, misses: 0, total: 4, timingMedianMs: null, timingStdevMs: null, coverage: 1, durationSec: 600, playedTempo: 60, targetTempo: 60, speed: 1, difficulty: 10, performance: 1, accuracy: 1, reliable: true } as const
+
+  it('a run in which the microphone heard the app itself adds no minutes and no streak day', () => {
+    const now = at + 3600_000
+    expect(weeklyMinutes([{ ...base }, { ...base, bleed: true, reliable: false }], now).at(-1)?.minutes).toBe(10)
+    expect(practiceStreakDays([{ ...base, bleed: true, reliable: false }], now)).toBe(0)
+    expect(practiceStreakDays([{ ...base }], now)).toBe(1)
+  })
+})

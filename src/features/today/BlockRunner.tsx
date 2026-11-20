@@ -14,6 +14,7 @@ import {
   exerciseForBlock,
   nextPendingBlockId,
   recordExerciseRep,
+  recordSongPlay,
   type BlockOutcome,
   type RepOutcome,
 } from '../../training/coach'
@@ -24,9 +25,13 @@ import type { AttemptResult, Block, ExerciseBlock, SessionRecord, SongBlock } fr
 import { useTodaySession } from '../../training/useTraining'
 import { songPlayback } from '../../songs/playback'
 import { useExerciseGuide } from '../play/useExerciseGuide'
+import { NotCountedCard } from '../play/NotCountedCard'
 import { Player, type PlayerHandle } from '../play/Player'
+import { runVerdict, type RunVerdict } from '../play/runVerdict'
+import { useHeld } from '../play/useHeld'
 import { EarTrainer } from './EarTrainer'
 import type { ScoreSummary } from '../play/scoring'
+import { blockResultLine, hasPace, nextRoundText } from './repCard'
 import { bandLabel, notesHitText, pct, reasonText, repSummaryText, simpleBandLabel, timingText, timingWords } from './todayUtils'
 
 function Overlay({ testId, children }: { testId: string; children: ReactNode }) {
@@ -61,22 +66,6 @@ function NavButtons({ session, blockId }: { session: SessionRecord; blockId: str
   )
 }
 
-function NoScoreCard({ onRetry }: { onRetry: () => void }) {
-  return (
-    <Overlay testId="no-score">
-      <h2 className="text-lg font-semibold">Nothing was scored</h2>
-      <p className="mt-2 text-sm text-muted">
-        No notes were judged. Make sure the microphone is on, then try again. This run was not recorded.
-      </p>
-      <div className="mt-4 flex justify-center">
-        <Button variant="primary" onClick={onRetry}>
-          Try again
-        </Button>
-      </div>
-    </Overlay>
-  )
-}
-
 function ErrorCard({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
     <Overlay testId="runner-error">
@@ -104,7 +93,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   const [repOutcome, setRepOutcome] = useState<RepOutcome | null>(null)
   const [repResult, setRepResult] = useState<AttemptResult | null>(null)
   const [blockOutcome, setBlockOutcome] = useState<BlockOutcome | null>(null)
-  const [noScore, setNoScore] = useState(false)
+  const [notCounted, setNotCounted] = useState<Exclude<RunVerdict, 'counted'> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [ratingBefore, setRatingBefore] = useState(0)
   const [savingFlag, setSavingFlag] = useState(false)
@@ -134,15 +123,20 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   const exercise = exerciseResult.exercise
   const audio = useMemo(() => (exercise?.backing ? encodeWav(exercise.backing, exercise.backingSampleRate) : null), [exercise])
   const { guide: guideAudio, ready: guideReady } = useExerciseGuide(exercise)
+  // What the Player shows. While the next round's listening guide is being rendered the Player keeps
+  // the round before on screen and stays mounted, so the microphone is not closed and reopened between
+  // rounds and the next round starts on the same audio element the learner's tap unlocked.
+  const live = useMemo(() => ({ exercise, audio, guideAudio, rep, tempo, ready: guideReady }), [exercise, audio, guideAudio, rep, tempo, guideReady])
+  const shown = useHeld(live, !guideReady)
 
-  // After "Next rep": the Player resets through resetKey (child effect), then we start it.
-  // The audio element gets its new source one render later, so wait briefly.
+  // After "Next rep": once the new round is in the Player (it resets through resetKey, a child
+  // effect, and its audio element takes the new source one render later), start it.
   useEffect(() => {
     if (!startNext.current) return
     startNext.current = false
     const t = setTimeout(() => playerRef.current?.start(), 250)
     return () => clearTimeout(t)
-  }, [rep])
+  }, [shown.rep])
 
   const isLast = rep >= block.reps
 
@@ -153,7 +147,9 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
       setSavingFlag(true)
       try {
         const outcome = await completeExerciseBlock(sessionRef.current, { ...block, tempo }, exercise, result, getSettings())
-        setBlockOutcome(outcome)
+        // The coach's own safety net: a run it refused to count leaves the block open, so say so instead of "done".
+        if (outcome.counted === false) setNotCounted('bleed')
+        else setBlockOutcome(outcome)
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -170,18 +166,20 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
     setRepOutcome(null)
     setBlockOutcome(null)
     setError(null)
-    if (summary.total === 0) {
-      setNoScore(true)
+    // Not heard at all, or the app heard its own guitar part: nothing is recorded and the rep is played again.
+    const verdict = runVerdict(summary, result)
+    if (verdict !== 'counted') {
+      setNotCounted(verdict)
       return
     }
-    setNoScore(false)
+    setNotCounted(null)
     if (isLast) {
       void finalize(result)
       return
     }
     setSavingFlag(true)
     recordExerciseRep(sessionRef.current, { ...block, tempo }, exercise, result, getSettings())
-      .then(setRepOutcome)
+      .then((outcome) => (outcome.counted === false ? setNotCounted('bleed') : setRepOutcome(outcome)))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setSavingFlag(false))
   }
@@ -196,7 +194,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   }
 
   const retry = () => {
-    setNoScore(false)
+    setNotCounted(null)
     setRepResult(null)
     setRetryKey((k) => k + 1)
     playerRef.current?.restart()
@@ -215,11 +213,13 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   }
 
   const saving = savingFlag
+  // Ear rounds are answered in the player's own time: their cards carry no timing or tempo lines.
+  const paced = hasPace(exercise)
   let overlay: ReactNode
   if (error) {
     overlay = <ErrorCard message={error} onRetry={isLast && repResult ? () => void finalize(repResult) : undefined} />
-  } else if (noScore) {
-    overlay = <NoScoreCard onRetry={retry} />
+  } else if (notCounted) {
+    overlay = <NotCountedCard verdict={notCounted} onRetry={retry} />
   } else if (blockOutcome) {
     const after = blockOutcome.state?.rating ?? ratingBefore
     const res = blockOutcome.attempt
@@ -239,11 +239,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
             }
           />
         </dl>
-        {simple && (
-          <p className="mt-2 text-xs text-muted">
-            {pct(acc)}% accuracy · reached {Math.round(tempo)} bpm
-          </p>
-        )}
+        {simple && <p className="mt-2 text-xs text-muted">{blockResultLine(pct(acc), tempo, paced)}</p>}
         {!blockOutcome.performance.reliable && (
           <p className="mt-3 text-xs text-amber-200">
             {simple ? 'This result may be off: ' : 'Low-confidence result: '}
@@ -267,7 +263,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
         ) : (
           <>
             <div className="mt-1 text-5xl font-bold tabular-nums">{pct(acc)}%</div>
-            <div className="text-sm text-muted">accuracy · reached {Math.round(tempo)} bpm</div>
+            <div className="text-sm text-muted">{paced ? `accuracy · reached ${Math.round(tempo)} bpm` : 'accuracy'}</div>
             {details}
           </>
         )}
@@ -283,21 +279,21 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
         {simple ? (
           <>
             <div className="mt-1 text-3xl font-bold">You hit {notesHitText(repResult)}</div>
-            <div className="mt-1 text-sm text-muted">Timing: {timingWords(repResult.timingMedianMs)}</div>
-            <p className="mt-3 text-sm text-slate-200">Next round a bit faster</p>
+            {paced && <div className="mt-1 text-sm text-muted">Timing: {timingWords(repResult.timingMedianMs)}</div>}
+            {paced && <p className="mt-3 text-sm text-slate-200">{nextRoundText(tempo, repOutcome.nextTempo)}</p>}
             <details className="mt-2 text-sm text-muted">
               <summary className="cursor-pointer">Details</summary>
               <div className="mt-1">{pct(repOutcome.performance.acc)}% accuracy · {repSummaryText(repResult)}</div>
-              <div>{timingText(repResult.timingMedianMs)}</div>
-              <div>Next rep at {Math.round(repOutcome.nextTempo)} bpm</div>
+              {paced && <div>{timingText(repResult.timingMedianMs)}</div>}
+              {paced && <div>Next rep at {Math.round(repOutcome.nextTempo)} bpm</div>}
             </details>
           </>
         ) : (
           <>
             <div className="mt-1 text-5xl font-bold tabular-nums">{pct(repOutcome.performance.acc)}%</div>
             <div className="mt-1 text-sm text-muted">{repSummaryText(repResult)}</div>
-            <div className="text-sm text-muted">{timingText(repResult.timingMedianMs)}</div>
-            <p className="mt-3 text-sm text-slate-200">Next rep at {Math.round(repOutcome.nextTempo)} bpm</p>
+            {paced && <div className="text-sm text-muted">{timingText(repResult.timingMedianMs)}</div>}
+            {paced && <p className="mt-3 text-sm text-slate-200">Next rep at {Math.round(repOutcome.nextTempo)} bpm</p>}
           </>
         )}
         <div className="mt-4 flex flex-wrap justify-center gap-2">
@@ -341,10 +337,14 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
   }
 
   if (!audio) return null
-  if (!guideReady) {
+  // Only before the very first round: later rounds wait behind the Player (see `shown`).
+  if (!shown.ready || !shown.exercise || !shown.audio) {
     return (
-      <div className="flex h-dvh items-center justify-center text-muted" data-testid="block-runner">
-        Getting your exercise ready…
+      <div className="flex h-dvh flex-col items-center justify-center gap-4 text-muted" data-testid="block-runner">
+        <p>Getting your exercise ready…</p>
+        <Button variant="ghost" size="sm" onClick={() => navigate('/')}>
+          Back to Today
+        </Button>
       </div>
     )
   }
@@ -355,17 +355,17 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
         ref={playerRef}
         mode="exercise"
         title={skill.name}
-        subtitle={`${exercise.title} · ${simple ? 'round' : 'rep'} ${rep}/${block.reps}`}
-        chart={exercise.chart}
-        notes={exercise.chart.notes}
-        audio={audio}
-        guideAudio={guideAudio}
+        subtitle={`${shown.exercise.title} · ${simple ? 'round' : 'rep'} ${shown.rep}/${block.reps}`}
+        chart={shown.exercise.chart}
+        notes={shown.exercise.chart.notes}
+        audio={shown.audio}
+        guideAudio={shown.guideAudio}
         backingIsClick
-        playedTempo={tempo}
+        playedTempo={shown.tempo}
         targetTempo={block.tempo}
-        readyHint={exercise.instructions}
-        resetKey={`${rep}-${tempo}`}
-        headerControls={<Badge tone="accent">{simple ? `Round ${rep} of ${block.reps}` : `Rep ${rep}/${block.reps} · ${Math.round(tempo)} bpm`}</Badge>}
+        readyHint={shown.exercise.instructions}
+        resetKey={`${shown.rep}-${shown.tempo}`}
+        headerControls={<Badge tone="accent">{simple ? `Round ${shown.rep} of ${block.reps}` : `Rep ${shown.rep}/${block.reps} · ${Math.round(shown.tempo)} bpm`}</Badge>}
         onExit={() => navigate('/')}
         onFinished={onFinished}
         resultsOverlay={overlay}
@@ -398,16 +398,23 @@ function SongRunner({ block, session }: { block: SongBlock; session: SessionReco
  * Song blocks use Player mode="song" so the latency field stays available while practising a real song.
  * With loopBars: phase 'loop' (2 passes, not recorded) then phase 'full' (recorded via completeSongBlock).
  */
-function SongPlayer({ block, session, song }: { block: SongBlock; session: SessionRecord; song: SongRecord }) {
+function SongPlayer({ block, session, song: liveSong }: { block: SongBlock; session: SessionRecord; song: SongRecord }) {
   const navigate = useNavigate()
+  const [inRun, setInRun] = useState(false)
+  // The record comes from a live query: a background update must not swap chart and audio under a run in progress.
+  const song = useHeld(liveSong, inRun)
   const simple = useSettings().simpleFeedback
   const sessionRef = useRef(session)
   sessionRef.current = session
   const [phase, setPhase] = useState<'loop' | 'full'>(block.loopBars ? 'loop' : 'full')
   const [outcome, setOutcome] = useState<BlockOutcome | null>(null)
-  const [noScore, setNoScore] = useState(false)
+  const [notCounted, setNotCounted] = useState<Exclude<RunVerdict, 'counted'> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [savingFlag, setSavingFlag] = useState(false)
+  // How many times the plan asks for the song, and which time this is.
+  const passes = Math.max(1, Math.min(3, Math.round(block.passes ?? 1)))
+  const [pass, setPass] = useState(1)
+  const [between, setBetween] = useState<{ pass: number; attempt: AttemptResult } | null>(null)
   const playerRef = useRef<PlayerHandle>(null)
   const levels = useMemo(() => generateLevels(song.chart), [song])
   const level = Math.max(0, Math.min(levels.length - 1, block.level))
@@ -421,16 +428,33 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
       setPhase('full')
       return
     }
-    if (summary.total === 0) {
-      setNoScore(true)
+    // Not heard at all, or the app heard its own guitar part: nothing is recorded and the rep is played again.
+    const verdict = runVerdict(summary, result)
+    if (verdict !== 'counted') {
+      setNotCounted(verdict)
       return
     }
-    setNoScore(false)
+    setNotCounted(null)
     setSavingFlag(true)
+    // The plan may ask for the song more than once (it fills the block's minutes): every pass before
+    // the last is saved as a play of the song, the last one finishes the block.
+    if (pass < passes) {
+      recordSongPlay(song, block.level, result, getSettings(), Date.now(), sessionRef.current.id)
+        .then((played) => (played.counted === false ? setNotCounted('bleed') : setBetween({ pass, attempt: played.attempt })))
+        .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setSavingFlag(false))
+      return
+    }
     completeSongBlock(sessionRef.current, block, song, result, getSettings())
-      .then(setOutcome)
+      .then((done) => (done.counted === false ? setNotCounted('bleed') : setOutcome(done)))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setSavingFlag(false))
+  }
+  const nextPass = () => {
+    setBetween(null)
+    setPass((p) => p + 1)
+    playerRef.current?.restart()
+    playerRef.current?.start()
   }
 
   if (!audio) {
@@ -449,15 +473,31 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
   let overlay: ReactNode
   if (error) {
     overlay = <ErrorCard message={error} />
-  } else if (noScore) {
+  } else if (notCounted) {
     overlay = (
-      <NoScoreCard
+      <NotCountedCard
+        verdict={notCounted}
         onRetry={() => {
-          setNoScore(false)
+          setNotCounted(null)
           playerRef.current?.restart()
           playerRef.current?.start()
         }}
       />
+    )
+  } else if (between) {
+    overlay = (
+      <Overlay testId="song-pass">
+        <h2 className="text-lg font-semibold">
+          Time {between.pass} of {passes}
+        </h2>
+        <div className="mt-1 text-3xl font-bold">You hit {notesHitText(between.attempt)}</div>
+        <p className="mt-2 text-sm text-muted">Take a breath, then play it once more.</p>
+        <div className="mt-4 flex justify-center">
+          <Button variant="primary" onClick={nextPass} data-testid="song-pass-next">
+            Play it again
+          </Button>
+        </div>
+      </Overlay>
     )
   } else if (outcome) {
     const best = outcome.songItem?.bestAccuracy ?? null
@@ -500,7 +540,7 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
         ref={playerRef}
         mode="song"
         title={song.title}
-        subtitle={phase === 'loop' ? loopLabel : `Level ${level + 1}${block.speed < 1 ? ` · ${Math.round(block.speed * 100)}% speed` : ''}`}
+        subtitle={phase === 'loop' ? loopLabel : `Level ${level + 1}${block.speed < 1 ? ` · ${Math.round(block.speed * 100)}% speed` : ''}${passes > 1 ? ` · time ${pass} of ${passes}` : ''}`}
         chart={chart}
         notes={levels[level].notes}
         audio={audio}
@@ -522,6 +562,7 @@ function SongPlayer({ block, session, song }: { block: SongBlock; session: Sessi
         headerControls={<Badge tone="accent">{phase === 'loop' ? 'Loop' : block.loopBars ? 'Full pass' : 'Song'}</Badge>}
         onExit={() => navigate('/')}
         onFinished={onFinished}
+        onPhaseChange={(p) => setInRun(p === 'playing' || p === 'countin' || p === 'paused')}
         resultsOverlay={phase === 'full' ? overlay : null}
       />
     </div>

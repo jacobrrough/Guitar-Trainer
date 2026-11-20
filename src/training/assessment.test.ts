@@ -10,6 +10,10 @@ import {
   placementLadder,
   shouldStopPlacement,
 } from './assessment'
+import { UNLOCK_RATING } from './constants'
+import { DEFAULT_TUNING } from './exercises/builder'
+import { generateExercise } from './exercises'
+import { SKILLS, SKILLS_BY_ID } from './skills'
 import type { Attempt, AttemptResult, LearnerModel, Profile, SkillDef, SkillState, SongSummary, TestTaskResult } from './types'
 
 const DAY = 86_400_000
@@ -128,7 +132,9 @@ describe('applyPlacement', () => {
   const out = applyPlacement(input, tasks, results, skills, 1000)
 
   it('assigns passed and failed ratings', () => {
-    expect(out.model.skills['fret.single-string'].rating).toBeCloseTo(tasks[0].difficulty + 10, 0)
+    // A pass never rates below the unlock line (60), however easy the task was.
+    expect(tasks[0].difficulty + 10).toBeLessThan(65)
+    expect(out.model.skills['fret.single-string'].rating).toBe(65)
     expect(out.model.skills['fret.cross-string'].rating).toBeCloseTo(tasks[1].difficulty - 10, 0)
     expect(out.model.skills['chord.open'].rating).toBeCloseTo(Math.max(0, tasks[2].difficulty - 10), 0)
     expect(out.model.skills['fret.single-string']).toMatchObject({
@@ -157,6 +163,67 @@ describe('applyPlacement', () => {
     const all = applyPlacement(model(), tasks, tasks.map((t) => taskResult(t.id, true)), skills, 1)
     const a = Math.max(tasks[4].difficulty, tasks[9].difficulty) + 10
     expect(all.model.skills['pick.alternate-8'].rating).toBeCloseTo(Math.min(100, a), 0)
+  })
+})
+
+describe('applyPlacement on the real skill list', () => {
+  const tasks = placementLadder(SKILLS)
+  const pass = (count: number) => tasks.slice(0, count).map((t) => taskResult(t.id, true))
+  const ancestorsOf = (id: string, seen = new Set<string>()): Set<string> => {
+    for (const p of SKILLS_BY_ID[id].prerequisites) {
+      if (!seen.has(p)) {
+        seen.add(p)
+        ancestorsOf(p, seen)
+      }
+    }
+    return seen
+  }
+
+  it('passing every task leaves every tested skill, and everything under it, unlocked', () => {
+    const out = applyPlacement(model(), tasks, pass(10), SKILLS, 1).model.skills
+    for (const id of new Set(tasks.flatMap((t) => t.skillIds))) {
+      expect(out[id].rating, id).toBeGreaterThanOrEqual(65)
+      for (const p of ancestorsOf(id)) expect(out[p].rating, `${id} <- ${p}`).toBeGreaterThanOrEqual(65)
+    }
+    // Skills the ladder has no task for.
+    expect(out['basics.open-strings'].rating).toBeGreaterThanOrEqual(UNLOCK_RATING)
+    expect(out['basics.first-frets'].rating).toBeGreaterThanOrEqual(UNLOCK_RATING)
+    expect(out['fret.chromatic'].rating).toBeGreaterThanOrEqual(UNLOCK_RATING)
+    expect(out['time.metronome'].rating).toBeGreaterThanOrEqual(UNLOCK_RATING)
+    // Nothing was shown about tuning by ear.
+    expect(out['ear.tuning'].rating).toBe(0)
+  })
+
+  it('a skill under a hard pass is rated close to that pass, not at the minimum', () => {
+    const out = applyPlacement(model(), tasks, pass(10), SKILLS, 1).model.skills
+    expect(out['fret.single-string'].rating).toBeGreaterThan(out['chord.sevenths'].rating)
+    expect(out['fret.single-string'].rating).toBe(out['lead.pent-boxes'].rating - 15)
+  })
+
+  it('a pass on a harder task outweighs a miss on something it builds on', () => {
+    const results = [taskResult(tasks[0].id, true), taskResult(tasks[1].id, false), taskResult(tasks[2].id, true)]
+    const out = applyPlacement(model(), tasks, results, SKILLS, 1).model.skills
+    expect(out['chord.changes-open'].rating).toBeGreaterThanOrEqual(65)
+    expect(out['fret.cross-string'].rating).toBeGreaterThanOrEqual(65)
+  })
+
+  it('a miss never rates a skill as solid, however hard the task was', () => {
+    // The sixteenth-note task is hard enough that "difficulty minus ten" alone would land above the unlock line.
+    const hard = tasks.find((t) => t.skillIds.includes('pick.alternate-16'))!
+    expect(hard.difficulty - 10).toBeGreaterThanOrEqual(UNLOCK_RATING)
+    const results = [...pass(4), taskResult(tasks[4].id, false), taskResult(hard.id, false)]
+    const out = applyPlacement(model(), tasks, results, SKILLS, 1)
+    expect(out.model.skills['pick.alternate-16'].rating).toBeLessThan(UNLOCK_RATING)
+    // The headline tier comes from what was passed, not from how hard the missed task was.
+    expect(out.report.headline).toMatch(/starting at tier 2$/)
+  })
+
+  it('with no pass at all nothing is lifted', () => {
+    const results = [taskResult(tasks[0].id, false), taskResult(tasks[1].id, false)]
+    const out = applyPlacement(model(), tasks, results, SKILLS, 1).model.skills
+    expect(out['basics.open-strings'].rating).toBe(0)
+    expect(out['time.metronome'].rating).toBe(0)
+    expect(out['fret.single-string'].rating).toBeLessThan(UNLOCK_RATING)
   })
 })
 
@@ -248,9 +315,80 @@ describe('applyTestResults', () => {
     expect(out.report.nextFocus[0]).toBe('fret.single-string')
     expect(out.model.profile).toMatchObject({ lastCheckpointAt: 5000, sessionsSinceTest: 0 })
   })
+  it('does not count a test task as a practice round', () => {
+    // The planner reads `attempts` as "has practised this": a skill met only in a check stays new.
+    const apply = (s: SkillState): SkillState => ({ ...s, rating: s.rating + 3, attempts: s.attempts + 1, lastPracticedAt: 5000 })
+    const practised = model({}, [state('fret.single-string', 50, { attempts: 7 }), state('chord.open', 80)])
+    const out = applyTestResults(practised, 'monthly', tasks, tasks.map((t) => taskResult(t.id, false)), skills, apply, 5000)
+    expect(out.model.skills['fret.single-string']).toMatchObject({ attempts: 7, rating: 53, lastTestedAt: 5000 })
+    expect(out.model.skills['chord.changes-open']).toMatchObject({ attempts: 0, lastTestedAt: 5000 })
+    expect(out.model.skills['chord.changes-open'].rating).toBeGreaterThan(0)
+  })
+
   it('sets lastMonthlyAt for monthly', () => {
     const out = applyTestResults(input, 'monthly', tasks, [], skills, (s) => s, 7)
     expect(out.model.profile.lastMonthlyAt).toBe(7)
     expect(out.model.profile.lastCheckpointAt).toBeUndefined()
+  })
+})
+
+describe('what the test tasks put on the note lanes', () => {
+  // The same call the test screen makes for a task (coach.exerciseForTask).
+  const chartOf = (task: { skillIds: string[]; generatorId: string; params: Attempt['params'] }) =>
+    generateExercise(SKILLS_BY_ID[task.skillIds[0]], task.generatorId, task.params!, DEFAULT_TUNING).chart
+  const focusTask = (skillId: string) => checkpointTasks(model({}, [state(skillId, 50)]), SKILLS, [], 20 * DAY, skillId)[0]
+
+  it('the skill check never asks for a bend, vibrato or slide on an open string', () => {
+    for (const id of ['lead.bends', 'lead.vibrato', 'lead.slides']) {
+      const task = focusTask(id)
+      const marked = chartOf(task).notes.filter((n) => n.tech?.bend || n.tech?.vibrato || n.tech?.slideIn || n.tech?.slideOut)
+      expect(marked.length, id).toBeGreaterThan(0)
+      for (const n of marked) expect(n.fret, id).toBeGreaterThanOrEqual(5)
+    }
+  })
+
+  it('the skill check for vibrato tests vibrato, not bends', () => {
+    const notes = chartOf(focusTask('lead.vibrato')).notes
+    expect(notes.every((n) => n.tech?.vibrato)).toBe(true)
+    expect(notes.some((n) => n.tech?.bend)).toBe(false)
+  })
+
+  it('the skill check plays a skill in its own note values and is rated for them', () => {
+    const sixteenths = focusTask('pick.alternate-16')
+    expect(sixteenths.params.noteValue).toBe('sixteenth')
+    // 50 bpm against a reference of 60, tier base 60, plus 16 for sixteenth notes.
+    expect(sixteenths.difficulty).toBeCloseTo(60 + 30 * Math.log2(50 / 60) + 16, 1)
+    const beat = 60 / sixteenths.params.tempo
+    const times = chartOf(sixteenths).notes.map((n) => n.time)
+    expect(times[1] - times[0]).toBeCloseTo(beat / 4, 5)
+    // About 35 seconds, like every other task.
+    expect((sixteenths.params.bars * 4 * 60) / sixteenths.params.tempo).toBeGreaterThanOrEqual(25)
+  })
+
+  it('the first placement task really is a melody on one string, and easier to read than the second', () => {
+    const ladder = placementLadder(SKILLS)
+    const one = chartOf(ladder[0]).notes
+    const three = chartOf(ladder[1]).notes
+    expect(new Set(one.map((n) => n.string)).size).toBe(1)
+    expect(new Set(three.map((n) => n.string)).size).toBeGreaterThan(1)
+    expect(new Set(three.map((n) => n.string)).size).toBeLessThanOrEqual(3)
+    expect(new Set(one.map((n) => n.midi)).size).toBeLessThan(new Set(three.map((n) => n.midi)).size)
+    // Both sit in the first frets a returning player still knows.
+    for (const n of [...one, ...three]) expect(n.fret).toBeLessThanOrEqual(3)
+  })
+
+  it('the placement chord task is still one strum per chord, two beats each', () => {
+    const task = placementLadder(SKILLS)[2]
+    const notes = chartOf(task).notes
+    const strumTimes = [...new Set(notes.map((n) => n.time))]
+    expect(strumTimes).toHaveLength(task.params.bars * 2)
+    expect(notes.find((n) => n.time === strumTimes[1])?.chordName).toBe('Am')
+  })
+
+  it('the placement task for the other pentatonic boxes is not box 1 again', () => {
+    const ladder = placementLadder(SKILLS)
+    const box1 = chartOf(ladder[4]).notes.map((n) => `${n.string}/${n.fret}`)
+    const others = chartOf(ladder[9]).notes.map((n) => `${n.string}/${n.fret}`)
+    expect(others.slice(0, 12)).not.toEqual(box1.slice(0, 12))
   })
 })

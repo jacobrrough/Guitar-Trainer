@@ -1,5 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
+  BookOpen,
   ChevronDown,
   ChevronUp,
   ClipboardCheck,
@@ -20,12 +21,16 @@ import { useAppBadge } from '../../app/useAppBadge'
 import { Badge, Button, Card, PageHeader, cx } from '../../components/ui'
 import { db } from '../../db/db'
 import { coachRecommendations, completeFirstSteps, getOrCreateTodaySession, skipSessionBlock, updatePrefs } from '../../training/coach'
-import { localDateString } from '../../training/store'
+import { COURSE } from '../../lessons/course'
+import { courseProgress, initialiseCourse } from '../../lessons/store'
+import { blockRuns } from '../../training/testBlocks'
 import type { Attempt, Block, Recommendation, SessionRecord } from '../../training/types'
 import { useMilestonesSince, useProfile, useRecentAttempts, useTodaySession } from '../../training/useTraining'
 import { FirstStepsCard } from '../lessons/FirstStepsCard'
 import { MilestoneList } from '../progress/MilestoneList'
+import { courseEntry, skipCourseStep, type SkipCourseStep } from './courseEntry'
 import { GoalChips, MinutesPicker, SetupCard } from './SetupCard'
+import { sessionForDate, useLocalDate } from './todayDate'
 import {
   BLOCK_META,
   allFinished,
@@ -82,7 +87,7 @@ function PlanRow({
             <div className="font-semibold">{blockTitle(block, songTitle, simple)}</div>
             {pace && <div className="text-xs text-muted">{pace}</div>}
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
-              <span>{block.minutes} min</span>
+              <span>about {block.minutes} min</span>
               <StatusPill status={block.status} />
               {block.status === 'done' && resultPct !== null && (
                 <Badge tone={resultPct >= 80 ? 'ok' : resultPct >= 50 ? 'warn' : 'default'}>
@@ -173,37 +178,80 @@ function RecommendationCard({ rec, action }: { rec: Recommendation; action: { la
   )
 }
 
+/**
+ * The way to the First steps lessons. It is on Today for good, also after the course was finished
+ * or skipped: nothing else in the app leads to the lessons.
+ */
+function CourseEntryCard() {
+  const progress = useLiveQuery(() => courseProgress(), [])
+  const entry = courseEntry(progress)
+  return (
+    <Card>
+      <div data-testid="course-entry" className="flex flex-wrap items-center gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-panel-2 text-accent">
+          <BookOpen className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1 basis-48">
+          <h2 className="font-semibold">{entry.title}</h2>
+          {/* Nothing is said about progress until it is known. */}
+          {progress !== undefined && <p className="text-sm text-muted">{entry.line}</p>}
+        </div>
+        <Link to={entry.to} data-testid="course-entry-open">
+          <Button size="sm">{entry.action}</Button>
+        </Link>
+      </div>
+    </Card>
+  )
+}
+
 export function TodayPage() {
   const profile = useProfile()
+  const date = useLocalDate()
   if (!profile) return <div className="py-16 text-center text-muted">Loading…</div>
   // A brand-new profile goes through the Start Here wizard first.
   if (!profile.placementDoneAt && !profile.firstStepsStartedAt && !profile.experience) return <Navigate to="/start" replace />
-  if (profile.firstStepsStartedAt && !profile.firstStepsDoneAt) return <FirstStepsHome />
+  if (profile.firstStepsStartedAt && !profile.firstStepsDoneAt) return <FirstStepsHome date={date} />
   if (!profile.placementDoneAt) {
     return (
-      <div data-testid="today-page">
-        <PageHeader title="Today" subtitle={formatLongDate(localDateString(new Date()))} />
-        <SetupCard initialGoals={profile.goals} initialMinutes={profile.dailyMinutes} />
+      <div data-testid="today-page" className="flex flex-col gap-4">
+        <div>
+          <PageHeader title="Today" subtitle={formatLongDate(date)} />
+          <SetupCard initialGoals={profile.goals} initialMinutes={profile.dailyMinutes} />
+        </div>
+        <CourseEntryCard />
       </div>
     )
   }
-  return <TodayPlan placementDoneAt={profile.placementDoneAt} />
+  return <TodayPlan placementDoneAt={profile.placementDoneAt} date={date} />
 }
 
 /** Today while the First steps course is running: the next lesson, the tools, and a way out. */
-function FirstStepsHome() {
-  const [skipping, setSkipping] = useState(false)
-  const skipCourse = async () => {
-    setSkipping(true)
+function FirstStepsHome({ date }: { date: string }) {
+  // Leaving the course is asked about first: one stray tap must not end it.
+  const [skip, setSkip] = useState<SkipCourseStep>('idle')
+  const [skipFailed, setSkipFailed] = useState(false)
+  // A phone left in a state an older version could cause (the course running with no lesson to
+  // start) is put right the moment this screen opens; a healthy course is not written to.
+  useEffect(() => {
+    void initialiseCourse(COURSE.map((l) => l.id)).catch(() => {
+      /* the lesson card then shows what it can */
+    })
+  }, [])
+  const confirmSkip = async () => {
+    if (skipCourseStep(skip, 'confirm') !== 'skipping') return
+    setSkip('skipping')
+    setSkipFailed(false)
     try {
       await completeFirstSteps()
+    } catch {
+      setSkipFailed(true)
     } finally {
-      setSkipping(false)
+      setSkip((s) => skipCourseStep(s, 'settled'))
     }
   }
   return (
     <div data-testid="today-page" className="flex flex-col gap-4">
-      <PageHeader title="Today" subtitle={formatLongDate(localDateString(new Date()))} />
+      <PageHeader title="Today" subtitle={formatLongDate(date)} />
       <FirstStepsCard />
       <Card className="flex flex-wrap items-center gap-2 text-sm text-muted">
         <span>Any time:</span>
@@ -217,21 +265,45 @@ function FirstStepsHome() {
           All lessons and songs
         </Link>
       </Card>
-      <p className="text-xs text-muted">
-        Played before?{' '}
-        <button type="button" className="underline hover:text-slate-200" disabled={skipping} onClick={() => void skipCourse()} data-testid="skip-course">
-          Skip the course and go to daily sessions
-        </button>
-      </p>
+      {skip === 'idle' ? (
+        <p className="text-xs text-muted">
+          Played before?{' '}
+          <button type="button" className="underline hover:text-slate-200" onClick={() => setSkip((s) => skipCourseStep(s, 'ask'))} data-testid="skip-course">
+            Skip the course and go to daily sessions
+          </button>
+        </p>
+      ) : (
+        <Card className="border-accent/40">
+          <div data-testid="skip-course-ask" role="group" aria-labelledby="skip-course-title" className="flex flex-col gap-2">
+            <h2 id="skip-course-title" className="text-lg font-semibold">
+              Skip the First steps course?
+            </h2>
+            <p className="text-sm text-slate-200">
+              You will go straight to daily practice sessions. They expect that you can already hold the guitar, tune it and play a few notes.
+            </p>
+            <p className="text-sm text-slate-200">
+              Nothing is lost. The lessons stay on this page, under “First steps lessons”, and you can carry on with them any time.
+            </p>
+            {skipFailed && <p className="text-sm text-red-300">That did not work. Please try again.</p>}
+            <div className="mt-1 flex flex-wrap gap-2">
+              <Button variant="primary" disabled={skip === 'skipping'} onClick={() => setSkip((s) => skipCourseStep(s, 'keep'))} data-testid="skip-course-keep">
+                Stay in the course
+              </Button>
+              <Button disabled={skip === 'skipping'} onClick={() => void confirmSkip()} data-testid="skip-course-confirm">
+                Yes, skip the course
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
     </div>
   )
 }
 
-function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
+function TodayPlan({ placementDoneAt, date }: { placementDoneAt: number; date: string }) {
   const profile = useProfile()
   const navigate = useNavigate()
   const settings = useSettings()
-  const date = useMemo(() => localDateString(new Date()), [])
   const live = useTodaySession(date)
   const [created, setCreated] = useState<SessionRecord | null>(null)
   const [busy, setBusy] = useState(false)
@@ -241,11 +313,15 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
   const [recs, setRecs] = useState<Recommendation[]>([])
   const week = useRecentAttempts(7)
   const recent = useRecentAttempts(1)
+  // A block's result is one of its own runs: the tasks of a skill check belong to the session too, but to no exercise or song.
+  const runs = useMemo(() => blockRuns(recent ?? []), [recent])
 
-  const session: SessionRecord | null = live !== 'loading' && live !== null ? live : created
+  // Only ever the session of the date on screen: after midnight the old one is still in memory for a moment.
+  const session = sessionForDate(date, live, created)
   // Home-screen badge while today's session still has pending blocks (installed web app only).
   useAppBadge(session ? session.plan.blocks.some((b) => b.status === 'pending') : false)
 
+  // Plans the day on arrival, and again when the date moves on while the app stays open.
   useEffect(() => {
     let cancelled = false
     getOrCreateTodaySession({ settings: getSettings() })
@@ -258,7 +334,7 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
     return () => {
       cancelled = true
     }
-  }, [placementDoneAt])
+  }, [placementDoneAt, date])
 
   const sessionKey = session ? session.plan.blocks.map((b) => b.status).join(',') : ''
   useEffect(() => {
@@ -359,6 +435,7 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
         }
       />
       <MilestoneStrip />
+      <CourseEntryCard />
       {error && <div className="rounded-lg bg-bad/15 px-3 py-2 text-sm text-red-200">{error}</div>}
       {!session && !error && <div className="py-10 text-center text-muted">Planning your session…</div>}
       {session && (
@@ -399,7 +476,7 @@ function TodayPlan({ placementDoneAt }: { placementDoneAt: number }) {
           )}
           <ol className="flex flex-col gap-3">
             {session.plan.blocks.map((block) => {
-              const attempt = attemptForBlock(recent ?? [], session.id, block)
+              const attempt = attemptForBlock(runs, session.id, block)
               return (
                 <PlanRow
                   key={block.id}

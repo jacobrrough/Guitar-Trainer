@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
+import { useHoldUpdates } from '../../app/appUpdate'
 import { getSettings } from '../../app/settings'
 import { audioEngine } from '../../audio/AudioEngine'
-import { playClick } from '../../audio/metronome/Metronome'
+import { primeMediaElement } from '../../audio/primeMedia'
+import { encodeWav } from '../../audio/synth'
 import { Button, Modal, cx } from '../../components/ui'
+import { PlaybackClock } from '../play/PlaybackClock'
 import {
   CLICK_COUNT,
-  CLICK_INTERVAL,
   ClickMatcher,
   MATCH_AFTER,
-  PREROLL,
+  RunGuard,
   calibrationAdvice,
   createOnsetDetector,
   noiseFloor,
@@ -16,6 +18,7 @@ import {
   type CalibrationSummary,
   type LevelFrame,
 } from './calibration'
+import { CLICK_TRACK_RATE, clickTimes, renderClickTrack } from './clickTrack'
 
 type Phase = 'intro' | 'running' | 'done' | 'error'
 
@@ -32,8 +35,12 @@ function friendlyError(err: unknown): string {
 /**
  * Plays clicks; the player strums a muted string on each one. The earliest sound after each click
  * (the strum, or on a phone speaker the click's own echo) marks when sound reaches the app, and the
- * median gap is the latency scoring compensates for. Uses the same microphone options as playing,
- * so any processing the phone adds is included in the measurement.
+ * median gap is the latency scoring compensates for.
+ *
+ * The measurement goes down the very path a song takes: the clicks are a piece of audio played by a
+ * media element, the microphone frames are placed on that element's clock exactly as the player
+ * places them on a song's clock, and the microphone runs with the options used for playing. So
+ * whatever the device adds on the way out and on the way in is in the number, and nothing else.
  */
 export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: string; onClose: () => void; onResult: (ms: number) => void }) {
   const [phase, setPhase] = useState<Phase>('intro')
@@ -43,22 +50,39 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
   const [result, setResult] = useState<CalibrationSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
   const cleanup = useRef<(() => void) | null>(null)
-  const alive = useRef(true)
+  const [guard] = useState(() => new RunGuard())
+  // A waiting app update must not reload the page in the middle of a measurement.
+  useHoldUpdates()
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const primedRef = useRef(false)
+  const startedRef = useRef(false)
+  const [trackUrl] = useState(() => URL.createObjectURL(encodeWav(renderClickTrack(), CLICK_TRACK_RATE)))
+  useEffect(() => () => URL.revokeObjectURL(trackUrl), [trackUrl])
 
-  // Closing the dialog (done, cancelled or unmounted) must release the microphone.
+  // Closing the dialog (done, cancelled or unmounted) must silence the clicks and release the
+  // microphone, and end a run that is still waiting so it cannot do either again later.
   useEffect(
     () => () => {
-      alive.current = false
+      guard.cancel()
       cleanup.current?.()
       audioEngine.stopMic()
     },
-    [],
+    [guard],
   )
 
   const run = async () => {
+    // After every wait the run checks this before touching the audio: once the dialog has closed,
+    // the microphone may belong to the tuner or a song.
+    const current = guard.start()
     audioEngine.unlock()
     cleanup.current?.()
     cleanup.current = null
+    const el = audioRef.current
+    if (!el) return
+    // Still inside the tap: this lets the clicks start later, once the microphone is open (a phone
+    // only lets sound start from a tap).
+    startedRef.current = false
+    primeMediaElement(el, primedRef, startedRef)
     setPhase('running')
     setCount(0)
     setHits(new Array<boolean>(CLICK_COUNT).fill(false))
@@ -67,13 +91,17 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
     try {
       const s = getSettings()
       await audioEngine.startMic({ deviceId: deviceId ?? (s.inputDeviceId || undefined), echoCancellation: s.echoCancellation })
+      if (!current()) return
       const ctx = audioEngine.context
       if (ctx.state !== 'running') await ctx.resume()
+      if (!current()) return
       if ((ctx.state as string) !== 'running') throw new Error('Audio is paused. Tap Start again.')
 
-      const t0 = ctx.currentTime + PREROLL
-      const clicks = Array.from({ length: CLICK_COUNT }, (_, i) => t0 + i * CLICK_INTERVAL)
+      const clicks = clickTimes()
+      const t0 = clicks[0]
       const matcher = new ClickMatcher(clicks)
+      const clock = new PlaybackClock(el)
+      let shown = 0
       const quiet: number[] = []
       let floor = 0
       let detect: ((frame: LevelFrame) => number | null) | null = null
@@ -87,7 +115,17 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
           const db = 20 * Math.log10(Math.max(peak, 1e-5))
           setLevel(Math.min(1, Math.max(0, (db + 60) / 55)))
         }
-        if (f.time < t0 - 0.1) {
+        if (el.paused) return
+        // Where this frame falls on the click track's own clock: the same sum the player does for a song.
+        const now = clock.time
+        const time = now - Math.min(0.25, Math.max(0, ctx.currentTime - f.time))
+        let sounded = 0
+        while (sounded < clicks.length && clicks[sounded] <= now) sounded++
+        if (sounded !== shown) {
+          shown = sounded
+          setCount(sounded)
+        }
+        if (time < t0 - 0.1) {
           quiet.push(f.rms)
           return
         }
@@ -95,7 +133,7 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
           floor = noiseFloor(quiet)
           detect = createOnsetDetector({ floor })
         }
-        const onset = detect(f)
+        const onset = detect({ rms: f.rms, time })
         if (onset === null) return
         const i = matcher.onset(onset)
         if (i >= 0) {
@@ -106,23 +144,29 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
           })
         }
       })
-      const timers: ReturnType<typeof setTimeout>[] = []
-      clicks.forEach((t, i) => {
-        playClick(ctx, ctx.destination, t, i % 4 === 0 ? 'high' : 'mid')
-        timers.push(setTimeout(() => setCount(i + 1), (t - ctx.currentTime) * 1000))
-      })
+      // Stopping the element silences the clicks still to come.
       cleanup.current = () => {
         unsubscribe()
-        timers.forEach(clearTimeout)
+        el.pause()
       }
+      startedRef.current = true
+      el.muted = false
+      el.currentTime = 0
+      try {
+        await el.play()
+      } catch {
+        // Not a microphone problem: the browser would not start the sound without a fresh tap.
+        throw new Error('The clicks could not start. Tap "Try again".')
+      }
+      if (!current()) return
+      // Until the last click has had its window. The element's clock can stand still for a moment
+      // while a phone opens the microphone, so this waits on the clock, not on a fixed time.
       const end = clicks[clicks.length - 1] + MATCH_AFTER + 0.1
-      await wait((end - ctx.currentTime) * 1000)
-      // iOS can hold the audio clock for a moment while the mic opens; give the last click its window.
-      for (let i = 0; i < 30 && ctx.currentTime < end; i++) await wait(100)
+      for (let i = 0; i < 200 && current() && !el.ended && el.currentTime < end; i++) await wait(100)
+      if (!current()) return
       cleanup.current?.()
       cleanup.current = null
       audioEngine.stopMic()
-      if (!alive.current) return
       const summary = summarise(matcher.offsets)
       if (!summary) {
         setError(calibrationAdvice(matcher.heard, CLICK_COUNT, floor))
@@ -132,10 +176,10 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
       setResult(summary)
       setPhase('done')
     } catch (err) {
+      if (!current()) return
       cleanup.current?.()
       cleanup.current = null
       audioEngine.stopMic()
-      if (!alive.current) return
       setError(friendlyError(err))
       setPhase('error')
     }
@@ -143,6 +187,7 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
 
   return (
     <Modal title="Sync your sound" onClose={onClose}>
+      <audio ref={audioRef} src={trackUrl} preload="auto" playsInline />
       {phase === 'intro' && (
         <div className="flex flex-col gap-4 text-sm">
           <p>

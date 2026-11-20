@@ -6,12 +6,16 @@ import {
   MIN_HITS_FOR_TIMING,
   MONTHLY_MIN_DAYS,
   PLACEMENT_INHERIT_OFFSET,
+  PLACEMENT_MISS_MAX_RATING,
+  PLACEMENT_PASS_MIN_RATING,
   PLACEMENT_PASS_OFFSET,
   PLACEMENT_STOP_AFTER_FAILS,
   TEST_PASS,
   UNLOCK_RATING,
 } from './constants'
 import { itemDifficulty } from './difficulty'
+import { exerciseParams } from './exercises'
+import { prerequisitesSolid } from './skills'
 import type {
   Attempt,
   AttemptResult,
@@ -62,21 +66,23 @@ const LADDER: LadderSpec[] = [
     instructions: 'Play the melody on one string.',
     skillIds: ['fret.single-string'],
     generatorId: 'melody',
-    params: { tempo: 70, noteValue: 'quarter', position: 0, key: 'E', strings: 1 },
+    // Key and frets come from the skill's own drill: three notes on the thin E string.
+    params: { tempo: 70, noteValue: 'quarter', strings: 1 },
   },
   {
     title: 'Open-position melody',
     instructions: 'Play the melody across the strings in open position.',
     skillIds: ['fret.cross-string'],
     generatorId: 'melody',
-    params: { tempo: 70, noteValue: 'quarter', position: 0, key: 'E', strings: 3 },
+    // The skill's own drill: C major in frets 0 to 3 on the three thin strings.
+    params: { tempo: 70, noteValue: 'quarter', strings: 3 },
   },
   {
     title: 'Em - Am - D changes',
     instructions: 'Change chords on time, two beats each.',
     skillIds: ['chord.open', 'chord.changes-open'],
     generatorId: 'chordChanges',
-    params: { tempo: 60, noteValue: 'quarter', chords: ['Em', 'Am', 'D'], beatsPerChord: 2 },
+    params: { tempo: 60, noteValue: 'quarter', chords: ['Em', 'Am', 'D'], beatsPerChord: 2, strumsPerChord: 1 },
   },
   {
     title: 'Power-chord riff',
@@ -108,12 +114,13 @@ const LADDER: LadderSpec[] = [
     bonus: 10,
   },
   {
-    title: 'Blues lick with hammer-ons',
-    instructions: 'Play the blues lick with hammer-ons and bends.',
-    skillIds: ['lead.hammer-pull', 'lead.bends'],
+    title: 'Hammer-ons and pull-offs',
+    instructions: 'Pick the first note of each group and sound the others with hammer-ons and pull-offs.',
+    // Only what the lick contains: it has no bends, so it says nothing about bending.
+    skillIds: ['lead.hammer-pull'],
     generatorId: 'legatoLick',
     params: { tempo: 80, noteValue: 'eighth', key: 'A' },
-    techniques: 2,
+    techniques: 1,
   },
   {
     title: 'Strumming D-DU-UDU',
@@ -127,7 +134,8 @@ const LADDER: LadderSpec[] = [
     instructions: 'Play the pentatonic boxes in eighth notes at speed.',
     skillIds: ['lead.pent-boxes', 'pick.alternate-8'],
     generatorId: 'scaleRun',
-    params: { tempo: 120, noteValue: 'eighth', key: 'A', box: 1 },
+    // Box 2: box 1 is already task 5, and this task is the evidence for the other boxes.
+    params: { tempo: 120, noteValue: 'eighth', key: 'A', box: 2 },
   },
 ]
 
@@ -140,7 +148,10 @@ function primarySkill(skills: SkillDef[], id: string | undefined): Pick<SkillDef
 export function placementLadder(skills: SkillDef[]): TestTask[] {
   return LADDER.map((spec, i) => {
     const tempo = spec.params.tempo
-    const params: ExerciseParams = { ...spec.params, bars: barsFor(tempo) }
+    const asked: ExerciseParams = { ...spec.params, bars: barsFor(tempo) }
+    // What the task does not say comes from the drill of the skill it tests (its key, its place on the neck).
+    const tested = skills.find((s) => s.id === spec.skillIds[0])
+    const params = tested ? exerciseParams(tested, spec.generatorId, tempo, asked) : asked
     const difficulty = itemDifficulty(primarySkill(skills, spec.skillIds[0]), {
       tempo,
       noteValue: spec.params.noteValue as NoteValue | undefined,
@@ -198,10 +209,6 @@ function playerTier(model: LearnerModel, skills: SkillDef[]): number {
   return tier
 }
 
-function taskTempoParams(tempo: number): ExerciseParams {
-  return { tempo, bars: barsFor(tempo), noteValue: 'quarter', position: 0 }
-}
-
 function dayNumber(now: number): number {
   return Math.floor(now / DAY_MS)
 }
@@ -217,15 +224,18 @@ export function checkpointTasks(
   const tasks: TestTask[] = []
   const skillTask = (id: string, skill: SkillDef, label: string): TestTask => {
     const tempo = model.skills[skill.id]?.tempoCeiling || skill.startTempo
-    const params = taskTempoParams(tempo)
+    const generatorId = skill.generators[0] ?? 'melody'
+    // The check plays the drill the skill is practised with (its note values, hand position and technique),
+    // only longer, and is rated for those note values.
+    const params = exerciseParams(skill, generatorId, tempo, { bars: barsFor(tempo) })
     return {
       id,
       title: `${label}: ${skill.name}`,
       instructions: `Play ${skill.name} at ${tempo} bpm.`,
       skillIds: [skill.id],
-      generatorId: skill.generators[0] ?? 'melody',
+      generatorId,
       params,
-      difficulty: itemDifficulty(skill, { tempo, noteValue: 'quarter' }),
+      difficulty: itemDifficulty(skill, { tempo, noteValue: params.noteValue }),
       passCriteria: { ...TEST_PASS },
     }
   }
@@ -301,10 +311,11 @@ function ratingsOf(model: LearnerModel): Record<string, number> {
   return out
 }
 
-/** Skills whose prerequisites all reach UNLOCK_RATING, lowest rating first. */
+/** Skills the planner may schedule (everything they build on is solid), lowest rating first. */
 function lowestUnlocked(ratings: Record<string, number>, skills: SkillDef[], count: number): string[] {
+  const byId = new Map(skills.map((s) => [s.id, s]))
   return skills
-    .filter((s) => s.prerequisites.every((p) => (ratings[p] ?? 0) >= UNLOCK_RATING))
+    .filter((s) => prerequisitesSolid(s, ratings, byId))
     .sort((a, b) => (ratings[a.id] ?? 0) - (ratings[b.id] ?? 0) || a.id.localeCompare(b.id))
     .slice(0, count)
     .map((s) => s.id)
@@ -325,29 +336,51 @@ export function applyPlacement(
     if (!res) continue
     for (const id of task.skillIds) {
       if (res.passed) {
-        const v = clamp(task.difficulty + PLACEMENT_PASS_OFFSET, 0, 100)
+        const v = clamp(Math.max(task.difficulty + PLACEMENT_PASS_OFFSET, PLACEMENT_PASS_MIN_RATING), 0, 100)
         passedVals.set(id, Math.max(passedVals.get(id) ?? -Infinity, v))
       } else {
-        const v = clamp(task.difficulty - PLACEMENT_PASS_OFFSET, 0, 100)
+        const v = clamp(Math.min(task.difficulty - PLACEMENT_PASS_OFFSET, PLACEMENT_MISS_MAX_RATING), 0, 100)
         failedVals.set(id, Math.min(failedVals.get(id) ?? Infinity, v))
       }
     }
   }
 
   const byId = new Map(skills.map((s) => [s.id, s]))
+  // A pass also vouches for everything the skill builds on, all the way down the chain: those skills
+  // are rated a little under the pass, and never under the minimum pass rating.
+  const impliedByPass = new Map<string, number>()
+  const vouchFor = (id: string, value: number): void => {
+    for (const p of byId.get(id)?.prerequisites ?? []) {
+      if ((impliedByPass.get(p) ?? -Infinity) >= value) continue
+      impliedByPass.set(p, value)
+      vouchFor(p, value)
+    }
+  }
+  for (const [id, v] of passedVals) vouchFor(id, Math.max(PLACEMENT_PASS_MIN_RATING, v - PLACEMENT_INHERIT_OFFSET))
+  const passValues = [...passedVals.values()]
+  const meanPass = passValues.length > 0 ? passValues.reduce((sum, v) => sum + v, 0) / passValues.length : 0
+
   const memo = new Map<string, number>()
   const resolving = new Set<string>()
   const ratingOf = (id: string): number => {
     const cached = memo.get(id)
     if (cached !== undefined) return cached
     let r: number
-    if (passedVals.has(id)) r = passedVals.get(id) as number
+    const implied = impliedByPass.get(id)
+    if (passedVals.has(id)) r = Math.max(passedVals.get(id) as number, implied ?? 0)
+    else if (implied !== undefined) r = implied
     else if (failedVals.has(id)) r = failedVals.get(id) as number
     else {
       const def = byId.get(id)
       const prereqs = (def?.prerequisites ?? []).filter((p) => byId.has(p) && !resolving.has(p))
-      if (prereqs.length === 0) r = 0
-      else {
+      if (prereqs.length === 0) {
+        // The ladder has no task for the very first basics or for playing to the click, but every
+        // pass shows them: the task was played on a guitar and inside the timing limits.
+        if (passValues.length === 0) r = 0
+        else if (def?.tier === 0) r = PLACEMENT_PASS_MIN_RATING
+        else if (def?.category === 'timing') r = meanPass
+        else r = 0
+      } else {
         resolving.add(id)
         const mean = prereqs.reduce((s, p) => s + ratingOf(p), 0) / prereqs.length
         resolving.delete(id)
@@ -413,7 +446,9 @@ export function applyTestResults(
       if (!def) continue
       const current = nextSkills[id] ?? newState(id, 0)
       if (!(id in before)) before[id] = current.rating
-      nextSkills[id] = { ...applyAttempt(current, res.attempt, def), lastTestedAt: now }
+      // A test task measures, it is not practice: the rating moves, but the count of practice rounds stays,
+      // so a skill met only in a check is still new to the learner when the next days are planned.
+      nextSkills[id] = { ...applyAttempt(current, res.attempt, def), attempts: current.attempts, lastTestedAt: now }
       if (!res.passed && !failedSkills.includes(id)) failedSkills.push(id)
     }
   }

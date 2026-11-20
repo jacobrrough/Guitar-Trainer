@@ -41,4 +41,16 @@ describe('exercise registry', () => {
     expect(params.bars).toBe(2)
     expect(params.tempo).toBe(72)
   })
+
+  it('fills in what a caller left out from the skill\'s own defaults, so a bare tempo still gives the skill\'s drill', () => {
+    const vibrato = SKILLS.find((s) => s.id === 'lead.vibrato')!
+    const bare = generateExercise(vibrato, 'bendTargets', { tempo: 60, bars: 4 }, DEFAULT_TUNING)
+    const full = generateExercise(vibrato, 'bendTargets', exerciseParams(vibrato, 'bendTargets', 60, { bars: 4 }), DEFAULT_TUNING)
+    expect(bare.chart).toEqual(full.chart)
+    expect(bare.chart.notes.every((n) => n.tech?.vibrato && n.fret >= 5)).toBe(true)
+    // What the caller did say still wins.
+    const eight = generateExercise(vibrato, 'bendTargets', { tempo: 60, bars: 8 }, DEFAULT_TUNING)
+    expect(eight.chart.notes).toHaveLength(16)
+    expect(eight.params.bars).toBe(8)
+  })
 })

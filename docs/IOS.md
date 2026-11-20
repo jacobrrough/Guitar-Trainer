@@ -27,7 +27,7 @@ The app must be served over HTTPS; GitHub Pages (the included workflow) qualifie
 | **Best:** audio interface (USB-C / Lightning, class compliant, e.g. iRig HD, Focusrite Scarlett Solo, Apogee Jam) | Plug in, pick it under Settings → Input device, run *Calibrate*. Headphones from the interface. |
 | Wired headphones + built-in mic | Works well for acoustic and clean tones. Calibrate once. |
 | Bluetooth headphones | Playable, but expect 150–250 ms of latency. Calibration compensates for scoring, but the count-in and your own picking will feel late. Prefer wired. |
-| Phone speaker, no headphones | The microphone hears the speaker, so the song would score itself. While the mic is on, synthesised content (demo, drills) plays drums and click only; tap the speaker icon to hear the part. The count-in checks for bleed and, if found, the run is shown but does not count towards ratings. For real recordings use headphones, or turn on **Settings → Speaker mode** (echo cancellation), which iOS pays for with phone-call playback quality. Sync your sound (calibration) works here too: the click's own echo is a valid measurement of the delay. |
+| Phone speaker, no headphones | The microphone hears the speaker, so the song would score itself. While the mic is on, the app's own songs and drills play the click track only; tap the speaker icon to hear the guitar part. If the part is on and the count-in is heard through the speaker, the run is shown as "did not count" and nothing is saved. For real recordings use headphones, or turn on **Settings → Speaker mode** (echo cancellation), which iOS pays for with phone-call playback quality. Sync your sound (calibration) works here too: the click's own echo is a valid measurement of the delay. |
 
 Other iOS details handled by the app:
 
@@ -40,7 +40,11 @@ Other iOS details handled by the app:
   metronome and count-in are not muted by the ringer switch.
 - The screen stays awake while you play, tune or run the metronome (Wake Lock API in Safari
   16.4+). Home-screen web apps only honour it from iOS 18.4; on 16.4 to 18.3 (and in a
-  Capacitor wrapper, which has no Wake Lock API) the app plays a hidden muted video instead.
+  Capacitor wrapper, which has no Wake Lock API) the app plays a tiny silent video clip
+  instead, which is what keeps an iPhone's screen on. That stand-in has not been tried on
+  a real iPhone yet: if the screen still locks on those versions, raise Auto-Lock in the
+  iOS settings while you practise. In Low Power Mode iOS refuses the wake lock and the app
+  respects that.
 - After a phone call, Siri or an app switch the app resumes the audio engine and reopens the
   microphone; a song that was playing is paused rather than silently scored.
 - Audio is stored as raw bytes in IndexedDB rather than as Blobs, which have a
@@ -62,8 +66,16 @@ and MIDI files open from the Files app through the normal file picker.
   without use. Install to the home screen to keep your library.
 - The microphone permission is typically asked again each time an installed web app is
   launched from a cold start (iOS does not persist it for home-screen apps).
-- A new version of the app is applied the next time every window of it has been closed
-  (swipe it away in the app switcher); it never reloads mid-song.
+- New versions arrive by themselves. The app looks for one when it is opened and when it
+  comes back to the foreground. A version that is already downloaded is switched to while
+  the app is opening, or the next time the app is put away on a quiet screen; otherwise
+  the main screens show an **Update now** bar. It never reloads in the middle of a song,
+  a lesson, tuning or a test. **Settings → About** shows which version is running and has
+  a **Check for updates** button. After an update that changes the guitar sound, the
+  bundled songs are rendered again in the background the next time the app opens.
+- The app asks iOS to keep its saved songs and progress (persistent storage). For an app
+  on the home screen this is granted without a question; Settings → About shows whether
+  the data is protected.
 - Transcription of a full song takes longer on a phone (expect about a minute for a
   4-minute track on a recent iPhone; longer on older models). It runs in a worker,
   so the UI stays responsive, but keep the app in the foreground.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ClickMatcher, calibrationAdvice, createOnsetDetector, noiseFloor, summarise, type LevelFrame } from './calibration'
+import { ClickMatcher, RunGuard, calibrationAdvice, createOnsetDetector, noiseFloor, summarise, type LevelFrame } from './calibration'
 
 const HOP = 512 / 48000
 
@@ -139,5 +139,43 @@ describe('calibrationAdvice', () => {
 
   it('asks for louder strums otherwise', () => {
     expect(calibrationAdvice(1, 8, 0.002)).toMatch(/1 of 8/)
+  })
+})
+
+describe('RunGuard', () => {
+  it('a run stays current until the dialog closes', () => {
+    const guard = new RunGuard()
+    const current = guard.start()
+    expect(current()).toBe(true)
+    guard.cancel()
+    expect(current()).toBe(false)
+  })
+
+  it('a new run ends the one before it, and closing ends both', () => {
+    const guard = new RunGuard()
+    const first = guard.start()
+    const second = guard.start()
+    expect(first()).toBe(false)
+    expect(second()).toBe(true)
+    guard.cancel()
+    expect(second()).toBe(false)
+  })
+
+  it('a run closed while it waited does not go on to stop the microphone', async () => {
+    const guard = new RunGuard()
+    const touched: string[] = []
+    // The shape of the dialog's run: wait for the clicks, then close the microphone it opened.
+    const run = async (clicksOver: Promise<void>) => {
+      const current = guard.start()
+      await clicksOver
+      if (!current()) return
+      touched.push('stopMic')
+    }
+    let finish = () => {}
+    const pending = run(new Promise<void>((resolve) => (finish = resolve)))
+    guard.cancel() // the dialog is closed; by now the tuner may own the microphone
+    finish()
+    await pending
+    expect(touched).toEqual([])
   })
 })

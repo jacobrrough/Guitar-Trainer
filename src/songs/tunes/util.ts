@@ -22,13 +22,15 @@ export interface MelodySpec {
   bars: number
   beatsPerBar?: number
   steps: MelodyStep[]
+  /** Finger per fret where the tune is not played in first position (fret 3 with the index finger, say). */
+  fingers?: Record<number, 1 | 2 | 3 | 4>
 }
 
 export function melodyChart(spec: MelodySpec): Chart {
   const b = new ChartBuilder({ bpm: spec.bpm, beatsPerBar: spec.beatsPerBar ?? 4, tuning: DEFAULT_TUNING, title: spec.title })
   let beat = 0
   for (const [string, fret, len] of spec.steps) {
-    if (string >= 0) b.note(beat, len, string, fret, { finger: fingerFor(fret), velocity: beat % b.beatsPerBar === 0 ? 0.9 : 0.78 })
+    if (string >= 0) b.note(beat, len, string, fret, { finger: spec.fingers?.[fret] ?? fingerFor(fret), velocity: beat % b.beatsPerBar === 0 ? 0.9 : 0.78 })
     beat += len
   }
   return { ...b.build(spec.bars), artist: spec.artist, source: 'builtin' }
@@ -58,7 +60,8 @@ export function strumChart(spec: StrumSpec): Chart {
       for (let i = 0; i < bpb; i++) b.chord(b.at(bar, i), 1, shape, name, { velocity: i === 0 ? 0.9 : 0.75 })
     }
   })
-  return { ...b.build(spec.bars.length), artist: spec.artist, source: 'builtin' }
+  // The chords are the ones the lessons teach: the easy levels thin the strums, never the shapes.
+  return { ...b.build(spec.bars.length), artist: spec.artist, source: 'builtin', wholeChords: true }
 }
 
 /** Chord names in order of first appearance. */
