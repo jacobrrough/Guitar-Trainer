@@ -198,7 +198,15 @@ then hands the block runner the same `AttemptResult` shape.
   microphone model, latency, slow speed, quiet playing, silence, the click alone,
   wrong notes and skipped notes. `FULL_SIM=1 npx vitest run
   src/features/play/scoring.matrix.test.ts` runs every song and exercise in every
-  scenario (about twenty minutes) and prints one line per case.
+  scenario (about twelve minutes) and prints one line per case.
+  `scoring.patterns.sim.test.ts` plays figures ordinary music is made of (bass walks,
+  let-ring arpeggios, power-chord changes, hammer-ons) and `scoring.chords.sim.test.ts`
+  every chord exercise from its start tempo to its target tempo, the chord lessons and
+  the strummed songs, each heard six ways and each with the ways of not playing it that
+  must not score (wrong chords, one string picked, open strings, strums left out). A
+  plain test run plays five stand-in cases of the chord gate; `FULL_SIM=1` plays all of
+  it (four shards side by side with `CHORDS_SHARD=0/4` … `3/4`). Run the whole chord
+  gate and the matrix before and after any change to the scorer.
 - `npm run test:student` – the virtual student, end to end in Chromium: a new learner
   goes through the set-up and lesson 1 while a recorded-guitar performance is fed in as
   the microphone, in step with the song. The rig models a device with a long sound

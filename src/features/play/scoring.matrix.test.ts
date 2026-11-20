@@ -56,6 +56,11 @@ it.skipIf(!process.env.FULL_SIM)('every case, every scenario', async () => {
   }
   emit('TOTALS ' + Object.entries(tot).map(([k, [h, t]]) => `${k} ${h}/${t} (${((100 * h) / t).toFixed(1)}%)`).join('  '))
   const share = (k: string) => tot[k][0] / tot[k][1]
+  // These are the targets, not a description of today. Two of them are not met yet, and this test says so
+  // by failing: 'quiet' stands at 98.9 % (power chords at 140 bpm and the strum pattern at 120 bpm lose
+  // strums at a tenth of the level) and 'wrong' at 2.04 % (nearly all of it one case, sixteenth notes at
+  // 110 bpm, where a note played a fret off is the next note's pitch inside the next note's window).
+  // Every other total is met. Compare line by line with the last saved run when changing the scorer.
   expect(share('perfect')).toBeGreaterThanOrEqual(0.995)
   for (const k of ['48k', 'click', 'lat60', 'slow', 'quiet']) expect(share(k), k).toBeGreaterThanOrEqual(0.99)
   expect(share('phone')).toBeGreaterThanOrEqual(0.97)

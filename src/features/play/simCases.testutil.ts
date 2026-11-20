@@ -63,6 +63,44 @@ export function skillCases(): SimCase[] {
   return cases
 }
 
+/** The skills whose exercises are strummed chords or power chords. */
+export const CHORD_SKILLS = ['chord.open', 'chord.changes-open', 'chord.power', 'chord.barre', 'chord.sevenths', 'chord.strum-patterns']
+
+export interface ChordSimCase extends SimCase {
+  /** A tempo a learner starts at (or a lesson, or a song): every chord has to count there. */
+  entry: boolean
+}
+
+/**
+ * Every chord exercise the daily plan can hand out: each chord skill, each of its exercises, at the
+ * skill's start tempo, its target tempo and two tempos in between. The "open chords" skill walks
+ * through six chord pairs from day to day (the seed): the first pair is played at all four tempos, the
+ * others at the start and the target tempo.
+ */
+export function chordSkillCases(): ChordSimCase[] {
+  const cases: ChordSimCase[] = []
+  const seen = new Set<string>()
+  for (const skill of SKILLS.filter((s) => CHORD_SKILLS.includes(s.id))) {
+    const span = skill.targetTempo - skill.startTempo
+    const tempos = [...new Set([0, 1, 2, 3].map((k) => Math.round((skill.startTempo + (span * k) / 3) / 5) * 5))]
+    for (const gid of skill.generators) {
+      const seeds = skill.id === 'chord.open' && gid === 'chordChanges' ? [0, 1, 2, 3, 4, 5] : [0]
+      for (const seed of seeds) {
+        for (const tempo of seed === 0 ? tempos : [skill.startTempo, skill.targetTempo]) {
+          const params = { ...exerciseParams(skill, gid, tempo), ...(seeds.length > 1 ? { seed } : {}) }
+          const ex = generateExercise(skill, gid, params, DEFAULT_TUNING)
+          // Two skills can hand out the very same exercise at the same tempo.
+          const key = `${gid}@${tempo}|${ex.title}|${ex.chart.notes.length}`
+          if (seen.has(key) || ex.interaction === 'ear') continue
+          seen.add(key)
+          cases.push({ name: `skill ${skill.id} ${gid}@${tempo}: ${ex.title}`, kind: 'skill', chart: ex.chart, notes: ex.chart.notes, entry: tempo === skill.startTempo })
+        }
+      }
+    }
+  }
+  return cases
+}
+
 /** The case's notes played exactly as written on the recorded guitar. */
 export function perform(c: SimCase, bank: SampleBank, sampleRate: number, notes: ChartNote[] = c.notes): Float32Array {
   return renderStrings({ ...c.chart, notes }, { bank, sampleRate })

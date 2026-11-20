@@ -122,13 +122,12 @@ describe('what must not score', () => {
     expect(heard, `${heard} of ${strums}`).toBeLessThanOrEqual(0.1 * strums)
   })
 
-  // Known gap in the scorer (scoring.ts), written down here so it cannot be forgotten. The six open
-  // strings share four strings with E minor and three with G; with one string forgiven as muted and
-  // one as extra, they are heard as E minor every time (16 of 16 strums) and as G two times in three
-  // (29 of 43). The lessons now ask for the whole chord, but until the scorer tells these apart a
-  // learner who presses nothing still passes lessons 5 and 6. When it does, these turn red: then
-  // change `it.fails` to `it`.
-  it.fails.each(['Em', 'G'])('strumming without pressing any string down is not %s either', (chord) => {
+  // The six open strings share four strings with E minor and three with G, and with one string
+  // forgiven as muted and one as extra they used to be heard as E minor every time and as G two times
+  // in three. The chart knows which strings are fretted: where the stroke adds what those strings
+  // sound like open, the fingers are not down. (Through all the chord exercises E minor still gets by
+  // more often than this: see the known gaps in scoring.chords.sim.test.ts.)
+  it.each(['Em', 'G'])('strumming without pressing any string down is not %s either', (chord) => {
     const { strums, heard } = heardOpen[chord]
     expect(strums).toBeGreaterThan(0)
     expect(heard, `${heard} of ${strums}`).toBeLessThanOrEqual(0.1 * strums)
@@ -205,10 +204,10 @@ describe('chords on the recorded guitar', () => {
     const duration = 2 + names.length * 2
     return { version: 1, title: 'chords', artist: '', source: 'demo', tuning: TUNING, capo: 0, duration, notes, beats: constantBeatGrid(60, 0, duration, 4), tempos: [{ time: 0, bpm: 60 }], timeSignatures: [{ time: 0, numerator: 4, denominator: 4 }] }
   }
-  const play = (expected: string[], played: string[], mutate: (notes: ChartNote[]) => ChartNote[] = (n) => n) => {
+  const play = (expected: string[], played: string[], mutate: (notes: ChartNote[]) => ChartNote[] = (n) => n, heard: (mic: Float32Array) => Float32Array = (m) => m) => {
     const want = progression(expected)
     const mic = renderStrings({ ...want, notes: mutate(progression(played).notes) }, { bank, sampleRate: 44100 })
-    return simulateRun(want.notes, want.beats, mic, { sampleRate: 44100 })
+    return simulateRun(want.notes, want.beats, heard(mic), { sampleRate: 44100 })
   }
 
   it('hears every open chord of the course, through the changes', () => {
@@ -236,6 +235,27 @@ describe('chords on the recorded guitar', () => {
       expect(play([name], [name], (notes) => notes.filter((n) => n.midi !== top)).statuses, `${name} without its top string`).toEqual(['hit'])
     }
   })
+
+  // The chords that open strings could pass for (see "strumming without pressing any string down"):
+  // the rule that tells them apart must not cost a learner the string a finger leans on, whichever
+  // it is, nor when playing quietly or into a phone.
+  const hearings: [string, (mic: Float32Array) => Float32Array][] = [
+    ['in a quiet room', (m) => m],
+    ['at a tenth of the level', (m) => m.map((v) => v * 0.1)],
+    ['through a phone microphone', (m) => phoneMic(m, 44100)],
+  ]
+  for (const name of ['Em', 'G']) {
+    for (const [where, heard] of hearings) {
+      // Known gap: G without its open D string, into a phone. The phone hears little of the two low
+      // strings, and since one string's overtones no longer count for a second note (the low strings
+      // and the D are the only notes of G that are nobody's overtone) the chord is not found.
+      const gap = name === 'G' && where === 'through a phone microphone'
+      ;(gap ? it.fails : it)(`forgives any one muted string of ${name}, ${where}`, () => {
+        const missed = SHAPES[name].filter((midi) => play([name], [name], (notes) => notes.filter((n) => n.midi !== midi), heard).statuses[0] !== 'hit')
+        expect(missed).toEqual([])
+      })
+    }
+  }
 
   it('forgives one extra open string caught by the strum', () => {
     const extra: Record<string, number> = { D: 45, A: 40, C: 40, Am: 40 }
