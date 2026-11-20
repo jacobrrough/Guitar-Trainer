@@ -84,7 +84,7 @@ npm test           # unit tests (Vitest)
 npm run build      # production build in dist/
 npm run preview    # serve the production build
 npm run test:e2e   # Playwright smoke test against the build (uses a fake microphone)
-npm run test:student   # a recorded guitar "plays" lesson 1 and songs into the real app, end to end
+npm run test:student   # a recorded guitar "plays" calibration, lesson 1, songs and a day's plan into the real app
 npm run typecheck
 ```
 

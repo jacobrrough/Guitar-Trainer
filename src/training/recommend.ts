@@ -139,14 +139,20 @@ function exerciseRules(ctx: RecommendContext, desc: Attempt[]): Recommendation[]
     if (list.length < 2) continue
     const skillId = id as string
     const [a, b] = list
-    if (!ratchet && a.accuracy >= REP_UP_ACCURACY && b.accuracy >= REP_UP_ACCURACY) {
+    const def = ctx.skills.find((s) => s.id === skillId)
+    // Ear training is not played to a tempo: nothing to say about one.
+    if (!ratchet && def?.category !== 'ear' && a.accuracy >= REP_UP_ACCURACY && b.accuracy >= REP_UP_ACCURACY) {
       const tempo = Math.round(a.playedTempo)
+      // The Coach never asks for faster than the skill's target tempo, so the card must not promise it.
+      const top = def?.targetTempo ?? Infinity
+      const next = Math.min(top, Math.round(tempo * 1.05))
+      const rounds = `Two reps in a row at ${pct(b.accuracy)} % and ${pct(a.accuracy)} %.`
       ratchet = {
         id: 'tempo-ratchet',
         priority: 40,
         title: `${nameOf(skillId)} now clean at ${tempo} bpm.`,
-        reason: `Two reps in a row at ${pct(b.accuracy)} % and ${pct(a.accuracy)} %. Next target: ${Math.round(tempo * 1.05)} bpm (+5 %).`,
-        action: { type: 'practice', skillId, tempo: Math.round(tempo * 1.05) },
+        reason: next > tempo ? `${rounds} Next: ${next} bpm.` : `${rounds} That is the tempo this exercise aims for: a few more clean rounds there and it is done.`,
+        action: { type: 'practice', skillId, tempo: Math.max(next, Math.min(tempo, top)) },
       }
     }
     if (!fallback && a.accuracy < 0.6 && b.accuracy < 0.6) {
@@ -177,14 +183,16 @@ function testRules(ctx: RecommendContext, desc: Attempt[]): Recommendation[] {
   for (const [id, list] of tests) {
     const skillId = id as string
     const passed = (a: Attempt) => meetsCriteria(TEST_PASS, a)
-    if (!up && passed(list[0])) {
-      const from = Math.round(list[0].targetTempo)
-      const to = Math.round(from * 1.1)
+    const top = ctx.skills.find((s) => s.id === skillId)?.targetTempo ?? Infinity
+    const from = Math.round(list[0].targetTempo)
+    // A check passed at the skill's own target tempo has nowhere faster to go: no card.
+    if (!up && passed(list[0]) && from < top) {
+      const to = Math.min(top, Math.round(from * 1.1))
       up = {
         id: 'test-passed-target-up',
         priority: 70,
-        title: `${nameOf(skillId)}: ${from} → ${to} bpm target.`,
-        reason: `Test passed at ${from} bpm with ${pct(list[0].accuracy)} % accuracy. The target tempo goes up 10 %.`,
+        title: `${nameOf(skillId)}: ${from} → ${to} bpm.`,
+        reason: `Check passed at ${from} bpm with ${pct(list[0].accuracy)} % accuracy. The next step is ${to} bpm.`,
         action: { type: 'practice', skillId, tempo: to },
       }
     }
@@ -225,7 +233,7 @@ function plateauRule(ctx: RecommendContext, desc: Attempt[]): Recommendation | n
     if (!det.plateau) continue
     const step = nextIntervention(state)
     if (!step) continue
-    const base = state.tempoCeiling || def.startTempo
+    const base = Math.min(def.targetTempo, state.tempoCeiling || def.startTempo)
     const tempo = Math.round(base * step.tempoFactor)
     const weeks = Math.max(1, Math.round(det.days / 7))
     const target = step.step === 3 && def.prerequisites[0] ? def.prerequisites[0] : skillId

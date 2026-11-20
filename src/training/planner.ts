@@ -38,6 +38,7 @@ import {
   PLACEMENT_MINUTES,
   REP_DOWN_ACCURACY,
   REP_TEMPO_DOWN,
+  REP_TEMPO_EASE,
   REP_TEMPO_UP,
   REP_UP_ACCURACY,
   SESSION_TEMPLATES,
@@ -173,16 +174,32 @@ export function focusPriority(
   return goalWeight(skill, prefs) * (1 - r / 100) * recency * readiness
 }
 
-/** Tempo for the next rep (docs §6.4). */
-export function nextRepTempo(currentTempo: number, accuracy: number, sessionStartTempo: number): number {
+/**
+ * Tempo for the next rep (docs §6.4). `maxTempo` is the tempo the skill aims for: an exercise is never
+ * asked for faster than that. Played cleanly there, the skill is done and the time belongs to the next one.
+ * `heldBefore`: the round before this one was at the same tempo and in the in-between band as well.
+ */
+export function nextRepTempo(currentTempo: number, accuracy: number, sessionStartTempo: number, maxTempo = Infinity, heldBefore = false): number {
   let t = currentTempo
   if (accuracy >= REP_UP_ACCURACY) {
     const cap = sessionStartTempo * (1 + MAX_SESSION_TEMPO_GAIN)
     t = Math.min(currentTempo * (1 + REP_TEMPO_UP), Math.max(cap, currentTempo))
   } else if (accuracy < REP_DOWN_ACCURACY) {
     t = currentTempo * (1 - REP_TEMPO_DOWN)
+  } else if (heldBefore) {
+    t = currentTempo * (1 - REP_TEMPO_EASE)
   }
-  return Math.max(MIN_TEMPO, Math.round(t))
+  return Math.max(MIN_TEMPO, Math.round(Math.min(t, maxTempo)))
+}
+
+/** True for a round that was neither clean nor rough: the tempo neither rises nor falls after it. */
+export function inHoldBand(accuracy: number): boolean {
+  return accuracy >= REP_DOWN_ACCURACY && accuracy < REP_UP_ACCURACY
+}
+
+/** The fastest an exercise block may be asked for: the target tempo of its skill, stored with the block. */
+function maxTempoOf(block: ExerciseBlock): number {
+  return typeof block.params.maxTempo === 'number' && block.params.maxTempo > 0 ? block.params.maxTempo : Infinity
 }
 
 /** Seconds one round of an exercise takes: the count-in, the bars, and the silence after them. */
@@ -420,6 +437,8 @@ function makeExercise(
   tempo: number,
   reason: string,
 ): ExerciseBlock {
+  // Never faster than the skill aims for, whatever an old ceiling says.
+  tempo = Math.min(tempo, skill.targetTempo)
   return {
     id: '',
     kind,
@@ -427,7 +446,7 @@ function makeExercise(
     minutes,
     skillId: skill.id,
     generatorId: skill.generators[0] ?? '',
-    params: { tempo, bars: EXERCISE_BARS, startTempo: tempo },
+    params: { tempo, bars: EXERCISE_BARS, startTempo: tempo, maxTempo: skill.targetTempo },
     tempo,
     reps: 1,
     reason,
@@ -713,6 +732,8 @@ export function planSession(input: PlannerInput): SessionPlan {
   if (tpl.ear > 0) {
     ear = unlockedSkills.find((s) => s.category === 'ear' && !inPlan.has(s.id))
     if (!ear) extra += tpl.ear
+    // It has its own block: not the recap of the same day as well.
+    else inPlan.add(ear.id)
   }
 
   const testBlock = (test: TestType, minutes: number): TestBlock => ({
@@ -832,10 +853,11 @@ export function adaptAfterBlock(plan: SessionPlan, blockId: string, attempt: Att
     if (!isExercise(b) || b.status !== 'pending') return { ...b }
     const start = typeof b.params.startTempo === 'number' ? b.params.startTempo : b.tempo
     if (isWarmup) {
-      return withTempo(b, Math.round(b.tempo * ratio), Math.round(start * ratio))
+      const max = maxTempoOf(b)
+      return withTempo(b, Math.min(max, Math.round(b.tempo * ratio)), Math.min(max, Math.round(start * ratio)))
     }
     if (isExercise(done) && b.skillId === done.skillId) {
-      return withTempo(b, nextRepTempo(b.tempo, performance.acc, start), start)
+      return withTempo(b, nextRepTempo(b.tempo, performance.acc, start, maxTempoOf(b)), start)
     }
     return { ...b }
   })

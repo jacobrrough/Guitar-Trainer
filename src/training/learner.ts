@@ -1,5 +1,7 @@
 import {
+  AT_TARGET_MIN_GAIN,
   BAND_THRESHOLDS,
+  BELOW_TARGET_RATING,
   CEILING_MIN_ACCURACY,
   CEILING_WINDOW_ATTEMPTS,
   CEILING_WINDOW_DAYS,
@@ -9,9 +11,9 @@ import {
   K_TEST,
   LOW_CONFIDENCE_ATTEMPTS,
   LOW_CONFIDENCE_MULTIPLIER,
-  PROVISIONAL_RATING_CAP,
   RATING_GAIN,
   RATING_HEADROOM,
+  START_TEMPO_RATING,
   REVIEW_START_EASE,
   RUST_GRACE_DAYS,
   RUST_MAX_POINTS,
@@ -67,7 +69,7 @@ export function runScore(performance: number): number {
 }
 
 /** What the rating needs to know about a run. The optional fields are there on every run the app records. */
-type RatedRun = Pick<Attempt, 'kind' | 'performance' | 'difficulty' | 'reliable'> & Partial<Pick<Attempt, 'accuracy' | 'speed'>>
+type RatedRun = Pick<Attempt, 'kind' | 'performance' | 'difficulty' | 'reliable'> & Partial<Pick<Attempt, 'accuracy' | 'speed' | 'playedTempo'>>
 
 /**
  * A practice run that hit enough notes to raise the tempo (CEILING_MIN_ACCURACY) is a clean run, whatever
@@ -86,15 +88,48 @@ function cleanPractice(run: RatedRun): boolean {
  * A clean run scores 1, which is never below what was expected, so it never lowers a rating.
  * A weaker run still lowers it when the rating promised more. A gain stops RATING_HEADROOM points
  * above the item's difficulty: easy material, however often and however well it is played, proves no more.
+ * With the skill's own tempos (`tempos`: where its exercise starts and where it aims) two more things hold:
+ * - slow rounds prove the skill up to "solid" and no further: the rest, up to just under "mastered", is
+ *   earned on the way from the start tempo to the target tempo (START_TEMPO_RATING, BELOW_TARGET_RATING).
+ *   What counts is the tempo the learner has shown: this run's own if it was accurate (85 % of the notes,
+ *   not slowed down), otherwise no more than the fastest tempo already played that well. A rough round
+ *   at a fast tempo proves nothing about that tempo;
+ * - the Coach never asks for faster than the target tempo, so an accurate run there is all the skill
+ *   can show: it may carry the rating all the way up, whatever the item's difficulty, and a clean
+ *   practice round adds at least a point.
  */
-export function ratingDelta(state: SkillState, attempt: RatedRun): number {
+export function ratingDelta(state: SkillState, attempt: RatedRun, tempos?: { start: number; target: number }): number {
   let k = attempt.kind === 'test' ? K_TEST : K_PRACTICE
   if (state.confidence < LOW_CONFIDENCE_ATTEMPTS) k *= LOW_CONFIDENCE_MULTIPLIER
   if (!attempt.reliable) k /= UNRELIABLE_K_DIVISOR
-  const score = cleanPractice(attempt) ? 1 : runScore(attempt.performance)
-  const delta = k * (score - expectedScore(state.rating, attempt.difficulty)) * RATING_GAIN
+  const clean = cleanPractice(attempt)
+  const score = clean ? 1 : runScore(attempt.performance)
+  let delta = k * (score - expectedScore(state.rating, attempt.difficulty)) * RATING_GAIN
+  let top = attempt.difficulty + RATING_HEADROOM
+  // A run or a state stored without a tempo that can be read (an old backup) is rated by difficulty alone.
+  if (tempos && attempt.playedTempo !== undefined && Number.isFinite(attempt.playedTempo)) {
+    const accurate = (attempt.accuracy ?? 0) >= CEILING_MIN_ACCURACY && (attempt.speed ?? 1) >= SONG_FULL_SPEED
+    const ceiling = Number.isFinite(state.tempoCeiling) ? state.tempoCeiling : 0
+    const shown = accurate ? attempt.playedTempo : Math.min(attempt.playedTempo, ceiling)
+    if (accurate && shown >= tempos.target) {
+      top = 100
+      if (clean) delta = Math.max(delta, attempt.reliable ? AT_TARGET_MIN_GAIN : 0)
+    } else {
+      top = Math.min(top, tempoProgressRating(shown, tempos))
+    }
+  }
   if (delta <= 0) return delta
-  return Math.min(delta, Math.max(0, attempt.difficulty + RATING_HEADROOM - state.rating))
+  return Math.min(delta, Math.max(0, top - state.rating))
+}
+
+/**
+ * The highest rating that playing shown at `tempo` can lead to while the target has not been played
+ * accurately: START_TEMPO_RATING at the skill's start tempo (or below), BELOW_TARGET_RATING from its target up.
+ */
+export function tempoProgressRating(tempo: number, tempos: { start: number; target: number }): number {
+  const span = tempos.target - tempos.start
+  const progress = span > 0 ? Math.min(1, Math.max(0, (tempo - tempos.start) / span)) : tempo >= tempos.target ? 1 : 0
+  return START_TEMPO_RATING + (BELOW_TARGET_RATING - START_TEMPO_RATING) * progress
 }
 
 /**
@@ -127,22 +162,22 @@ export function applyAttempt(
   now = attempt.at,
 ): SkillState {
   if (attempt.bleed) return state
-  let rating = Math.min(100, Math.max(0, state.rating + ratingDelta(state, attempt)))
-  // Chroma-scored attempts judge whole chords reliably, so the provisional cap only guards pitch-scored ones.
-  if (skill.provisional && attempt.chordScoring !== 'chroma') rating = Math.min(rating, PROVISIONAL_RATING_CAP)
+  const rating = Math.min(100, Math.max(0, state.rating + ratingDelta(state, attempt, { start: skill.startTempo, target: skill.targetTempo })))
   const days = state.lastPracticedAt === undefined ? 0 : Math.max(0, (now - state.lastPracticedAt) / DAY_MS)
   const measured = updateTempoCeiling([...recentAttempts, attempt], now)
-  // A warm-up is played below the ceiling on purpose. Played cleanly it says nothing against the ceiling,
-  // so it can raise it but not lower it: otherwise a few days of warm-up rounds push every faster run out
-  // of the recent window and the Coach asks for a slower tempo after each of them.
-  const cleanWarmup = attempt.kind === 'warmup' && attempt.accuracy >= CEILING_MIN_ACCURACY
+  // A warm-up is played cold and below the ceiling on purpose: it says nothing against the ceiling, so it
+  // can raise it but never lower it. Clean ones would otherwise push every faster run out of the recent
+  // window, and each rough one cut the ceiling to nine tenths with no way back up (the skill a learner
+  // plays best is the daily warm-up and is not a main exercise): 100 bpm became 53 in a month. A rough
+  // warm-up slows the rest of that day instead (the day factor), and still costs rating points.
+  const warmup = attempt.kind === 'warmup'
   const next: SkillState = {
     ...state,
     rating,
     confidence: state.confidence * Math.exp(-days / 30) + 1,
     attempts: state.attempts + 1,
     lastPracticedAt: now,
-    tempoCeiling: cleanWarmup ? Math.max(state.tempoCeiling, measured) : measured,
+    tempoCeiling: warmup ? Math.max(state.tempoCeiling, measured) : measured,
   }
   if (attempt.kind === 'test') next.lastTestedAt = now
   return next

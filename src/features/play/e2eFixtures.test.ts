@@ -4,8 +4,11 @@
  * as the screen shows them, plus one wrong performance (every note a tone too high). Skipped unless a
  * folder is named:
  *   E2E_FIXTURES=e2e/output/fixtures npx vitest run src/features/play/e2eFixtures.test.ts
+ * With E2E_BLOCK=<file> as well (a block of today's plan, as stored: an exercise with skillId,
+ * generatorId, tempo and params, or a song with builtinId, level and speed) it writes only that
+ * block's performance, built the way the app builds it: today-block.wav.
  */
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, it } from 'vitest'
 import { loadRealBank } from '../../audio/instrument/realBank.testutil'
@@ -13,16 +16,52 @@ import { encodeWav } from '../../audio/synth'
 import { generateLevels, suggestedLevel } from '../../chart/difficulty'
 import { COURSE } from '../../lessons/course'
 import { BUILT_IN_SONGS } from '../../songs'
+import { DEFAULT_TUNING } from '../../training/exercises/builder'
+import { exerciseParams, generateExercise } from '../../training/exercises/index'
+import { SKILLS_BY_ID } from '../../training/skills'
 import { atSpeed, lessonCases, perform, transposed, type SimCase } from './simCases.testutil'
 
 const dir = process.env.E2E_FIXTURES
+const blockFile = process.env.E2E_BLOCK
 const SAMPLE_RATE = 48000
 /** Bundled songs played from the library at the level the app suggests, full speed. */
 const LIBRARY_SONGS = ['ode-to-joy', 'em-am-groove', 'amazing-grace']
 
 const groupCount = (c: SimCase) => new Set(c.notes.map((n) => n.chordId ?? `n${n.id}`)).size
 
-it.skipIf(!dir)('writes the virtual student’s performances', async () => {
+it.skipIf(!dir || !blockFile)('writes the exercise of a planned block, as the app builds it', async () => {
+  const out = path.resolve(dir!)
+  mkdirSync(out, { recursive: true })
+  const block = JSON.parse(readFileSync(blockFile!, 'utf8')) as
+    | { skillId: string; generatorId: string; tempo: number; params: Record<string, unknown> }
+    | { builtinId: string; level: number; speed: number }
+  let c: SimCase
+  let title: string
+  if ('builtinId' in block) {
+    // A song block: the level of the plan, stretched to the speed of the plan (the student plays in real time).
+    const builtIn = BUILT_IN_SONGS.find((s) => s.id === block.builtinId)
+    expect(builtIn, `bundled song ${block.builtinId}`).toBeDefined()
+    const levels = generateLevels(builtIn!.chart)
+    const whole: SimCase = { name: block.builtinId, kind: 'song-full', chart: builtIn!.chart, notes: levels[Math.max(0, Math.min(levels.length - 1, block.level))].notes }
+    const slow = atSpeed(whole, block.speed)
+    c = { ...whole, chart: slow.chart, notes: slow.notes }
+    title = builtIn!.title
+  } else {
+    const skill = SKILLS_BY_ID[block.skillId]
+    expect(skill, `skill ${block.skillId}`).toBeDefined()
+    // The same two calls as coach.exerciseForBlock.
+    const params = exerciseParams(skill, block.generatorId, block.tempo, block.params)
+    const exercise = generateExercise(skill, block.generatorId, params, DEFAULT_TUNING)
+    expect(exercise.interaction ?? 'highway', 'an exercise played on the note lanes').not.toBe('ear')
+    c = { name: `today ${block.skillId}`, kind: 'skill', chart: exercise.chart, notes: exercise.chart.notes }
+    title = exercise.title
+  }
+  const pcm = perform(c, await loadRealBank(), SAMPLE_RATE)
+  writeFileSync(path.join(out, 'today-block.wav'), Buffer.from(await encodeWav(pcm, SAMPLE_RATE).arrayBuffer()))
+  writeFileSync(path.join(out, 'today-block.json'), JSON.stringify({ file: 'today-block.wav', groups: groupCount(c), seconds: pcm.length / SAMPLE_RATE, title }))
+}, 120_000)
+
+it.skipIf(!dir || !!blockFile)('writes the virtual student’s performances', async () => {
   const out = path.resolve(dir!)
   mkdirSync(out, { recursive: true })
   const bank = await loadRealBank()

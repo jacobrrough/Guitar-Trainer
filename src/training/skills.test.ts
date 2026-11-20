@@ -51,11 +51,9 @@ describe('skills', () => {
     }
   })
 
-  it('has tips and marks chord skills provisional', () => {
+  it('has tips, and six chord skills', () => {
     for (const s of SKILLS) expect(s.tips.length).toBeGreaterThanOrEqual(2)
-    const chords = skillsForCategory('chords')
-    expect(chords.length).toBe(6)
-    for (const s of chords) expect(s.provisional).toBe(true)
+    expect(skillsForCategory('chords').length).toBe(6)
   })
 
   it('getSkill throws on unknown id', () => {

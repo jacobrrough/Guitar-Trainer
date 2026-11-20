@@ -21,3 +21,16 @@ export function nextRoundText(currentTempo: number, nextTempo: number): string {
 export function blockResultLine(accuracyPct: number, tempo: number, paced: boolean): string {
   return paced ? `${accuracyPct}% accuracy · reached ${Math.round(tempo)} bpm` : `${accuracyPct}% accuracy`
 }
+
+/**
+ * A line for the result of a block whose score did not move although the playing was clean: the
+ * score of a skill above "solid" only rises with the tempo, and a learner who sees "85 → 85" after a
+ * clean block should know why. Empty when there is nothing to explain.
+ */
+export function scoreHint(o: { before: number; after: number; accuracy: number; tempo: number; targetTempo: number; paced: boolean }): string {
+  if (!o.paced || o.accuracy < 0.85 || Math.round(o.after) > Math.round(o.before)) return ''
+  if (o.after >= 100) return 'You play this at the tempo it aims for. It comes back now and then so it stays that way.'
+  if (o.tempo < o.targetTempo) return 'Clean. This score goes up again as the rounds get faster.'
+  return ''
+}
+

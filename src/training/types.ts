@@ -28,8 +28,6 @@ export interface SkillDef {
   tips: string[]
   /** Exercise generator ids usable for this skill; the first is the default. */
   generators: string[]
-  /** Chord skills stay provisional (rating capped) until chroma chord scoring exists. */
-  provisional?: boolean
 }
 
 export interface SkillState {
@@ -77,9 +75,9 @@ export interface AttemptResult {
   /** Accuracy per bar index (0..1), when bars are known. */
   perBar?: number[]
   /**
-   * How chord groups were judged. 'chroma' means polyphonic chroma matching was
-   * active, so chord skills count fully; 'pitch' (or absent) is the lenient
-   * any-chord-tone path and keeps provisional chord skills capped.
+   * How chord groups were judged. Kept for runs stored by earlier versions: the first scorer took any
+   * one tone of a chord ('pitch'), and chord skills were capped while it did. Every run is now judged
+   * on the whole chord and says 'chroma'; nothing reads this any more.
    */
   chordScoring?: 'pitch' | 'chroma'
   /** The microphone was hearing the device's own playback (speaker bleed): the run scored itself. */

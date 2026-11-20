@@ -32,6 +32,26 @@ export const CLEAN_PERFORMANCE = 0.85
  * playing a skill cleanly at that tempo is just enough to open what builds on it.
  */
 export const RATING_HEADROOM = 40
+/**
+ * How far clean runs at a skill's start tempo can carry its rating: to "solid", which opens what builds
+ * on it. The rest, up to 100, is earned on the way to the skill's target tempo. Without this a hard
+ * skill (a high item difficulty already at the slowest tempo) was "mastered" after a few slow rounds
+ * and dropped out of the plan before it had ever been played at speed.
+ */
+export const START_TEMPO_RATING = 75
+/**
+ * ...and how far rounds below the target tempo can carry it: to just under "mastered" (90). In every
+ * tier "mastered" then means the same thing, played cleanly at the tempo the skill aims for, and a
+ * skill stays a main exercise until it has been. (With a stop that ran up to 100, a hard skill left
+ * the plan 40 % short of its target while an easy one had to reach it.)
+ */
+export const BELOW_TARGET_RATING = 89
+/**
+ * A clean practice round at the skill's target tempo adds at least this much. The usual step shrinks as
+ * the rating climbs above the item's difficulty, which would make the last points of an easy skill
+ * take hundreds of rounds.
+ */
+export const AT_TARGET_MIN_GAIN = 1
 
 /** Performance weights (docs §4.2). */
 export const PERF_WEIGHTS = { acc: 0.6, tim: 0.25, tmp: 0.15 } as const
@@ -43,7 +63,6 @@ export const MIN_HITS_FOR_TIMING = 8
 export const MIN_COVERAGE = 0.6
 export const CALIBRATION_MAX_AGE_DAYS = 30
 export const TIMING_BIAS_WARN_MS = 40
-export const PROVISIONAL_RATING_CAP = 75
 
 /** Tempo ceiling (docs §4.2). */
 export const CEILING_MIN_ACCURACY = 0.85
@@ -98,8 +117,20 @@ export const DAY_FACTOR_BY_WARMUP = [
 ]
 export const REP_TEMPO_UP = 0.05
 export const REP_TEMPO_DOWN = 0.08
+/**
+ * Two rounds in a row at one tempo that were neither clean nor rough (between REP_DOWN_ACCURACY and
+ * REP_UP_ACCURACY): the tempo is a touch too fast, and the next round eases off by this much. Without
+ * it a whole block could go by at such a tempo with nothing getting faster or slower and no clean round.
+ */
+export const REP_TEMPO_EASE = 0.05
 export const MAX_SESSION_TEMPO_GAIN = 0.15
-export const REP_UP_ACCURACY = 0.9
+/**
+ * A round this clean is followed by a faster one. It is the same line as everywhere else in the Coach
+ * (CEILING_MIN_ACCURACY: the tempo ceiling, the day factor, a full score for the rating). It used to be
+ * 0.9: a learner playing a steady 85 to 89 % was told the round was clean and then kept at the same
+ * tempo, and needed weeks for what a 90 % learner did in days.
+ */
+export const REP_UP_ACCURACY = CEILING_MIN_ACCURACY
 export const REP_DOWN_ACCURACY = 0.75
 export const REP_FALLBACK_ACCURACY = 0.6
 
@@ -193,4 +224,4 @@ export const WARMUP_COMFORT_RATING = 40
  * Revision of the default drills. Raised when a drill changes so much that a tempo earned on the old
  * one no longer means the same (migrate.ts corrects the stored tempos once).
  */
-export const DRILL_REV = 1
+export const DRILL_REV = 2

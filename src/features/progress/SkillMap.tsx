@@ -76,7 +76,6 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSk
                         <span className="flex flex-wrap items-center gap-1.5">
                           <span className={cx('text-sm font-medium', !unlocked && 'text-muted')}>{skill.name}</span>
                           {!simple && <Badge>T{skill.tier}</Badge>}
-                          {!simple && skill.provisional && <Badge tone="warn">provisional</Badge>}
                           {pinned && <Badge tone="accent">pinned</Badge>}
                         </span>
                         <span className="mt-1.5 flex items-center gap-2">

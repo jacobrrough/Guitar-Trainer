@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { REP_DOWN_ACCURACY, REP_UP_ACCURACY } from '../../training/constants'
 import { nextRepTempo } from '../../training/planner'
-import { blockResultLine, hasPace, nextRoundText } from './repCard'
+import { blockResultLine, hasPace, nextRoundText, scoreHint } from './repCard'
 
 describe('nextRoundText: the rep card says what the next round will really be', () => {
   it('says slower when the round went badly and the tempo drops', () => {
@@ -41,5 +41,23 @@ describe('hasPace / blockResultLine: ear rounds have no timing and no tempo', ()
   it('leaves the tempo out of the result of an ear block', () => {
     expect(blockResultLine(75, 60, false)).toBe('75% accuracy')
     expect(blockResultLine(75, 63.6, true)).toBe('75% accuracy · reached 64 bpm')
+  })
+})
+
+describe('scoreHint: a clean block that leaves the score where it was says why', () => {
+  const base = { before: 85, after: 85, accuracy: 0.95, tempo: 60, targetTempo: 100, paced: true }
+  it('explains that the score follows the tempo', () => {
+    expect(scoreHint(base)).toMatch(/goes up again as the rounds get faster/)
+  })
+  it('says nothing when the score moved, when the playing was not clean, or for ear training', () => {
+    expect(scoreHint({ ...base, after: 86 })).toBe('')
+    expect(scoreHint({ ...base, accuracy: 0.8 })).toBe('')
+    expect(scoreHint({ ...base, paced: false })).toBe('')
+    // A fraction of a point shows as no change: it is explained too.
+    expect(scoreHint({ ...base, after: 85.2 })).not.toBe('')
+  })
+  it('at the top there is nothing left to gain, and it says so', () => {
+    expect(scoreHint({ ...base, before: 100, after: 100, tempo: 100 })).toMatch(/tempo it aims for/)
+    expect(scoreHint({ ...base, before: 92, after: 92, tempo: 100 })).toBe('')
   })
 })

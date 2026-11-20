@@ -13,7 +13,7 @@
  * chart correction older asks for a note the performance does not contain. Hence the build step.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 
@@ -35,6 +35,15 @@ const failures = []
 function check(ok, message) {
   log(ok ? '  ok  ' : '  FAIL', message)
   if (!ok) failures.push(message)
+}
+
+/** Renders one exercise block of today's plan (read from the app's own storage) the way the app builds it. */
+function buildBlockFixture(block) {
+  const file = path.join(FIXTURES, 'today-block.request.json')
+  writeFileSync(file, JSON.stringify(block))
+  const run = spawnSync('npx', ['vitest', 'run', 'src/features/play/e2eFixtures.test.ts'], { env: { ...process.env, E2E_FIXTURES: FIXTURES, E2E_BLOCK: file }, encoding: 'utf8' })
+  if (run.status !== 0) throw new Error(`could not render the exercise of the block:\n${run.stdout}\n${run.stderr}`)
+  return JSON.parse(readFileSync(path.join(FIXTURES, 'today-block.json'), 'utf8'))
 }
 
 function buildFixtures() {
@@ -243,6 +252,37 @@ async function lastAttempt(page) {
   })
 }
 
+/** Everything in one object store of the app's database. */
+function storeRows(page, store) {
+  return page.evaluate(async (name) => {
+    const req = indexedDB.open('guitar-trainer')
+    const db = await new Promise((res, rej) => {
+      req.onsuccess = () => res(req.result)
+      req.onerror = () => rej(req.error)
+    })
+    if (!db.objectStoreNames.contains(name)) return []
+    const all = await new Promise((res, rej) => {
+      const r = db.transaction(name).objectStore(name).getAll()
+      r.onsuccess = () => res(r.result)
+      r.onerror = () => rej(r.error)
+    })
+    db.close()
+    return all
+  }, store)
+}
+
+/** The plan the Coach stored for today (the newest session). */
+async function todaysPlan(page) {
+  const sessions = await storeRows(page, 'sessions')
+  const last = sessions.sort((a, b) => String(a.date).localeCompare(String(b.date))).pop()
+  return last ? last.plan : null
+}
+
+async function skillRating(page, skillId) {
+  const state = (await storeRows(page, 'skillStates')).find((s) => s.skillId === skillId)
+  return state ? state.rating : null
+}
+
 async function songId(page, builtinId) {
   return page.evaluate(async (wanted) => {
     const req = indexedDB.open('guitar-trainer')
@@ -396,6 +436,73 @@ async function main() {
       check(!!got && got[1] === fixture.groups, `${fixture.title}: every note on screen was judged (${got ? got.join(' of ') : text.slice(0, 60)})`)
       check(!!got && got[0] >= Math.ceil(got[1] * 0.9), `${fixture.title} (level ${fixture.level}) played right is heard as right (${got ? got.join(' of ') : '?'})`)
       checkTiming(attempt, fixture.title)
+    }
+
+    // A day of practice from the plan. The learner leaves the course ("I have played before"), skips the
+    // first check, and plays the first exercise of today's plan: whatever the Coach planned, at its tempo.
+    await arm(null)
+    await page.goto(`${base}/#/`)
+    await page.waitForSelector('[data-testid="skip-course"]', { timeout: 30000 })
+    await page.getByTestId('skip-course').click()
+    await page.getByTestId('skip-course-confirm').click()
+    await page.locator('[data-testid="setup-card"], [data-testid="plan-block"]').first().waitFor({ timeout: 30000 })
+    if (await page.getByTestId('setup-skip').count()) await page.getByTestId('setup-skip').click()
+    await page.waitForSelector('[data-testid="plan-block"]', { timeout: 30000 })
+    const planned = await todaysPlan(page)
+    const first = planned?.blocks[0]
+    check(!!first && 'skillId' in first, `today's plan starts with an exercise (${planned ? planned.blocks.map((b) => b.kind).join(', ') : 'no plan stored'})`)
+    if (first && 'skillId' in first) {
+      const fixture = buildBlockFixture({ skillId: first.skillId, generatorId: first.generatorId, tempo: first.tempo, params: first.params })
+      const before = await skillRating(page, first.skillId)
+      await page.evaluate((url) => window.__student.arm(url), `${base}/__student/${fixture.file}`)
+      await page.getByTestId('block-start').first().click()
+      await page.waitForSelector('[data-testid="block-runner"]', { timeout: 15000 })
+      await page.waitForSelector('[data-testid="start"]', { timeout: 30000 })
+      await page.getByTestId('start').click()
+      await page.locator('[data-testid="rep-card"], [data-testid="block-result"], [data-testid="no-score"]').first().waitFor({ timeout: Math.round(fixture.seconds * 1000) + 60000 })
+      const card = (await page.locator('[data-testid="rep-card"], [data-testid="block-result"], [data-testid="no-score"]').first().innerText()).replace(/\s+/g, ' ')
+      const attempt = await lastAttempt(page)
+      const got = attempt ? [attempt.perfects + attempt.goods, attempt.perfects + attempt.goods + attempt.misses] : null
+      log(`     today, ${fixture.title} (${first.kind}, ${first.tempo} bpm): ${card.slice(0, 90)}`, timing(attempt))
+      await page.screenshot({ path: path.join(OUT, `student-today${SUFFIX}.png`) })
+      check(!!got && got[1] === fixture.groups, `today's exercise: every note on screen was judged (${got ? got.join(' of ') : card.slice(0, 60)})`)
+      check(!!got && got[0] >= Math.ceil(got[1] * 0.9), `today's exercise played right is heard as right (${got ? got.join(' of ') : '?'})`)
+      checkTiming(attempt, "today's exercise")
+      if (await page.getByTestId('rep-card').count()) {
+        check(/faster|same pace|next rep at/i.test(card) && !/slower/i.test(card), `a clean round is not followed by a slower one (${card.slice(0, 120)})`)
+        await page.getByRole('button', { name: /finish early/i }).click()
+      }
+      await page.waitForSelector('[data-testid="block-result"]', { timeout: 60000 })
+      const after = await skillRating(page, first.skillId)
+      check(after !== null && after >= (before ?? 0), `the round counts for the skill (${first.skillId}: ${before === null ? 'new' : before.toFixed(1)} to ${after === null ? '?' : after.toFixed(1)})`)
+      await page.goto(`${base}/#/`)
+      await page.waitForSelector('[data-testid="plan-block"]', { timeout: 15000 })
+      check((await page.locator('[data-testid="plan-block"]:has-text("done")').count()) >= 1, "today's plan shows the block as done")
+
+      // The next block of the plan, when it is a song: the level and speed the Coach chose for it.
+      const next = (await todaysPlan(page))?.blocks.find((b) => b.status === 'pending')
+      const record = next?.kind === 'song' ? (await storeRows(page, 'songs')).find((s) => s.id === next.songId) : null
+      if (next?.kind === 'song' && record?.builtinId && !next.loopBars) {
+        const songFixture = buildBlockFixture({ builtinId: record.builtinId, level: next.level, speed: next.speed })
+        await page.evaluate((url) => window.__student.arm(url), `${base}/__student/${songFixture.file}?song`)
+        await page.getByTestId('block-start').first().click()
+        await page.waitForSelector('[data-testid="block-runner"]', { timeout: 15000 })
+        await page.waitForSelector('[data-testid="start"]', { timeout: 60000 })
+        await page.getByTestId('start').click()
+        const cards = page.locator('[data-testid="song-pass"], [data-testid="block-result"], [data-testid="no-score"]').first()
+        await cards.waitFor({ timeout: Math.round(songFixture.seconds * 1000) + 60000 })
+        const songCard = (await cards.innerText()).replace(/\s+/g, ' ')
+        const songAttempt = await lastAttempt(page)
+        const songGot = hits(songCard)
+        log(`     today, ${songFixture.title} (level ${next.level + 1}, ${Math.round(next.speed * 100)}% speed, ${next.passes ?? 1} time(s) through): ${songCard.slice(0, 80)}`, timing(songAttempt))
+        await page.screenshot({ path: path.join(OUT, `student-today-song${SUFFIX}.png`) })
+        check(!!songGot && songGot[1] === songFixture.groups, `today's song: every note on screen was judged (${songGot ? songGot.join(' of ') : songCard.slice(0, 60)})`)
+        check(!!songGot && songGot[0] >= Math.ceil(songGot[1] * 0.9), `today's song played right is heard as right (${songGot ? songGot.join(' of ') : '?'})`)
+        check(songAttempt?.kind === 'song', `today's song is stored as a song play (${songAttempt?.kind ?? 'nothing stored'})`)
+        checkTiming(songAttempt, "today's song")
+      } else {
+        log(`     today's next block is not a plain song block (${next ? next.kind : 'none'}): not played`)
+      }
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.slice(0, 3).join(' | ')}` : ''}`)

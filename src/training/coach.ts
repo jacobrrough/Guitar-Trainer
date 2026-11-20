@@ -19,7 +19,7 @@ import { recordMilestones } from './milestoneStore'
 import { migrateStoredTempos } from './migrate'
 import { skillMilestones, songMilestone, streakMilestone, testMilestone, unlockMilestonesBetween } from './milestones'
 import { attemptPerformance } from './performance'
-import { adaptAfterBlock, nextRepTempo, planSession } from './planner'
+import { adaptAfterBlock, inHoldBand, nextRepTempo, planSession } from './planner'
 import { recommendations } from './recommend'
 import { applySongAttempt, newSongItem, nextReview, songItemKey, startReview } from './review'
 import { SKILLS, SKILLS_BY_ID } from './skills'
@@ -44,6 +44,7 @@ import type {
   Attempt,
   AttemptKind,
   AttemptResult,
+  Block,
   ExerciseBlock,
   GeneratedExercise,
   LearnerModel,
@@ -154,13 +155,35 @@ export function getOrCreateTodaySession(opts: TodayOptions): Promise<SessionReco
   return job
 }
 
+/**
+ * A plan stored by an earlier version can ask for more than a skill's target tempo, where the Coach
+ * now stops. Its exercises that are still to come are brought down to the target, so the day does not
+ * start with a round the next one has to undo ("a bit slower", after a clean round).
+ */
+async function withinTargets(record: SessionRecord): Promise<SessionRecord> {
+  let changed = false
+  const blocks = record.plan.blocks.map((b): Block => {
+    if (b.kind === 'song' || b.kind === 'test' || b.status !== 'pending') return b
+    const max = SKILLS_BY_ID[b.skillId]?.targetTempo
+    if (max === undefined || (b.tempo <= max && b.params.maxTempo === max)) return b
+    changed = true
+    const tempo = Math.min(b.tempo, max)
+    const startTempo = typeof b.params.startTempo === 'number' ? Math.min(b.params.startTempo, max) : tempo
+    return { ...b, tempo, params: { ...b.params, tempo, startTempo, maxTempo: max } }
+  })
+  if (!changed) return record
+  const next: SessionRecord = { ...record, plan: { ...record.plan, blocks } }
+  await saveSession(next)
+  return next
+}
+
 async function planTodaySession(opts: TodayOptions): Promise<SessionRecord> {
   const now = opts.now ?? new Date()
   const date = localDateString(now)
   // Before anything is planned from them: tempos stored by an earlier version, corrected once.
   await migrateStoredTempos()
   const existing = await getSession(date)
-  if (existing && !opts.forceNew) return existing
+  if (existing && !opts.forceNew) return withinTargets(existing)
   const [model, library, profile, recentFocus, recentRecap, lessons, practiceDays] = await Promise.all([
     loadLearnerModel(),
     songSummaries(),
@@ -372,12 +395,16 @@ async function applyExerciseAttempt(
   const taught = (await finishedLessons()).lessonSkillIds
   await recordMilestones(skillUpdateMilestones(model, skill, model.skills[block.skillId] ?? null, state, taught, now))
   const startTempo = typeof block.params.startTempo === 'number' ? block.params.startTempo : block.tempo
+  // The round before this one, if it belongs to the same sitting and was at this tempo.
+  const before = history[0]
+  const heldBefore =
+    !!before && sessionId !== undefined && before.sessionId === sessionId && Math.abs(before.playedTempo - result.playedTempo) < 0.5 && inHoldBand(before.accuracy)
   return {
     attempt: { ...attempt, id },
     performance,
     state,
     ratingBefore: previous.rating,
-    nextTempo: nextRepTempo(block.tempo, performance.acc, startTempo),
+    nextTempo: nextRepTempo(block.tempo, performance.acc, startTempo, skill.targetTempo, heldBefore),
     counted: true,
   }
 }

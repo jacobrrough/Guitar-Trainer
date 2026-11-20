@@ -210,6 +210,10 @@ expected = 1 / (1 + 10^((d − rating) / 25))
 K = 6 for practice, 12 for tests, ×1.5 while confidence < 5
 delta    = K·(score − expected)·2
 a gain stops at d + 40                            // an item proves no more than that
+          and at 75 + 14·progress                 // progress: start tempo 0 … target tempo 1,
+                                                  // of the tempo shown: this run's if acc ≥ 0.85,
+                                                  // else the fastest played that well before
+          an accurate run at the target tempo: no stop; a clean practice round: at least +1
 rating ← clamp(rating + delta, 0, 100)
 confidence ← Σ over attempts of exp(−ageDays / 30)
 ```
@@ -233,21 +237,50 @@ settled under the unlock line. Now:
   up: a tier 1 exercise must be played cleanly at about its reference tempo (d = 20)
   before what builds on it opens at 60;
 - the Coach only raises the tempo after runs of 85 % accuracy or more, so weak playing
-  stays on easy items and under the line.
+  stays on easy items and under the line;
+- slow rounds prove a skill up to "solid" (75) and no further. The rest, up to just under
+  "mastered" (89), is earned on the way from the skill's start tempo to its target tempo:
+  half way there the stop is 82. What counts is the tempo the learner has shown: a rough
+  round at a fast tempo proves nothing about that tempo. Without this a hard skill,
+  whose item difficulty is high already at the slowest tempo, read "mastered" after a
+  few slow rounds and dropped out of the plan before it had ever been played at speed;
+- the target tempo is where an exercise stops getting faster, and "mastered" (90 and up)
+  means the same in every tier: played accurately there. Such a run has no stop, and a
+  clean practice round adds at least a point: a few dozen clean rounds at the target,
+  at most, carry any skill to 100, also an easy one whose item difficulty alone would
+  stop it in the fifties or the eighties. A skill stays a main exercise until then.
 
-Simulated course graduates (planner.test.ts, 20 minutes a day): at 95 % (and from 90 %,
-where the tempo also goes up from round to round) the first tier 1 skills are solid
-within one to two weeks and the spider, power chords and alternate picking open within
-four; at 85 to 89 % the tempo goes up 5 % per main exercise only, and the first tier 1
-skills are solid after three to four weeks; at 80 % ratings rise slowly and nothing is
-solid after four weeks; at 60 % nothing rises past the mid-forties and the tempo stays
-at the start.
+The first check follows the same rule: a task passed below a skill's target tempo rates
+the skill at most 89 (and never under the pass minimum, so it still opens what builds on
+it), and where the task was the skill's own exercise (the same drill, and the same note
+values, beats per chord and strums) its exercises start from the tempo shown. Stored data
+from before these rules is aligned once (`migrate.ts`, `DRILL_REV` 2): tempo ceilings come
+down to the target, and a practised skill that was never played accurately at its target
+keeps at most the rating its fastest accurate tempo can show, so it is planned again.
+That tempo is read from the stored rounds as well as from the ceiling: the ceiling follows
+the last ten rounds and falls when those were warm-ups or a check at a set tempo, which
+takes nothing back from a learner who did reach the target. A skill rated by the first
+check alone (never practised) keeps its rating up to 89, so it is planned too.
+
+One line says "clean" everywhere: 85 % of the notes. It counts for the tempo ceiling,
+the day factor, the full score, and the step to a faster round. (The step used to need
+90 %; a learner at a steady 85 to 89 % was told the round was clean and kept at the
+same tempo, and took weeks for what a 90 % learner did in days.)
+
+Simulated course graduates (planner.test.ts, 20 minutes a day): from 85 % up the first
+tier 1 skill is solid within a week and played up to its target tempo within four, most
+other tier 1 skills are solid within three weeks (playing with the click is still just
+under the line after four), and the spider, power chords and alternate picking open
+within four; no round is ever asked for faster than its skill's target. At 80 % ratings rise slowly and nothing is solid after four weeks; at
+60 % nothing rises past the mid-forties and the tempo stays at the start.
 
 Tempo ceiling: highest tempo among the last 10 attempts (≤ 30 days old) with
-acc ≥ 0.85; if none qualifies, 0.8 × the lowest tempo attempted. A clean warm-up round
-can raise the ceiling but never lowers it: warm-ups are played at 0.9 × the ceiling on
-purpose, and several rounds a day would otherwise push every faster run out of the
-window and talk the tempo down.
+acc ≥ 0.85; if none qualifies, 0.8 × the lowest tempo attempted. A warm-up round can
+raise the ceiling but never lowers it, clean or not: warm-ups are played cold, at
+0.9 × the ceiling on purpose. Clean ones would otherwise push every faster run out of
+the window, and each rough one cut the ceiling to nine tenths with no way back up (the
+skill a learner plays best is the daily warm-up, not a main exercise). A rough warm-up
+slows the rest of that day instead (the day factor).
 
 Rust: a skill not practised for more than 14 days has an *effective* rating
 `rating − 2·(days − 14)/7`, capped at −20. The stored rating is untouched; the
@@ -289,9 +322,10 @@ reliability flag used to down-weight it:
   until re-calibrated; practice is allowed but flagged.
 - **Timing bias**: |median hit delta| > 40 ms across a whole session suggests the
   latency setting is off → recommend calibration rather than penalising timing.
-- **Chord leniency**: chord groups are currently scored on any matching tone, which
-  inflates chord accuracy. Chord skills are marked *provisional* until chroma-based
-  chord scoring (roadmap) lands; provisional ratings cap at 75.
+- **Chords** are judged on the whole chord (which strings were struck, and that no
+  other chord was), so chord skills are rated like any other. The first scorer took
+  any one tone of a chord and chord ratings were capped at 75 while it did; that cap
+  is gone.
 
 ---
 
@@ -349,9 +383,10 @@ turn, also when that recap was skipped.
 startTempo = tempoCeiling × 1.05 × dayFactor          (first time: skill.startTempo)
 dayFactor from the warm-up: acc ≥ 0.85 (a clean warm-up) → 1.0 · 0.75–0.85 → 0.95 · < 0.75 → 0.9
 rounds: as many as fill the block (§6.2), at most 6
-after each rep: acc ≥ 0.9 → tempo +5 % (max +15 % per session)
-               0.75–0.9 → keep
+after each rep: acc ≥ 0.85 → tempo +5 % (max +15 % per session)
+               0.75–0.85 → keep; the second such round in a row at one tempo → −5 %
                < 0.75 → tempo −8 %
+never faster than the skill's target tempo (plan, rep steps, day factor)
                two reps < 0.6 → switch to the prerequisite variant or halve density
 ```
 
@@ -422,9 +457,9 @@ ceilings gained, songs levelled up, and the next two weeks' focus.
 | Song result ≥ 90 % at 100 % speed | unlock next level; schedule review of this level | "Level 4 unlocked." |
 | Song result 70–90 % | keep level, loop weakest bars next time | "Bars 5–8 were 58 %. Tomorrow loops them at 85 % speed." |
 | Song result < 70 % | next time: same level at 80 % speed, or level down if two failures | "Let's slow it down before dropping a level." |
-| Exercise rep ≥ 90 % twice | tempo +5 % (ratchet), log tempo milestone | "Chromatic now clean at 104 bpm." |
+| Exercise rep ≥ 85 % twice | tempo +5 % (ratchet), never past the skill's target tempo | "Chromatic now clean at 104 bpm. Next: 109 bpm." |
 | Two reps < 60 % | prerequisite variant or density halved | "Back to quarters at 72 bpm, then eighths." |
-| Test passed at target | target tempo +10 %; mastered at ≥ 95 % | "Power chords: 90 → 99 bpm target." |
+| Check passed below the skill's target tempo | next step +10 %, at most the target | "Power chords: 90 → 99 bpm." |
 | Test failed twice | add prerequisite drill for 3 sessions; tempo −15 % | "We'll build this from the downstroke drill." |
 | Session timing bias > 40 ms | recommend latency calibration | "Everything landed 45 ms late — recalibrate?" |
 | Coverage < 0.6 in a session | mic/device advice, results flagged | "The mic barely heard you. Headphones or an interface help." |
@@ -550,7 +585,7 @@ Changes needed in the existing engine first:
    with tempo changes between reps, no song file) and **test** (locked speed, no
    pause/seek, single attempt).
 3. **Section loop** (A–B bars) with auto-slowdown, which the song block relies on.
-4. Chroma-based chord scoring, so chord skills can leave the provisional state.
+4. Whole-chord scoring (done: the tracker in `features/play/scoring.ts`).
 
 ---
 

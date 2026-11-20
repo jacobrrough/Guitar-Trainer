@@ -132,3 +132,16 @@ microphone. These need a real iPhone:
 - [ ] AI transcription finishes on a 1-minute clip
 - [ ] Screen stays on during a song; rotating keeps the song running
 - [ ] Library survives closing the app and relaunching
+- [ ] Settings → About shows the build of the last deploy; "Check for updates" answers
+- [ ] "Listen first" in lesson 1 sounds like a recorded acoustic guitar, also on the very
+      first launch over mobile data (if it sounds like a synthesiser, the recordings did
+      not load: it should correct itself within a minute of being online)
+- [ ] After Sync your sound, lesson 1's practice round played on the beat reads mostly
+      "perfect" (not all early or all late), with the phone speaker and with headphones
+- [ ] The same round with nothing played says "We did not hear any notes", and nothing is saved
+- [ ] A call or Siri during the count-in: the song does not start by itself afterwards,
+      and the next tap counts in again
+- [ ] Headphones unplugged or AirPods removed in the middle of a song: the run is paused
+      or reported as not counted, never saved as a low score
+- [ ] A loop of two bars over Bluetooth headphones: the last note before the loop point
+      is judged, pass after pass

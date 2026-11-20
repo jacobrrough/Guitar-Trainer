@@ -5,7 +5,8 @@ import { useSettings } from '../../app/settings'
 import { Badge, Button, Card, PageHeader } from '../../components/ui'
 import { masteryBand, effectiveRating } from '../../training/learner'
 import { SKILLS } from '../../training/skills'
-import { exportTrainingData, importTrainingData, resetTrainingData, saveProfile } from '../../training/store'
+import { updatePrefs } from '../../training/coach'
+import { exportTrainingData, importTrainingData, resetTrainingData } from '../../training/store'
 import { useLearnerModel, useMilestones, useRecentAttempts, useTests } from '../../training/useTraining'
 import { ImportConfirm } from '../settings/ImportConfirm'
 import { RESET_WARNING, importFlow, type ImportEvent, type ImportFlow } from '../settings/importConfirm'
@@ -95,7 +96,9 @@ export function ProgressPage() {
 
   const onPin = (skillId: string | undefined) => {
     if (!model) return
-    void saveProfile({ ...model.profile, pinnedSkillId: skillId })
+    // Through the Coach, which reads the stored profile first: saving the copy held by this page would
+    // write back whatever has changed since it was loaded (a finished check, the mark of a one-time data fix).
+    void updatePrefs({ pinnedSkillId: skillId })
   }
 
   /** Resolves to whether a file was handed over (false when the share sheet was closed). */

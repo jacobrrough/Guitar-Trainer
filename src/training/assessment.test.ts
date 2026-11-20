@@ -12,7 +12,7 @@ import {
 } from './assessment'
 import { UNLOCK_RATING } from './constants'
 import { DEFAULT_TUNING } from './exercises/builder'
-import { generateExercise } from './exercises'
+import { exerciseParams, generateExercise } from './exercises'
 import { SKILLS, SKILLS_BY_ID } from './skills'
 import type { Attempt, AttemptResult, LearnerModel, Profile, SkillDef, SkillState, SongSummary, TestTaskResult } from './types'
 
@@ -137,9 +137,14 @@ describe('applyPlacement', () => {
     expect(out.model.skills['fret.single-string'].rating).toBe(65)
     expect(out.model.skills['fret.cross-string'].rating).toBeCloseTo(tasks[1].difficulty - 10, 0)
     expect(out.model.skills['chord.open'].rating).toBeCloseTo(Math.max(0, tasks[2].difficulty - 10), 0)
+    // The passed task was the skill's own drill at 70 bpm: its exercises start from there, not from the slowest tempo.
+    expect(tasks[0].params?.tempo).toBe(70)
     expect(out.model.skills['fret.single-string']).toMatchObject({
-      confidence: 1, tempoCeiling: 0, ease: 2.3, intervalDays: 0, plateauStep: 0, attempts: 0,
+      confidence: 1, tempoCeiling: 70, ease: 2.3, intervalDays: 0, plateauStep: 0, attempts: 0,
     })
+    // Nothing shown on the drill of a skill that was not passed, or only vouched for.
+    expect(out.model.skills['fret.cross-string'].tempoCeiling).toBe(0)
+    expect(out.model.skills['lead.pent-box1'].tempoCeiling).toBe(0)
   })
   it('inherits for untouched skills', () => {
     const r = out.model.skills
@@ -390,5 +395,60 @@ describe('what the test tasks put on the note lanes', () => {
     const box1 = chartOf(ladder[4]).notes.map((n) => `${n.string}/${n.fret}`)
     const others = chartOf(ladder[9]).notes.map((n) => `${n.string}/${n.fret}`)
     expect(others.slice(0, 12)).not.toEqual(box1.slice(0, 12))
+  })
+})
+
+describe('checks and the target tempo (real skill list)', () => {
+  const ladder = placementLadder(SKILLS)
+  const allPassed = ladder.map((t) => taskResult(t.id, true))
+  const placed = applyPlacement(model(), ladder, allPassed, SKILLS, 1000).model
+
+  it('the first check calls nothing mastered that was shown below its target tempo, and still opens everything it proves', () => {
+    for (const task of ladder) {
+      const tempo = task.params?.tempo as number
+      for (const id of task.skillIds) {
+        const skill = SKILLS_BY_ID[id]
+        const st = placed.skills[id]
+        expect(st.rating, `${id} passes`).toBeGreaterThanOrEqual(65)
+        if (tempo < skill.targetTempo) expect(st.rating, `${id} shown at ${tempo} of ${skill.targetTempo}`).toBeLessThan(90)
+      }
+    }
+    // One slow task used to rate sixteenth-note picking 93: mastered, so never planned as an exercise.
+    expect(placed.skills['pick.alternate-16'].rating).toBeLessThan(90)
+    // Whatever a pass vouches for further down is under the pass, so under mastered as well.
+    for (const st of Object.values(placed.skills)) if (st.rating >= 90) expect(ladder.some((t) => t.skillIds.includes(st.skillId)), st.skillId).toBe(true)
+  })
+
+  it('starts the exercises of a passed skill from the tempo shown on its own drill, never above its target', () => {
+    let seeded = 0
+    for (const st of Object.values(placed.skills)) {
+      const skill = SKILLS_BY_ID[st.skillId]
+      expect(st.tempoCeiling, st.skillId).toBeLessThanOrEqual(skill.targetTempo)
+      if (st.tempoCeiling === 0) continue
+      seeded++
+      const task = ladder.find((t) => t.skillIds.includes(st.skillId) && t.generatorId === skill.generators[0] && Math.min(skill.targetTempo, t.params?.tempo as number) === st.tempoCeiling)
+      expect(task, `${st.skillId} at ${st.tempoCeiling}`).toBeDefined()
+    }
+    expect(seeded).toBeGreaterThan(3)
+    // A skill that a task only touched with another drill keeps starting at its own start tempo.
+    expect(placed.skills['pick.downstrokes'].tempoCeiling).toBe(0)
+    // The same drill, but the task changed chords half as often as the skill's exercise does (every four
+    // beats, not every two): 60 bpm of the task is not 60 bpm of the exercise.
+    const barre = ladder.find((t) => t.skillIds.includes('chord.barre'))!
+    expect(barre.params?.beatsPerChord).toBe(4)
+    expect(exerciseParams(SKILLS_BY_ID['chord.barre'], 'chordChanges', 60).beatsPerChord).toBe(2)
+    expect(placed.skills['chord.barre'].tempoCeiling).toBe(0)
+    // Where the task is the exercise itself, the tempo counts.
+    expect(placed.skills['chord.changes-open'].tempoCeiling).toBe(60)
+    expect(placed.skills['pick.alternate-16'].tempoCeiling).toBe(70)
+  })
+
+  it('a weekly check never asks for faster than the skill aims for, whatever tempo is stored', () => {
+    const skill = SKILLS_BY_ID['fret.single-string']
+    const stored = model({ placementDoneAt: 1 }, [state(skill.id, 80, { tempoCeiling: skill.targetTempo + 32, attempts: 20 })])
+    const tasks = checkpointTasks(stored, SKILLS, [], 10 * 86_400_000, skill.id)
+    const task = tasks.find((t) => t.skillIds.includes(skill.id))!
+    expect(task.params?.tempo).toBe(skill.targetTempo)
+    expect(task.instructions).toContain(`${skill.targetTempo} bpm`)
   })
 })

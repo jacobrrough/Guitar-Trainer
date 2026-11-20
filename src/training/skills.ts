@@ -205,7 +205,6 @@ export const SKILLS: SkillDef[] = [
       'Place all the fingers of a chord down together rather than one at a time.',
     ],
     generators: ['chordChanges'],
-    provisional: true,
   }),
   def({
     id: 'chord.changes-open',
@@ -222,7 +221,6 @@ export const SKILLS: SkillDef[] = [
       'Keep the strumming hand going and let the chord arrive late rather than stopping the rhythm.',
     ],
     generators: ['chordChanges'],
-    provisional: true,
   }),
   def({
     id: 'chord.power',
@@ -239,7 +237,6 @@ export const SKILLS: SkillDef[] = [
       'Move the shape up and down the neck as one block; the same shape works for any root.',
     ],
     generators: ['powerChordRiff'],
-    provisional: true,
   }),
   def({
     id: 'chord.barre',
@@ -256,7 +253,6 @@ export const SKILLS: SkillDef[] = [
       'Practise on frets higher up the neck first where the strings are easier to press, then work down to F.',
     ],
     generators: ['chordChanges'],
-    provisional: true,
   }),
   def({
     id: 'chord.strum-patterns',
@@ -273,7 +269,6 @@ export const SKILLS: SkillDef[] = [
       'Learn the pattern on a muted or single chord first, then add chord changes.',
     ],
     generators: ['strumPattern', 'chordChanges'],
-    provisional: true,
   }),
   def({
     id: 'chord.sevenths',
@@ -290,7 +285,6 @@ export const SKILLS: SkillDef[] = [
       'Listen to the colour: 7ths add tension, minor 7ths feel mellow and add9 sounds open and bright.',
     ],
     generators: ['chordChanges'],
-    provisional: true,
   }),
   def({
     id: 'lead.pent-box1',

@@ -8,10 +8,11 @@ import {
   newSkillState,
   ratingDelta,
   runScore,
+  tempoProgressRating,
   updateTempoCeiling,
 } from './learner'
 import { attemptPerformance } from './performance'
-import { RATING_HEADROOM, UNLOCK_RATING } from './constants'
+import { AT_TARGET_MIN_GAIN, BELOW_TARGET_RATING, RATING_HEADROOM, START_TEMPO_RATING, UNLOCK_RATING } from './constants'
 import type { Attempt, LearnerModel, SkillDef } from './types'
 
 const DAY = 86400000
@@ -100,22 +101,93 @@ describe('applyAttempt', () => {
     expect(applyAttempt(confident, attempt(), skill).lastTestedAt).toBeUndefined()
   })
 
+  it('slow rounds lead to solid and no further: the rest, up to just under mastered, is earned on the way to the target tempo', () => {
+    // A hard item (difficulty 68 at the slowest tempo, like sixteenth notes): it used to read "mastered" after a few slow rounds.
+    let slow = { ...confident, rating: 0 }
+    for (let i = 0; i < 80; i++) slow = applyAttempt(slow, attempt({ difficulty: 68, playedTempo: skill.startTempo, targetTempo: skill.startTempo }), skill)
+    expect(slow.rating).toBeCloseTo(START_TEMPO_RATING, 6)
+    // Half way from the start tempo (60) to the target (120) the stop is half way from there to just under mastered.
+    const halfWay = (START_TEMPO_RATING + BELOW_TARGET_RATING) / 2
+    expect(tempoProgressRating(90, { start: 60, target: 120 })).toBeCloseTo(halfWay, 6)
+    expect(tempoProgressRating(40, { start: 60, target: 120 })).toBe(START_TEMPO_RATING)
+    expect(tempoProgressRating(500, { start: 60, target: 120 })).toBe(BELOW_TARGET_RATING)
+    expect(BELOW_TARGET_RATING).toBeLessThan(90)
+    let half = slow
+    for (let i = 0; i < 80; i++) half = applyAttempt(half, attempt({ difficulty: 80, playedTempo: 90, targetTempo: 90 }), skill)
+    expect(half.rating).toBeCloseTo(halfWay, 6)
+    // However long, nothing under the target tempo reads mastered.
+    let near = half
+    for (let i = 0; i < 200; i++) near = applyAttempt(near, attempt({ difficulty: 95, playedTempo: 119, targetTempo: 119 }), skill)
+    expect(near.rating).toBeLessThan(90)
+    expect(masteryBand(near.rating)).toBe('solid')
+    // An easy item still stops RATING_HEADROOM above its difficulty, whatever the tempo says.
+    let easy = { ...confident, rating: 0 }
+    for (let i = 0; i < 80; i++) easy = applyAttempt(easy, attempt({ difficulty: 20, playedTempo: 90, targetTempo: 90 }), skill)
+    expect(easy.rating).toBeCloseTo(20 + RATING_HEADROOM, 6)
+  })
+
+  it('a rough round at a fast tempo proves nothing about that tempo', () => {
+    // Clean up to 80 bpm so far (a third of the way from 60 to 120), rated at the stop for that.
+    const stop80 = tempoProgressRating(80, { start: 60, target: 120 })
+    const st = { ...confident, rating: stop80, tempoCeiling: 80 }
+    // 72 % at 110 bpm on a hard item: by the numbers a gain (the item is far above the rating), but not clean.
+    const rough = attempt({ difficulty: 95, playedTempo: 110, targetTempo: 110, accuracy: 0.72, performance: 0.7 })
+    expect(ratingDelta(st, rough)).toBeGreaterThan(0)
+    expect(applyAttempt(st, rough, skill).rating).toBeCloseTo(stop80, 6)
+    // The same at the target tempo itself: no open top for a round that was not clean.
+    const roughAtTarget = { ...rough, playedTempo: 120, targetTempo: 120 }
+    let s2 = st
+    for (let i = 0; i < 30; i++) s2 = applyAttempt({ ...s2, tempoCeiling: 80 }, roughAtTarget, skill)
+    expect(s2.rating).toBeCloseTo(stop80, 6)
+    // An accurate round at 110 does prove 110.
+    const cleanAt110 = attempt({ difficulty: 95, playedTempo: 110, targetTempo: 110 })
+    expect(applyAttempt(st, cleanAt110, skill).rating).toBeGreaterThan(stop80)
+  })
+
+  it('accurate rounds at the target tempo are all a skill can show: they carry it to the top, a point or more a round', () => {
+    // Difficulty 44 at the target tempo (a first-tier skill): the usual bound would stop it at 84.
+    let st = { ...confident, rating: 84 }
+    const atTarget = attempt({ difficulty: 44, playedTempo: skill.targetTempo, targetTempo: skill.targetTempo })
+    const first = applyAttempt(st, atTarget, skill).rating
+    expect(first).toBeGreaterThanOrEqual(84 + AT_TARGET_MIN_GAIN)
+    for (let i = 0; i < 16; i++) st = applyAttempt(st, atTarget, skill)
+    expect(st.rating).toBe(100)
+    // Not for a round that was not clean, and not for a slowed-down one.
+    const at84 = { ...confident, rating: 84 }
+    expect(applyAttempt(at84, { ...atTarget, accuracy: 0.8, performance: 0.8 }, skill).rating).toBeLessThanOrEqual(84)
+    expect(applyAttempt(at84, { ...atTarget, speed: 0.75 }, skill).rating).toBeLessThanOrEqual(84)
+    // A run the app could barely hear proves nothing extra.
+    expect(applyAttempt(at84, { ...atTarget, reliable: false }, skill).rating).toBeLessThan(84 + AT_TARGET_MIN_GAIN)
+    // A skill check passed at the target has the open top too (it is the best evidence there is), but no free point.
+    const hard = { ...confident, rating: 89 }
+    const check = attempt({ kind: 'test', difficulty: 95, playedTempo: skill.targetTempo, targetTempo: skill.targetTempo })
+    expect(applyAttempt(hard, check, skill).rating).toBeGreaterThan(90)
+    expect(applyAttempt(at84, { ...atTarget, kind: 'test' }, skill).rating).toBeLessThan(84 + AT_TARGET_MIN_GAIN)
+    // A check passed below the target lifts no further than its tempo allows, even with nothing practised yet.
+    const unpractised = { ...confident, rating: 80, tempoCeiling: 0 }
+    const checkAt90 = attempt({ kind: 'test', difficulty: 95, playedTempo: 90, targetTempo: 90 })
+    expect(applyAttempt(unpractised, checkAt90, skill).rating).toBeCloseTo((START_TEMPO_RATING + BELOW_TARGET_RATING) / 2, 6)
+  })
+
+  it('a state or a run stored without a usable tempo never turns the rating into nothing', () => {
+    // A state from a backup without a stored tempo, and a round that was not accurate (so the stored tempo is asked for).
+    const noCeiling = { ...confident, rating: 40, tempoCeiling: undefined as unknown as number }
+    const soso = attempt({ difficulty: 60, accuracy: 0.8, performance: 0.8, playedTempo: 70, targetTempo: 70 })
+    const after = applyAttempt(noCeiling, soso, skill).rating
+    expect(Number.isFinite(after)).toBe(true)
+    expect(after).toBeGreaterThan(40)
+    expect(after).toBeLessThanOrEqual(START_TEMPO_RATING)
+    // A run without a tempo that can be read is rated as before: by its difficulty alone.
+    const noTempo = attempt({ difficulty: 30, playedTempo: Number.NaN })
+    const plain = applyAttempt({ ...confident, rating: 40 }, noTempo, skill).rating
+    expect(Number.isFinite(plain)).toBe(true)
+    expect(plain).toBeGreaterThan(40)
+  })
+
   it('clamps to 0..100', () => {
-    expect(applyAttempt({ ...confident, rating: 99.5 }, attempt({ difficulty: 99.5 }), skill).rating).toBe(100)
+    // At the skill's target tempo: only there can a rating go all the way up.
+    expect(applyAttempt({ ...confident, rating: 99.5 }, attempt({ difficulty: 99.5, playedTempo: skill.targetTempo }), skill).rating).toBe(100)
     expect(applyAttempt({ ...confident, rating: 0.5 }, attempt({ performance: 0, accuracy: 0, difficulty: 0.5 }), skill).rating).toBe(0)
-  })
-
-  it('caps provisional skills at 75', () => {
-    const out = applyAttempt({ ...confident, rating: 74.9 }, attempt({ difficulty: 74.9 }), { ...skill, provisional: true })
-    expect(out.rating).toBe(75)
-  })
-
-  it('does not cap provisional skills after a chroma-scored attempt', () => {
-    const start = { ...confident, rating: 74.9 }
-    const pitch = applyAttempt(start, attempt({ difficulty: 74.9, chordScoring: 'pitch' }), { ...skill, provisional: true })
-    const chroma = applyAttempt(start, attempt({ difficulty: 74.9, chordScoring: 'chroma' }), { ...skill, provisional: true })
-    expect(pitch.rating).toBe(75)
-    expect(chroma.rating).toBeGreaterThan(75)
   })
 
   it('updates confidence incrementally with recency decay', () => {
@@ -298,9 +370,21 @@ describe('warm-ups and the tempo ceiling', () => {
     expect(applyAttempt(state, warm(57, 0.86, NOW), skill, history, NOW).tempoCeiling).toBe(63)
   })
 
-  it('a clean warm-up above the ceiling raises it, and a weak one still lowers it', () => {
+  it('a clean warm-up above the ceiling raises it; a rough one does not lower it, month after month', () => {
     const state = { ...confident, tempoCeiling: 63, lastPracticedAt: NOW - DAY }
     expect(applyAttempt(state, warm(66, 0.95, NOW), skill, [], NOW).tempoCeiling).toBe(66)
-    expect(applyAttempt(state, warm(57, 0.5, NOW), skill, [], NOW).tempoCeiling).toBeLessThan(57)
+    expect(applyAttempt(state, warm(57, 0.5, NOW), skill, [], NOW).tempoCeiling).toBe(63)
+    // The best skill is the daily warm-up at nine tenths of its ceiling, with a rough round every fifth day.
+    let st = { ...confident, rating: 96, tempoCeiling: 100, lastPracticedAt: NOW - 31 * DAY }
+    let history: Attempt[] = []
+    for (let day = 30; day >= 1; day--) {
+      const at = NOW - day * DAY
+      const round = warm(Math.round(st.tempoCeiling * 0.9), day % 5 === 0 ? 0.7 : 0.9, at)
+      st = applyAttempt(st, round, skill, history, at)
+      history = [round, ...history].slice(0, 20)
+    }
+    expect(st.tempoCeiling).toBe(100)
+    // A rough round that is not a warm-up still brings the ceiling down.
+    expect(applyAttempt(state, attempt({ playedTempo: 60, targetTempo: 60, accuracy: 0.5, performance: 0.5, at: NOW }), skill, [], NOW).tempoCeiling).toBeLessThan(60)
   })
 })

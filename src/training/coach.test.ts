@@ -210,6 +210,65 @@ function bleed(partial: Partial<AttemptResult> = {}): AttemptResult {
   return result({ perfects: 20, goods: 0, misses: 0, bleed: true, ...partial })
 }
 
+describe('the target tempo is where the Coach stops', () => {
+  beforeEach(async () => {
+    await resetTrainingData()
+    await db.songs.clear()
+  })
+
+  it('after a clean round at the target the next round is at the target, not above it', async () => {
+    const block = exerciseBlock('focus', SKILL.targetTempo)
+    const session = await storedSession([block])
+    const clean = result({ perfects: 20, goods: 0, misses: 0, playedTempo: SKILL.targetTempo, targetTempo: SKILL.targetTempo })
+    const out = await recordExerciseRep(session, block, exerciseForBlock(block), clean, settings, NOW)
+    expect(out.counted).toBe(true)
+    expect(out.nextTempo).toBe(SKILL.targetTempo)
+    // One step under it, the step up stops there too.
+    const near = exerciseBlock('focus', SKILL.targetTempo - 1)
+    const nearOut = await recordExerciseRep(session, near, exerciseForBlock(near), { ...clean, playedTempo: SKILL.targetTempo - 1, targetTempo: SKILL.targetTempo - 1 }, settings, NOW)
+    expect(nearOut.nextTempo).toBe(SKILL.targetTempo)
+  })
+
+  it('two rounds in a row that are neither clean nor rough at one tempo: the next one eases off', async () => {
+    const block = exerciseBlock('focus', 80)
+    const session = await storedSession([block])
+    const soso = result({ perfects: 16, goods: 0, misses: 4, playedTempo: 80, targetTempo: 80 })
+    const first = await recordExerciseRep(session, block, exerciseForBlock(block), soso, settings, NOW)
+    expect(first.performance.acc).toBeCloseTo(0.8, 6)
+    expect(first.nextTempo).toBe(80)
+    const second = await recordExerciseRep(session, block, exerciseForBlock(block), soso, settings, NOW + 60_000)
+    expect(second.nextTempo).toBe(76)
+    // At the eased tempo the count starts again: one in-between round there keeps the tempo.
+    const eased = exerciseBlock('focus', 76)
+    const third = await recordExerciseRep(session, eased, exerciseForBlock(eased), { ...soso, playedTempo: 76, targetTempo: 76 }, settings, NOW + 120_000)
+    expect(third.nextTempo).toBe(76)
+    // Yesterday's rounds do not count for today's: another sitting starts fresh.
+    const other = { ...session, id: (session.id ?? 0) + 1000 }
+    // Also when it begins at the very tempo the last sitting ended on, with a round like its last one.
+    const sameTempo = await recordExerciseRep(other, eased, exerciseForBlock(eased), { ...soso, playedTempo: 76, targetTempo: 76 }, settings, NOW + 86_400_000 - 60_000)
+    expect(sameTempo.nextTempo).toBe(76)
+    const fresh = await recordExerciseRep(other, block, exerciseForBlock(block), soso, settings, NOW + 86_400_000)
+    expect(fresh.nextTempo).toBe(80)
+  })
+
+  it('a plan stored by an earlier version above the target is brought down to it when the day is opened', async () => {
+    const now = new Date(2026, 10, 8, 9, 0, 0)
+    const fast = exerciseBlock('focus', SKILL.targetTempo + 32)
+    const done: ExerciseBlock = { ...exerciseBlock('warmup', SKILL.targetTempo + 20), status: 'done' }
+    const stored = await storedSession([done, fast])
+    const opened = await getOrCreateTodaySession({ settings, now })
+    expect(opened.id).toBe(stored.id)
+    const [first, second] = opened.plan.blocks as ExerciseBlock[]
+    // What was played stays as it was played.
+    expect(first.tempo).toBe(SKILL.targetTempo + 20)
+    expect(second.tempo).toBe(SKILL.targetTempo)
+    expect(second.params).toMatchObject({ tempo: SKILL.targetTempo, startTempo: SKILL.targetTempo, maxTempo: SKILL.targetTempo })
+    expect((await getSession(stored.date))!.plan.blocks[1]).toMatchObject({ tempo: SKILL.targetTempo })
+    // A plan that is already within its targets is handed back untouched.
+    expect(await getOrCreateTodaySession({ settings, now })).toEqual(opened)
+  })
+})
+
 describe('a run where the app heard its own guitar part (speaker bleed)', () => {
   beforeEach(async () => {
     await resetTrainingData()

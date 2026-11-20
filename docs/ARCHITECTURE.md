@@ -206,8 +206,11 @@ then hands the block runner the same `AttemptResult` shape.
   calibration, which the student runs first. Played right it must pass on screen and be judged in time (mostly "perfect", no
   steady lead or lag); played on the wrong frets, or not at all, it must not pass. It
   then plays the lesson's song at the lesson's slower speed and three bundled songs from
-  the library, strummed chords included. It builds the app first, so the performances
-  and the app always come from the same code.
+  the library, strummed chords included. Last comes a day of practice: the student leaves
+  the course, reads today's plan out of the app's own storage, and plays its first
+  exercise and its song as the Coach planned them (the performance is rendered on the
+  spot from the stored block), checking the round card, the skill score and the plan.
+  It builds the app first, so the performances and the app always come from the same code.
 - `npm run test:e2e` – Playwright smoke test against the production build using
   Chromium's fake microphone: navigation, metronome, tuner, demo song play-through
   to the results screen, persistence, an end-to-end AI transcription of a

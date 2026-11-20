@@ -5,6 +5,7 @@ import {
   adaptAfterBlock,
   fitRounds,
   focusPriority,
+  inHoldBand,
   nextRepTempo,
   pickSongBlock,
   pickSongs,
@@ -381,6 +382,121 @@ describe('nextRepTempo', () => {
   it('never goes below 40 bpm', () => {
     expect(nextRepTempo(41, 0.1, 41)).toBe(40)
   })
+  it('a round the Coach calls clean (85 %) is followed by a faster one; just under it the tempo stays', () => {
+    expect(nextRepTempo(100, 0.85, 100)).toBe(105)
+    expect(nextRepTempo(100, 0.84, 100)).toBe(100)
+  })
+  it('eases off after two in-between rounds at one tempo, and only then', () => {
+    // 80 %: not clean, not rough. Once, the tempo stays; the second time in a row it comes down a little.
+    expect(nextRepTempo(100, 0.8, 100, 140)).toBe(100)
+    expect(nextRepTempo(100, 0.8, 100, 140, true)).toBe(95)
+    // A clean or a rough round is answered as always, whatever came before.
+    expect(nextRepTempo(100, 0.9, 100, 140, true)).toBe(105)
+    expect(nextRepTempo(100, 0.5, 100, 140, true)).toBe(92)
+    expect(inHoldBand(0.8)).toBe(true)
+    expect(inHoldBand(0.85)).toBe(false)
+    expect(inHoldBand(0.74)).toBe(false)
+  })
+  it('never goes above the tempo the skill aims for', () => {
+    expect(nextRepTempo(118, 0.95, 110, 120)).toBe(120)
+    expect(nextRepTempo(120, 0.95, 110, 120)).toBe(120)
+    // A block planned by an earlier version above the target comes back to it.
+    expect(nextRepTempo(150, 0.95, 150, 120)).toBe(120)
+    expect(nextRepTempo(120, 0.5, 120, 120)).toBe(110)
+  })
+})
+
+describe('the target tempo is where an exercise stops getting faster', () => {
+  const pinnedPlan = (skillId: string, tempoCeiling: number, dailyMinutes: Prefs['dailyMinutes'] = 20) => {
+    const states = REAL_SKILLS.map((s) => state(s.id, s.id === skillId ? 70 : 85, { lastPracticedAt: NOW.getTime() - 86_400_000, tempoCeiling: s.id === skillId ? tempoCeiling : s.startTempo }))
+    return planSession({ model: model(states), skills: REAL_SKILLS, library: [], prefs: { dailyMinutes, goals: [], pinnedSkillId: skillId }, now: NOW, daysSinceLastSession: 1, effectiveRating })
+  }
+
+  it('plans no exercise above its skill target, whatever tempo was reached before, and stores the limit with the block', () => {
+    for (const skill of REAL_SKILLS.filter((s) => s.tier >= 1 && s.category !== 'ear')) {
+      // A ceiling from before the limit existed: twice the target.
+      const plan = pinnedPlan(skill.id, skill.targetTempo * 2)
+      const block = exercisesOf(plan).find((b) => b.skillId === skill.id)
+      expect(block, skill.id).toBeDefined()
+      expect(block!.tempo, skill.id).toBeLessThanOrEqual(skill.targetTempo)
+      expect(block!.params.tempo, skill.id).toBe(block!.tempo)
+      expect(block!.params.maxTempo, skill.id).toBe(skill.targetTempo)
+    }
+    for (const b of exercisesOf(pinnedPlan('fret.single-string', 500, 45))) expect(b.tempo, b.skillId).toBeLessThanOrEqual(SKILLS_BY_ID[b.skillId].targetTempo)
+  })
+
+  it('stays at the target through a session of clean rounds and a clean warm-up', () => {
+    const skill = SKILLS_BY_ID['fret.single-string']
+    let plan = pinnedPlan(skill.id, skill.targetTempo)
+    const warm = plan.blocks.find((b) => b.kind === 'warmup')!
+    plan = adaptAfterBlock(plan, warm.id, ATTEMPT, perf(0.97))
+    const focus = () => exercisesOf(plan).find((b) => b.skillId === skill.id && b.kind === 'focus')!
+    expect(focus().tempo).toBe(skill.targetTempo)
+    // Round after round, as the Coach works the next tempo out from the limit stored with the block.
+    let tempo = focus().tempo
+    for (let round = 0; round < 4; round++) {
+      tempo = nextRepTempo(tempo, 0.97, focus().params.startTempo as number, focus().params.maxTempo as number)
+      expect(tempo).toBe(skill.targetTempo)
+    }
+  })
+
+  it('a later exercise of the same skill stays at the target after a clean block at the target', () => {
+    const skill = SKILLS_BY_ID['fret.single-string']
+    const plan = pinnedPlan(skill.id, skill.targetTempo)
+    const focus = exercisesOf(plan).find((b) => b.skillId === skill.id && b.kind === 'focus')!
+    expect(focus.tempo).toBe(skill.targetTempo)
+    // The same skill once more later in the day (a recap), with the limit stored on the block.
+    const again: ExerciseBlock = { ...focus, id: `${focus.id}-again`, kind: 'review' }
+    const next = adaptAfterBlock({ ...plan, blocks: [...plan.blocks, again] }, focus.id, ATTEMPT, perf(0.97))
+    const later = exercisesOf(next).find((b) => b.id === again.id)!
+    expect(later.tempo).toBe(skill.targetTempo)
+    expect(later.params.tempo).toBe(skill.targetTempo)
+  })
+
+  it('a clean warm-up after a careful start of the day lifts the tempos back, but not over a target', () => {
+    const skill = SKILLS_BY_ID['fret.single-string']
+    const plan = pinnedPlan(skill.id, skill.targetTempo)
+    // The day began slowed down (as after a break, or a shaky warm-up earlier): every exercise at nine tenths.
+    const slowed = { ...plan, dayFactor: 0.9 }
+    const warm = slowed.blocks.find((b) => b.kind === 'warmup')!
+    const next = adaptAfterBlock(slowed, warm.id, ATTEMPT, perf(0.97))
+    expect(next.dayFactor).toBe(1)
+    const pending = exercisesOf(next).filter((b) => b.status === 'pending')
+    expect(pending.length).toBeGreaterThan(0)
+    for (const b of pending) {
+      expect(b.tempo, b.skillId).toBeLessThanOrEqual(SKILLS_BY_ID[b.skillId].targetTempo)
+      expect(b.params.startTempo as number, b.skillId).toBeLessThanOrEqual(SKILLS_BY_ID[b.skillId].targetTempo)
+    }
+    // The pinned skill was planned at its target: it stays there (it would have gone to 111 % of it).
+    expect(pending.find((b) => b.skillId === skill.id)!.tempo).toBe(skill.targetTempo)
+  })
+
+  it('the longest session does not plan ear training twice (as its own block and as the recap)', () => {
+    // Everything practised and solid, and ear training due for a recap.
+    const states = REAL_SKILLS.map((s) => state(s.id, 80, { lastPracticedAt: NOW.getTime() - 86_400_000, attempts: 12, nextReviewAt: s.category === 'ear' ? NOW.getTime() - 5 * 86_400_000 : NOW.getTime() + 30 * 86_400_000 }))
+    const plan = planSession({ model: model(states), skills: REAL_SKILLS, library: [], prefs: { dailyMinutes: 45, goals: [] }, now: NOW, daysSinceLastSession: 1, effectiveRating })
+    const ear = exercisesOf(plan).filter((b) => SKILLS_BY_ID[b.skillId].category === 'ear')
+    expect(ear.map((b) => b.kind)).toEqual(['ear'])
+  })
+
+  it('four weeks of clean playing: no round faster than its target, and nothing called mastered that was only played slowly', () => {
+    for (const accuracy of [0.95, 0.88]) {
+      const sim = courseGraduate(accuracy)
+      for (let day = 1; day <= 28; day++) {
+        const plan = simDay(sim, 20, accuracy)
+        for (const b of exercisesOf(plan)) expect(b.tempo, `day ${day} ${b.skillId}`).toBeLessThanOrEqual(SKILLS_BY_ID[b.skillId].targetTempo)
+      }
+      for (const st of Object.values(sim.model.skills)) {
+        const def = SKILLS_BY_ID[st.skillId]
+        expect(st.tempoCeiling, st.skillId).toBeLessThanOrEqual(def.targetTempo)
+        // Mastered (90 and up) means played cleanly at the target tempo, in every tier.
+        if (st.rating >= 90) expect(st.tempoCeiling, `${st.skillId} rated ${st.rating.toFixed(0)}`).toBe(def.targetTempo)
+      }
+      // The first thing learned is played up to its target and then counts as done.
+      expect(sim.model.skills['fret.single-string'].rating, `${accuracy}`).toBeGreaterThanOrEqual(90)
+      expect(sim.model.skills['fret.single-string'].tempoCeiling, `${accuracy}`).toBe(SKILLS_BY_ID['fret.single-string'].targetTempo)
+    }
+  })
 })
 
 describe('pickSongBlock', () => {
@@ -631,7 +747,8 @@ function simDay(sim: Sim, minutes: Prefs['dailyMinutes'], accuracy: number): Ret
       // An ear round is its questions, about a minute, also when ear training is the main exercise.
       sim.playedSeconds = (sim.playedSeconds ?? 0) + (SKILLS_BY_ID[block.skillId].category === 'ear' ? 60 : roundSeconds(tempo, block.params.bars))
       simExercise(sim, block.skillId, block.generatorId, tempo, block.params, KIND_BY_BLOCK[block.kind], accuracy, rep === block.reps)
-      tempo = nextRepTempo(tempo, accuracy, block.tempo)
+      // As coach.recordExerciseRep does: never faster than the skill aims for.
+      tempo = nextRepTempo(tempo, accuracy, block.tempo, SKILLS_BY_ID[block.skillId].targetTempo)
     }
   }
   const focus = plan.blocks.find((b): b is ExerciseBlock => b.kind === 'focus')
@@ -1165,7 +1282,7 @@ describe('four weeks after First steps: the rating follows the playing (simulate
     }
   })
 
-  it('at 85 to 88 % the learner moves forward too: no tempo is talked down, no rating falls, the first tier 1 skills are solid within four weeks', () => {
+  it('at 85 to 88 % the learner moves forward like any clean player: no tempo is talked down, no rating falls, each clean round is followed by a faster one', () => {
     for (const accuracy of [0.85, 0.88]) {
       const before = courseGraduate(accuracy).model.skills
       const { sim, solidOn, plannedOn, neverLowered } = weeks(accuracy, 28)
@@ -1176,9 +1293,10 @@ describe('four weeks after First steps: the rating follows the playing (simulate
       for (const [id, was] of Object.entries(before)) expect(sim.model.skills[id].tempoCeiling, `${accuracy} ${id}`).toBeGreaterThanOrEqual(was.tempoCeiling)
       for (const id of ['chord.open', 'fret.cross-string', 'fret.single-string']) expect(solidOn[id], `${accuracy} ${id}`).toBeLessThanOrEqual(28)
       for (const id of ['pick.downstrokes', 'time.metronome']) expect(sim.model.skills[id].rating, `${accuracy} ${id}`).toBeGreaterThan(UNLOCK_RATING - 5)
-      // Slower than at 95 %, where the tempo also goes up from round to round.
-      expect(solidOn['fret.single-string'], `${accuracy}`).toBeGreaterThan(7)
-      expect(plannedOn['chord.power'], `${accuracy}`).toBeUndefined()
+      // A round of 85 % is what the Coach calls clean everywhere else, so the next one is a little faster,
+      // as after a round of 95 %. (The line for that used to be 90 %: single notes took until day 28.)
+      expect(solidOn['fret.single-string'], `${accuracy}`).toBeLessThanOrEqual(7)
+      expect(plannedOn['chord.power'], `${accuracy}`).toBeLessThanOrEqual(28)
     }
   })
 

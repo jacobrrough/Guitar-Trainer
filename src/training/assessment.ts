@@ -15,6 +15,7 @@ import {
 } from './constants'
 import { itemDifficulty } from './difficulty'
 import { exerciseParams } from './exercises'
+import { tempoProgressRating } from './learner'
 import { prerequisitesSolid } from './skills'
 import type {
   Attempt,
@@ -40,8 +41,8 @@ export type ApplyAttemptFn = (state: SkillState, attempt: Attempt, skill: SkillD
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x))
 const round1 = (x: number) => Math.round(x * 10) / 10
 
-function newState(skillId: string, rating: number): SkillState {
-  return { skillId, rating, confidence: 1, tempoCeiling: 0, ease: 2.3, intervalDays: 0, plateauStep: 0, attempts: 0 }
+function newState(skillId: string, rating: number, tempoCeiling = 0): SkillState {
+  return { skillId, rating, confidence: 1, tempoCeiling, ease: 2.3, intervalDays: 0, plateauStep: 0, attempts: 0 }
 }
 
 /** Bars (even count, min 2) that fill roughly 35 s at the tempo. */
@@ -223,7 +224,8 @@ export function checkpointTasks(
 ): TestTask[] {
   const tasks: TestTask[] = []
   const skillTask = (id: string, skill: SkillDef, label: string): TestTask => {
-    const tempo = model.skills[skill.id]?.tempoCeiling || skill.startTempo
+    // Never faster than the skill aims for (a tempo stored by an earlier version can be above it).
+    const tempo = Math.min(skill.targetTempo, model.skills[skill.id]?.tempoCeiling || skill.startTempo)
     const generatorId = skill.generators[0] ?? 'melody'
     // The check plays the drill the skill is practised with (its note values, hand position and technique),
     // only longer, and is rated for those note values.
@@ -321,6 +323,20 @@ function lowestUnlocked(ratings: Record<string, number>, skills: SkillDef[], cou
     .map((s) => s.id)
 }
 
+/**
+ * True when a task plays a skill's own exercise: the same drill, and nothing the task sets differs from
+ * what the exercise sets (note values, beats per chord, strums, key). Only then does the tempo of the
+ * task mean the same as the tempo of the exercise: chords changed every four beats at 60 bpm say
+ * nothing about changing them every two beats at 60.
+ */
+function isOwnDrill(task: TestTask, skill: SkillDef, tempo: number): boolean {
+  const generatorId = skill.generators[0]
+  if (generatorId === undefined || task.generatorId !== generatorId) return false
+  const own: Record<string, unknown> = exerciseParams(skill, generatorId, tempo)
+  const asked: Record<string, unknown> = task.params ?? {}
+  return Object.keys(own).every((key) => key === 'tempo' || key === 'bars' || asked[key] === undefined || JSON.stringify(asked[key]) === JSON.stringify(own[key]))
+}
+
 export function applyPlacement(
   model: LearnerModel,
   tasks: TestTask[],
@@ -329,14 +345,28 @@ export function applyPlacement(
   now: number,
 ): { model: LearnerModel; report: TestReport } {
   const resultById = new Map(results.map((r) => [r.taskId, r]))
+  const byId = new Map(skills.map((s) => [s.id, s]))
   const passedVals = new Map<string, number>()
   const failedVals = new Map<string, number>()
+  /** Tempo the learner showed on a skill's own drill in a passed task: where its exercises start from. */
+  const shownTempo = new Map<string, number>()
   for (const task of tasks) {
     const res = resultById.get(task.id)
     if (!res) continue
+    const taskTempo = task.params?.tempo
     for (const id of task.skillIds) {
       if (res.passed) {
-        const v = clamp(Math.max(task.difficulty + PLACEMENT_PASS_OFFSET, PLACEMENT_PASS_MIN_RATING), 0, 100)
+        let v = clamp(Math.max(task.difficulty + PLACEMENT_PASS_OFFSET, PLACEMENT_PASS_MIN_RATING), 0, 100)
+        const def = byId.get(id)
+        if (def && typeof taskTempo === 'number') {
+          // As for any other run: below the skill's target tempo a pass proves it up to just under
+          // "mastered" at most. (One slow task used to rate sixteenth notes 93, and a skill rated
+          // 90 or more is never planned as an exercise.) A pass always opens what builds on the skill.
+          if (taskTempo < def.targetTempo) v = Math.max(PLACEMENT_PASS_MIN_RATING, Math.min(v, tempoProgressRating(taskTempo, { start: def.startTempo, target: def.targetTempo })))
+          // Played on the skill's own drill: the first exercise can start from there and not from the
+          // slowest tempo again.
+          if (isOwnDrill(task, def, taskTempo)) shownTempo.set(id, Math.max(shownTempo.get(id) ?? 0, Math.min(def.targetTempo, taskTempo)))
+        }
         passedVals.set(id, Math.max(passedVals.get(id) ?? -Infinity, v))
       } else {
         const v = clamp(Math.min(task.difficulty - PLACEMENT_PASS_OFFSET, PLACEMENT_MISS_MAX_RATING), 0, 100)
@@ -345,7 +375,6 @@ export function applyPlacement(
     }
   }
 
-  const byId = new Map(skills.map((s) => [s.id, s]))
   // A pass also vouches for everything the skill builds on, all the way down the chain: those skills
   // are rated a little under the pass, and never under the minimum pass rating.
   const impliedByPass = new Map<string, number>()
@@ -393,7 +422,7 @@ export function applyPlacement(
   }
 
   const nextSkills: Record<string, SkillState> = { ...model.skills }
-  for (const s of skills) nextSkills[s.id] = newState(s.id, ratingOf(s.id))
+  for (const s of skills) nextSkills[s.id] = newState(s.id, ratingOf(s.id), shownTempo.get(s.id) ?? 0)
   const next: LearnerModel = {
     ...model,
     skills: nextSkills,

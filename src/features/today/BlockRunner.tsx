@@ -31,7 +31,7 @@ import { runVerdict, type RunVerdict } from '../play/runVerdict'
 import { useHeld } from '../play/useHeld'
 import { EarTrainer } from './EarTrainer'
 import type { ScoreSummary } from '../play/scoring'
-import { blockResultLine, hasPace, nextRoundText } from './repCard'
+import { blockResultLine, hasPace, nextRoundText, scoreHint } from './repCard'
 import { bandLabel, notesHitText, pct, reasonText, repSummaryText, simpleBandLabel, timingText, timingWords } from './todayUtils'
 
 function Overlay({ testId, children }: { testId: string; children: ReactNode }) {
@@ -225,6 +225,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
     const res = blockOutcome.attempt
     const acc = blockOutcome.performance.acc
     const tip = acc < 0.5 ? 'Buzzing or muted notes? Press each string firmly just behind the metal bar (fret), close to it.' : (skill.tips[0] ?? '')
+    const hint = scoreHint({ before: ratingBefore, after, accuracy: acc, tempo, targetTempo: skill.targetTempo, paced })
     const reasons = blockOutcome.performance.reasons
     const details = (
       <>
@@ -240,6 +241,7 @@ function ExerciseRunner({ block, session }: { block: ExerciseBlock; session: Ses
           />
         </dl>
         {simple && <p className="mt-2 text-xs text-muted">{blockResultLine(pct(acc), tempo, paced)}</p>}
+        {hint && <p className="mt-2 text-xs text-muted" data-testid="score-hint">{hint}</p>}
         {!blockOutcome.performance.reliable && (
           <p className="mt-3 text-xs text-amber-200">
             {simple ? 'This result may be off: ' : 'Low-confidence result: '}

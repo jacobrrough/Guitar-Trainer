@@ -110,7 +110,27 @@ describe('exercise rules', () => {
     const reps = [at({ skillId: 'pick.downstrokes' }), at({ skillId: 'pick.downstrokes', at: NOW - 5000 })]
     const r = find(recommendations(ctx(reps)), 'tempo-ratchet')
     expect(r?.title).toBe('Downstroke drill now clean at 100 bpm.')
+    expect(r?.reason).toContain('Next: 105 bpm.')
     expect(r?.action).toEqual({ type: 'practice', skillId: 'pick.downstrokes', tempo: 105 })
+  })
+  it('never promises a tempo above the one the skill aims for', () => {
+    // The skills here aim for 120 bpm.
+    const near = find(recommendations(ctx([at({ skillId: 'pick.downstrokes', playedTempo: 118 }), at({ skillId: 'pick.downstrokes', playedTempo: 118, at: NOW - 5000 })])), 'tempo-ratchet')
+    expect(near?.reason).toContain('Next: 120 bpm.')
+    expect(near?.action).toEqual({ type: 'practice', skillId: 'pick.downstrokes', tempo: 120 })
+    const there = find(recommendations(ctx([at({ skillId: 'pick.downstrokes', playedTempo: 120 }), at({ skillId: 'pick.downstrokes', playedTempo: 120, at: NOW - 5000 })])), 'tempo-ratchet')
+    expect(there?.title).toBe('Downstroke drill now clean at 120 bpm.')
+    expect(there?.reason).not.toMatch(/Next:/)
+    expect(there?.reason).toContain('the tempo this exercise aims for')
+    expect(there?.action).toEqual({ type: 'practice', skillId: 'pick.downstrokes', tempo: 120 })
+    // A round that is clean by the Coach's own line (85 %) counts here too.
+    const clean = at({ skillId: 'pick.downstrokes', accuracy: 0.86 })
+    expect(find(recommendations(ctx([clean, { ...clean, at: NOW - 5000 }])), 'tempo-ratchet')).toBeDefined()
+  })
+  it('says nothing about tempo for ear training', () => {
+    const ear = skill('ear.tuning', 'Tuning by ear', 'ear', 1, [], 'tuneByEar')
+    const reps = [at({ skillId: 'ear.tuning', playedTempo: 80 }), at({ skillId: 'ear.tuning', playedTempo: 80, at: NOW - 5000 })]
+    expect(find(recommendations(ctx(reps, { skills: [...skills, ear] })), 'tempo-ratchet')).toBeUndefined()
   })
   it('falls back after two bad reps', () => {
     const bad = { skillId: 'chord.power', accuracy: 0.4, playedTempo: 80 }
@@ -120,10 +140,14 @@ describe('exercise rules', () => {
 })
 
 describe('test rules', () => {
-  it('raises the target after a pass', () => {
+  it('names the next step after a pass, up to the tempo the skill aims for and never past it', () => {
     const r = find(recommendations(ctx([at({ kind: 'test', skillId: 'chord.power', targetTempo: 90 })])), 'test-passed-target-up')
-    expect(r?.title).toBe('Power chords: 90 → 99 bpm target.')
+    expect(r?.title).toBe('Power chords: 90 → 99 bpm.')
     expect(r?.priority).toBe(70)
+    const near = find(recommendations(ctx([at({ kind: 'test', skillId: 'chord.power', targetTempo: 115 })])), 'test-passed-target-up')
+    expect(near?.title).toBe('Power chords: 115 → 120 bpm.')
+    expect(near?.action).toEqual({ type: 'practice', skillId: 'chord.power', tempo: 120 })
+    expect(find(recommendations(ctx([at({ kind: 'test', skillId: 'chord.power', targetTempo: 120 })])), 'test-passed-target-up')).toBeUndefined()
   })
   it('adds a prerequisite after two failed tests', () => {
     const fail = { kind: 'test' as const, skillId: 'chord.power', perfects: 3, goods: 0, misses: 7, accuracy: 0.3, targetTempo: 100 }
@@ -161,6 +185,21 @@ describe('session rules', () => {
     const r = find(recommendations(ctx(flat)), 'plateau')
     expect(r?.title).toMatch(/weeks flat on Power chords: precision week/)
     expect(r?.priority).toBe(60)
+  })
+  it('a plateau step is worked out from the tempo the skill aims for at most, whatever tempo an earlier version stored', () => {
+    const flat = Array.from({ length: 10 }, (_, i) =>
+      at({ skillId: 'chord.power', at: NOW - (20 - i * 2) * DAY, ratingAfter: 50 + (i % 2) * 0.1, accuracy: 0.8 }),
+    )
+    const tempoOf = (tempoCeiling: number) => {
+      const stored: LearnerModel = { ...model, skills: { ...model.skills, 'chord.power': st('chord.power', { tempoCeiling }) } }
+      const r = find(recommendations(ctx(flat, { model: stored })), 'plateau')
+      expect(r?.action.type).toBe('practice')
+      return r?.action.type === 'practice' ? r.action.tempo : undefined
+    }
+    // The skills here aim for 120 bpm: a stored 240 gives the same step as 120.
+    expect(tempoOf(240)).toBe(tempoOf(120))
+    expect(tempoOf(240)!).toBeLessThanOrEqual(120)
+    expect(tempoOf(100)!).toBeLessThan(tempoOf(120)!)
   })
 })
 
