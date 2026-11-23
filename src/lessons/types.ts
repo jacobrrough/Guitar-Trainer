@@ -34,7 +34,8 @@ export interface LessonDrill {
   skillId: string
   /**
    * The exercise this drill counts as in the learner's practice history (its difficulty, and what daily
-   * practice carries on with). What is shown and played is the lesson's own chart in src/lessons/drills.ts.
+   * practice carries on with). What is shown and played is the lesson's own chart in src/lessons/drills.ts;
+   * a singing lesson has no chart of its own and sings the generator's exercise, placed in the singer's range.
    */
   generatorId: string
   params?: Partial<ExerciseParams>

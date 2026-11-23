@@ -7,15 +7,20 @@
  *   node e2e/student.mjs                     builds the app, then runs
  *   SKIP_BUILD=1 node e2e/student.mjs        uses the build in dist/ (it must be from this very code)
  *   BASE_URL=http://localhost:4173 node e2e/student.mjs
+ *   E2E_OUTPUT=<folder> node e2e/student.mjs  screenshots and performances go there, not to e2e/output
  *
  * The performances are rendered by src/features/play/e2eFixtures.test.ts from the same charts the app
  * shows, on every run. The app under test has to be built from the same code: a build that is even one
  * chart correction older asks for a note the performance does not contain. Hence the build step.
+ *
+ * The microphone the performances are fed through, and the plumbing around it, is in
+ * e2e/lib/virtualMic.mjs, shared with the virtual singer (e2e/singer.mjs).
  */
-import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { BROWSER_ARGS, FIXTURES, OUT, fixtureUrl, installVirtualMicrophone, readFixture, renderFixtures, startPreview, storeRows } from './lib/virtualMic.mjs'
 
 const require = createRequire(import.meta.url)
 const { chromium, devices } = require('playwright')
@@ -23,8 +28,6 @@ const { chromium, devices } = require('playwright')
 const DEVICE = process.env.DEVICE ? devices[process.env.DEVICE] : null
 if (process.env.DEVICE && !DEVICE) throw new Error(`Unknown device ${process.env.DEVICE}`)
 const SUFFIX = process.env.DEVICE ? `-${process.env.DEVICE.replace(/\s+/g, '_')}` : ''
-const OUT = path.resolve('e2e/output')
-const FIXTURES = path.join(OUT, 'fixtures')
 mkdirSync(OUT, { recursive: true })
 
 function log(...args) {
@@ -41,173 +44,13 @@ function check(ok, message) {
 function buildBlockFixture(block) {
   const file = path.join(FIXTURES, 'today-block.request.json')
   writeFileSync(file, JSON.stringify(block))
-  const run = spawnSync('npx', ['vitest', 'run', 'src/features/play/e2eFixtures.test.ts'], { env: { ...process.env, E2E_FIXTURES: FIXTURES, E2E_BLOCK: file }, encoding: 'utf8' })
-  if (run.status !== 0) throw new Error(`could not render the exercise of the block:\n${run.stdout}\n${run.stderr}`)
-  return JSON.parse(readFileSync(path.join(FIXTURES, 'today-block.json'), 'utf8'))
+  renderFixtures(['src/features/play/e2eFixtures.test.ts'], 'the exercise of the block', { E2E_BLOCK: file })
+  return readFixture('today-block.json')
 }
 
 function buildFixtures() {
-  const run = spawnSync('npx', ['vitest', 'run', 'src/features/play/e2eFixtures.test.ts', 'src/features/settings/e2eCalibrationFixture.test.ts'], { env: { ...process.env, E2E_FIXTURES: FIXTURES }, encoding: 'utf8' })
-  if (run.status !== 0) throw new Error(`could not render the performances:\n${run.stdout}\n${run.stderr}`)
-  return JSON.parse(readFileSync(path.join(FIXTURES, 'index.json'), 'utf8'))
-}
-
-async function startPreview() {
-  if (process.env.BASE_URL) return { url: process.env.BASE_URL, stop: () => {} }
-  const port = 4200 + Math.floor(Math.random() * 700)
-  const child = spawn('npx', ['vite', 'preview', '--port', String(port), '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
-  const url = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('preview did not start')), 30000)
-    child.stdout.on('data', (d) => {
-      const m = String(d).match(/(http:\/\/localhost:\d+)/)
-      if (m) {
-        clearTimeout(timer)
-        resolve(m[1])
-      }
-    })
-    child.stderr.on('data', (d) => process.stderr.write(d))
-    child.on('exit', (code) => reject(new Error(`preview exited with ${code}`)))
-  })
-  const stop = () => {
-    try {
-      process.kill(-child.pid, 'SIGTERM')
-    } catch {
-      child.kill()
-    }
-  }
-  return { url, stop }
-}
-
-/**
- * Runs in the page before the app: replaces the microphone with a stream we feed. `arm(url)` loads a
- * performance; it then plays whenever the app's song element plays, from the matching position, so the
- * student is "in time" the way a person following the highway is. `noodle(url)` plays freely (for the
- * set-up wizard's microphone check).
- */
-function virtualMicrophone() {
-  // The modelled device is a slow one (wireless headphones are in this range). That also gives the
-  // rig time to watch the song's clock settle before the first note has to come out.
-  const MODEL_DELAY = 0.25
-  const HOLD = 0.9
-  const SETTLE_FROM_MS = 150
-  const SETTLE_MS = 250
-  let ctx = null
-  let out = null
-  let armed = null
-  let source = null
-  let following = null
-  const ensure = () => {
-    if (ctx) return
-    ctx = new AudioContext({ sampleRate: 48000 })
-    // Sound takes time to get from the speaker to the player and back through the microphone. This
-    // rig models a device where that takes about 270 ms (250 ms here plus about 20 ms of its own
-    // path). The app is not told: the student runs "Sync your sound" and the app has to measure it.
-    out = ctx.createDelay(2)
-    out.delayTime.value = MODEL_DELAY
-    // A real room is never digitally silent: a faint hiss, about -70 dBFS.
-    const noise = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate)
-    const data = noise.getChannelData(0)
-    let seed = 7
-    for (let i = 0; i < data.length; i++) {
-      seed = (seed * 1664525 + 1013904223) >>> 0
-      data[i] = (seed / 4294967296 - 0.5) * 0.0006
-    }
-    const hiss = ctx.createBufferSource()
-    hiss.buffer = noise
-    hiss.loop = true
-    hiss.connect(out)
-    hiss.start()
-  }
-  const stop = () => {
-    try {
-      source?.stop()
-    } catch {
-      /* already stopped */
-    }
-    source?.disconnect()
-    source = null
-  }
-  const playFrom = (offset) => {
-    stop()
-    if (!armed || offset >= armed.duration) return
-    source = ctx.createBufferSource()
-    source.buffer = armed
-    source.connect(out)
-    source.start(0, offset)
-  }
-  const decode = async (url) => {
-    ensure()
-    const data = await (await fetch(url)).arrayBuffer()
-    return ctx.decodeAudioData(data)
-  }
-  navigator.mediaDevices.getUserMedia = async () => {
-    ensure()
-    await ctx.resume()
-    // A fresh stream per request, as a real microphone gives: the app stops the tracks of the old one.
-    const mic = ctx.createMediaStreamDestination()
-    out.connect(mic)
-    return mic.stream
-  }
-  // A player follows the song they hear. After "playing" (and after a seek) the element's clock stands
-  // still for a moment and then runs ahead of where it settles for about 100 ms (measured in Chromium:
-  // 45 to 70 ms ahead). So the performance starts when the clock first moves, but into a long delay,
-  // and once the clock has settled the delay is set so that every note lands where the settled clock
-  // puts it.
-  let waiting = 0
-  const follow = (el) => {
-    following = el
-    stop()
-    clearTimeout(waiting)
-    const from = el.currentTime
-    const rate = el.playbackRate || 1
-    const zeros = []
-    let moved = 0
-    const poll = () => {
-      if (following !== el || el.paused || el.ended) return
-      const now = performance.now()
-      const ct = el.currentTime
-      if (!moved) {
-        if (ct > from + 0.001) {
-          moved = now
-          out.delayTime.value = HOLD
-          playFrom(from / rate)
-        }
-      } else {
-        // The wall-clock moment at which the clock, as it runs now, was at `from`. Only readings from
-        // after its first 150 ms count: before that it is still catching up with itself.
-        if (now - moved >= SETTLE_FROM_MS) zeros.push(now - ((ct - from) * 1000) / rate)
-        if (now - moved >= SETTLE_MS) {
-          const recent = zeros.sort((a, b) => a - b)
-          const zero = recent[recent.length >> 1]
-          out.delayTime.value = Math.max(0, zero - moved) / 1000 + MODEL_DELAY
-          return
-        }
-      }
-      waiting = setTimeout(poll, 2)
-    }
-    poll()
-  }
-  document.addEventListener('playing', (e) => e.target instanceof HTMLMediaElement && follow(e.target), true)
-  for (const type of ['pause', 'ended']) document.addEventListener(type, (e) => e.target === following && stop(), true)
-  document.addEventListener('seeked', (e) => e.target === following && !following.paused && follow(following), true)
-  window.__student = {
-    async arm(url) {
-      stop()
-      armed = url ? await decode(url) : null
-    },
-    async noodle(url) {
-      stop()
-      const buffer = await decode(url)
-      source = ctx.createBufferSource()
-      source.buffer = buffer
-      source.loop = true
-      source.connect(out)
-      source.start()
-    },
-    rest() {
-      stop()
-    },
-  }
+  renderFixtures(['src/features/play/e2eFixtures.test.ts', 'src/features/settings/e2eCalibrationFixture.test.ts'], 'the performances')
+  return readFixture('index.json')
 }
 
 /** The stored attempt's timing, for the log: how early or late the app judged the playing to be. */
@@ -252,25 +95,6 @@ async function lastAttempt(page) {
   })
 }
 
-/** Everything in one object store of the app's database. */
-function storeRows(page, store) {
-  return page.evaluate(async (name) => {
-    const req = indexedDB.open('guitar-trainer')
-    const db = await new Promise((res, rej) => {
-      req.onsuccess = () => res(req.result)
-      req.onerror = () => rej(req.error)
-    })
-    if (!db.objectStoreNames.contains(name)) return []
-    const all = await new Promise((res, rej) => {
-      const r = db.transaction(name).objectStore(name).getAll()
-      r.onsuccess = () => res(r.result)
-      r.onerror = () => rej(r.error)
-    })
-    db.close()
-    return all
-  }, store)
-}
-
 /** The plan the Coach stored for today (the newest session). */
 async function todaysPlan(page) {
   const sessions = await storeRows(page, 'sessions')
@@ -310,19 +134,15 @@ async function main() {
   const fixtures = buildFixtures()
   const preview = await startPreview()
   const base = preview.url.replace(/\/$/, '')
-  const browser = await chromium.launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] })
+  const browser = await chromium.launch({ args: BROWSER_ARGS })
   const consoleErrors = []
   try {
     const context = await browser.newContext({ ...(DEVICE ?? { viewport: { width: 1280, height: 800 } }), permissions: ['microphone'] })
-    await context.route('**/__student/*', (route) => {
-      const name = path.basename(new URL(route.request().url()).pathname)
-      route.fulfill({ path: path.join(FIXTURES, name), contentType: 'audio/wav' })
-    })
-    await context.addInitScript(virtualMicrophone)
+    await installVirtualMicrophone(context)
     const page = await context.newPage()
     page.on('pageerror', (err) => consoleErrors.push(`pageerror: ${err.message}`))
     page.on('console', (msg) => msg.type() === 'error' && consoleErrors.push(`console: ${msg.text()}`))
-    const wav = (key) => `${base}/__student/${fixtures[key].file}`
+    const wav = (key) => fixtureUrl(base, fixtures[key].file)
     const arm = (key) => page.evaluate((url) => window.__student.arm(url), key ? wav(key) : null)
 
     // A brand-new learner goes through the set-up wizard, strumming when the microphone check asks.
@@ -355,7 +175,7 @@ async function main() {
     // measures has to be this rig's delay, and everything played afterwards is judged with it.
     await page.goto(`${base}/#/settings?calibrate=1`)
     await page.waitForSelector('[data-testid="calibrate-start"]', { timeout: 15000 })
-    await page.evaluate((url) => window.__student.arm(url), `${base}/__student/calibration-strums.wav`)
+    await page.evaluate((url) => window.__student.arm(url), fixtureUrl(base, 'calibration-strums.wav'))
     await page.getByTestId('calibrate-start').click()
     await page.locator('[data-testid="calibrate-result"], [data-testid="calibrate-error"]').first().waitFor({ timeout: 30000 })
     const measured = (await page.getByTestId('calibrate-result').count()) ? await page.getByTestId('calibrate-result').innerText() : await page.getByTestId('calibrate-error').innerText()
@@ -454,7 +274,7 @@ async function main() {
     if (first && 'skillId' in first) {
       const fixture = buildBlockFixture({ skillId: first.skillId, generatorId: first.generatorId, tempo: first.tempo, params: first.params })
       const before = await skillRating(page, first.skillId)
-      await page.evaluate((url) => window.__student.arm(url), `${base}/__student/${fixture.file}`)
+      await page.evaluate((url) => window.__student.arm(url), fixtureUrl(base, fixture.file))
       await page.getByTestId('block-start').first().click()
       await page.waitForSelector('[data-testid="block-runner"]', { timeout: 15000 })
       await page.waitForSelector('[data-testid="start"]', { timeout: 30000 })
@@ -484,7 +304,7 @@ async function main() {
       const record = next?.kind === 'song' ? (await storeRows(page, 'songs')).find((s) => s.id === next.songId) : null
       if (next?.kind === 'song' && record?.builtinId && !next.loopBars) {
         const songFixture = buildBlockFixture({ builtinId: record.builtinId, level: next.level, speed: next.speed })
-        await page.evaluate((url) => window.__student.arm(url), `${base}/__student/${songFixture.file}?song`)
+        await page.evaluate((url) => window.__student.arm(url), `${fixtureUrl(base, songFixture.file)}?song`)
         await page.getByTestId('block-start').first().click()
         await page.waitForSelector('[data-testid="block-runner"]', { timeout: 15000 })
         await page.waitForSelector('[data-testid="start"]', { timeout: 60000 })

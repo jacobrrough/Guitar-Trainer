@@ -49,6 +49,11 @@ export const NOT_COUNTED: Record<Exclude<RunVerdict, 'counted'>, { title: string
  * is too far away. And the card about the app's own sound allows for the one case where the app is
  * mistaken: a singer with headphones on who joins in with the guide from its first moment looks, to
  * the microphone, exactly like the speaker.
+ *
+ * That card also says what has been done about it. When a sung run hears the app's own sound the
+ * player turns "I use headphones" off and, once the run is over, its guide switch with it, so by the
+ * time the card is read "Try again" starts without the guide and can count. A singer who does wear
+ * headphones is told how to get the guide back.
  */
 export const NOT_COUNTED_VOICE: Record<Exclude<RunVerdict, 'counted'>, { title: string; body: string }> = {
   unscored: {
@@ -61,7 +66,7 @@ export const NOT_COUNTED_VOICE: Record<Exclude<RunVerdict, 'counted'>, { title: 
   },
   bleed: {
     title: 'This run did not count',
-    body: 'The phone was hearing its own sound. Use headphones or turn the guide off. If you have headphones on, wait for the guide to finish before you sing. This run was not saved.',
+    body: 'The phone was hearing its own sound, so we turned the guide off. You can try again like this. With headphones on, tap the speaker icon to turn the guide back on, and wait for it to finish before you sing. This run was not saved.',
   },
 }
 

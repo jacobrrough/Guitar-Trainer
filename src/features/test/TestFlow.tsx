@@ -1,27 +1,33 @@
-import { CheckCircle2, ClipboardCheck, XCircle } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { ClipboardCheck } from 'lucide-react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router'
+import { voiceEnabled } from '../../app/features'
 import { useSettings } from '../../app/settings'
 import { encodeWav } from '../../audio/synth'
 import { generateLevels } from '../../chart/difficulty'
 import type { Chart, ChartNote } from '../../chart/types'
-import { Badge, Button, Card, PageHeader } from '../../components/ui'
-import { db } from '../../db/db'
+import { Button, Card, PageHeader } from '../../components/ui'
+import { db, type SongRecord } from '../../db/db'
 import { songPlayback } from '../../songs/playback'
+import { levelIndex } from '../../songs/vocal/levels'
+import { useVocalRunState, type VocalRunView } from '../../songs/vocal/useVocalRun'
 import { getTuning } from '../../music/tunings'
 import { checkpointTasks, evaluateTask, monthlyTasks, placementLadder } from '../../training/assessment'
 import { CALIBRATION_MAX_AGE_DAYS } from '../../training/constants'
 import { attemptForTask, calibrationAgeDays, exerciseForTask, songSummaries } from '../../training/coach'
-import { SKILLS } from '../../training/skills'
+import { activeInstrument, instrumentOf, skillsFor } from '../../training/instruments'
 import { saveFinishedTest } from '../../training/testBlocks'
-import type { AttemptResult, LearnerModel, Profile, TestTask, TestType } from '../../training/types'
+import type { AttemptResult, InstrumentId, LearnerModel, Profile, TestTask, TestType } from '../../training/types'
 import { useLearnerModel, useProfile } from '../../training/useTraining'
+import { voiceCheckOptions, voiceIsSetUp } from '../../training/voicePlan'
+import { loadVoiceProfile } from '../../training/voiceProfile'
 import { NotCountedCard } from '../play/NotCountedCard'
 import { Player, type PlayerHandle } from '../play/Player'
 import { runVerdict, type RunVerdict } from '../play/runVerdict'
 import type { ScoreSummary } from '../play/scoring'
-import { TaskCard, TaskIntro } from './TaskIntro'
-import { failedCriteria, failureReasons, ruleAccuracy, shownAccuracyPct, verdictBadge, type FailedCriterion } from './taskResult'
+import { voiceResultCopy } from '../play/voice/voiceCopy'
+import { TaskCard, TaskIntro, TaskResultCard } from './TaskIntro'
+import { checkInstrument, checkOffered, checkWords, focusSkillFor, singingRange, sungSongStep, type CheckWords } from './taskResult'
 import { TestReportView } from './TestReportView'
 import { initialTestFlowState, isComplete, progressOf, testFlowReducer } from './testFlowState'
 
@@ -42,25 +48,40 @@ interface PlayMedia {
   hint: string
 }
 
-function focusSkillFor(model: LearnerModel, profile: Profile): string {
-  if (profile.pinnedSkillId) return profile.pinnedSkillId
-  let best: { id: string; rating: number } | null = null
-  for (const [id, st] of Object.entries(model.skills)) {
-    if (!best || st.rating < best.rating) best = { id, rating: st.rating }
-  }
-  return best?.id ?? SKILLS[0].id
+/**
+ * A song task of a sung check, before its sound exists. A song to sing is stored without audio: it is
+ * arranged for the singer's range and rendered when the task opens (`SungSongTask`).
+ */
+interface SungSong {
+  sungSong: SongRecord
+  /** Level index 0 to 5. */
+  level: number
+  hint: string
 }
 
-async function buildTasks(type: TestType, model: LearnerModel, profile: Profile): Promise<TestTask[]> {
-  if (type === 'placement') return placementLadder(SKILLS)
-  if (type === 'monthly') return monthlyTasks(model, SKILLS)
-  return checkpointTasks(model, SKILLS, await songSummaries(), Date.now(), focusSkillFor(model, profile))
+/**
+ * The tasks of a check for one instrument. A voice has the weekly check and no other (the caller sends
+ * the other kinds away): its tasks are built from the singing skills, each at its own step and as far
+ * up its ladder as the singer's range goes, with the sung pass mark.
+ */
+async function buildTasks(type: TestType, instrument: InstrumentId, model: LearnerModel, profile: Profile): Promise<TestTask[]> {
+  const skills = skillsFor(instrument)
+  if (instrument === 'voice') {
+    const range = singingRange(await loadVoiceProfile())
+    return checkpointTasks(model, skills, await songSummaries('voice'), Date.now(), focusSkillFor(model, profile, skills), voiceCheckOptions(range))
+  }
+  if (type === 'placement') return placementLadder(skills)
+  if (type === 'monthly') return monthlyTasks(model, skills)
+  return checkpointTasks(model, skills, await songSummaries(), Date.now(), focusSkillFor(model, profile, skills))
 }
 
 /** Loads chart, notes and audio for a task; null when a song task's song is gone. */
-async function prepareMedia(task: TestTask, tuning: number[]): Promise<PlayMedia | null> {
+async function prepareMedia(task: TestTask, tuning: number[], instrument: InstrumentId, words: CheckWords): Promise<PlayMedia | SungSong | null> {
   if (task.generatorId === 'song') {
     const song = await db.songs.get(task.params.songId as number)
+    if (instrument === 'voice') {
+      return song && instrumentOf(song) === 'voice' ? { sungSong: song, level: levelIndex(Number(task.params.level)), hint: task.instructions } : null
+    }
     // Bundled songs store the guitar part itself: a test plays their click track only.
     const playback = song ? songPlayback(song) : null
     const audio = playback?.audio ?? null
@@ -81,8 +102,10 @@ async function prepareMedia(task: TestTask, tuning: number[]): Promise<PlayMedia
       hint: task.instructions,
     }
   }
-  const exercise = exerciseForTask(task, tuning)
-  if (!exercise || !exercise.backing) throw new Error('This task could not be generated.')
+  // A sung exercise is placed in the singer's range as it is now, not as it was when the check was built,
+  // and is written for a voice: the guitar's tuning has no say in it.
+  const exercise = instrument === 'voice' ? exerciseForTask(task, undefined, singingRange(await loadVoiceProfile())) : exerciseForTask(task, tuning)
+  if (!exercise || !exercise.backing) throw new Error(words.trouble.task)
   return {
     title: task.title,
     chart: exercise.chart,
@@ -94,74 +117,68 @@ async function prepareMedia(task: TestTask, tuning: number[]): Promise<PlayMedia
   }
 }
 
-function Centered({ children }: { children: React.ReactNode }) {
+function Centered({ children }: { children: ReactNode }) {
   return <div className="mx-auto max-w-xl">{children}</div>
 }
 
-function TaskResultCard({
+/**
+ * A song task of a sung check: makes the song ready in the singer's key, then hands it to the Player
+ * (`children`). The sound is the scored track alone, click and starting notes, as for every task of a
+ * check: no guide voice sings along with what is being measured.
+ *
+ * The arrangement the task opens with is the one that is sung. The singing profile is read live, and
+ * a range or key changed elsewhere must not swap the chart under a task that has begun.
+ * A song that cannot be made ready, or that no longer fits the singer's range, is left out of the
+ * check (`onLeftOut`); it is not counted as a miss.
+ */
+function SungSongTask({
   task,
-  passed,
-  result,
-  last,
-  onNext,
+  waiting,
+  onLeftOut,
+  children,
 }: {
-  task: TestTask
-  passed: boolean
-  result: AttemptResult | null
-  last: boolean
-  onNext: () => void
+  task: SungSong
+  /** Said while the song is being made ready. */
+  waiting: string
+  onLeftOut: () => void
+  children: (media: PlayMedia) => ReactNode
 }) {
-  // The number shown is the one the pass rule uses (a note a little off counts for less), and a miss says which part was missed.
-  const accuracy = result ? shownAccuracyPct(ruleAccuracy(result), task.passCriteria.minAccuracy) : null
-  const failed: FailedCriterion[] = result && !passed ? failedCriteria(task.passCriteria, result) : []
-  const reasons = result && !passed ? failureReasons(task.passCriteria, result) : []
-  const median = result?.timingMedianMs
-  const stdev = result?.timingStdevMs
-  const tile = (part: FailedCriterion) => `rounded-lg bg-panel-2 p-3 ${failed.includes(part) ? 'ring-1 ring-amber-300/60' : ''}`
-  return (
-    <Centered>
-      <PageHeader title="Task result" subtitle={task.title} />
-      <Card>
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          {passed ? <CheckCircle2 className="h-6 w-6 text-green-300" /> : <XCircle className="h-6 w-6 text-red-300" />}
-          <span className="text-lg font-semibold">{passed ? 'Passed' : 'Not yet'}</span>
-          <Badge tone={passed ? 'ok' : 'warn'}>{passed ? 'on target' : failed.length > 0 ? verdictBadge(failed) : 'below target'}</Badge>
-        </div>
-        <dl className="grid grid-cols-3 gap-2 text-sm">
-          <div className={tile('accuracy')}>
-            <dt className="text-[11px] uppercase tracking-wide text-muted">Accuracy</dt>
-            <dd className="text-xl font-semibold tabular-nums">{accuracy === null ? '-' : `${accuracy}%`}</dd>
-          </div>
-          <div className={tile('timing')}>
-            <dt className="text-[11px] uppercase tracking-wide text-muted">Timing</dt>
-            <dd className="text-xl font-semibold tabular-nums">
-              {median === null || median === undefined ? '-' : `${median > 0 ? '+' : ''}${Math.round(median)} ms`}
-            </dd>
-          </div>
-          <div className={tile('spread')}>
-            <dt className="text-[11px] uppercase tracking-wide text-muted">Spread</dt>
-            <dd className="text-xl font-semibold tabular-nums">
-              {stdev === null || stdev === undefined ? '-' : `${Math.round(stdev)} ms`}
-            </dd>
-          </div>
-        </dl>
-        {reasons.length > 0 && (
-          <ul className="mt-3 space-y-1 text-sm text-slate-200" data-testid="task-reasons">
-            {reasons.map((r) => (
-              <li key={r}>{r}</li>
-            ))}
-          </ul>
-        )}
-        <Button variant="primary" size="lg" className="mt-4" onClick={onNext} data-testid="task-next">
-          {last ? 'See results' : 'Next'}
-        </Button>
-      </Card>
-    </Centered>
+  const live = useVocalRunState(task.sungSong, task.level)
+  const [held, setHeld] = useState<VocalRunView | null>(null)
+  // Adopting the first run during render is React's pattern for state derived from what a hook returns.
+  if (!held && live.status === 'ready') setHeld(live.run)
+  const run = held ?? (live.status === 'ready' ? live.run : null)
+  const step = sungSongStep(live, held)
+  const leftOut = step === 'left-out'
+  const leaveOut = useEffectEvent(onLeftOut)
+  useEffect(() => {
+    if (leftOut) leaveOut()
+  }, [leftOut])
+  const { title, bpm } = task.sungSong
+  const media = useMemo(
+    (): PlayMedia | null => (run ? { title, chart: run.chart, notes: run.notes, audio: run.audio, clickOnly: true, tempo: bpm, hint: task.hint } : null),
+    [run, title, bpm, task.hint],
   )
+  if (!media || step !== 'sing') {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-center text-muted" role="status" data-testid="task-song-waiting">
+        {waiting}
+      </div>
+    )
+  }
+  return <>{children(media)}</>
 }
 
+/**
+ * A skill check for one instrument. Whose check it is comes from the page address (`?instrument=voice`),
+ * else from the instrument on screen. Singing has the weekly check alone: any other kind asked for a
+ * voice goes back to Today.
+ */
 export function TestFlow() {
   const { type: typeParam } = useParams()
+  const [query] = useSearchParams()
+  const settings = useSettings()
+  const instrument = checkInstrument(query.get('instrument'), activeInstrument(settings), voiceEnabled())
   if (!isTestType(typeParam)) {
     return (
       <Centered>
@@ -174,33 +191,41 @@ export function TestFlow() {
       </Centered>
     )
   }
-  return <TestFlowInner key={typeParam} type={typeParam} />
+  if (!checkOffered(typeParam, instrument)) return <Navigate to="/" replace />
+  return <TestFlowInner key={`${instrument}:${typeParam}`} type={typeParam} instrument={instrument} />
 }
 
-function TestFlowInner({ type }: { type: TestType }) {
+function TestFlowInner({ type, instrument }: { type: TestType; instrument: InstrumentId }) {
   const navigate = useNavigate()
   const settings = useSettings()
-  const model = useLearnerModel()
-  const profile = useProfile()
+  const sung = instrument === 'voice'
+  const words = checkWords(instrument)
+  const model = useLearnerModel(instrument)
+  const profile = useProfile(instrument)
   const [state, dispatch] = useReducer(testFlowReducer, type, initialTestFlowState)
   const [override, setOverride] = useState(false)
-  const [media, setMedia] = useState<PlayMedia | null>(null)
+  const [media, setMedia] = useState<PlayMedia | SungSong | null>(null)
   const [preparing, setPreparing] = useState(false)
   const [lastResult, setLastResult] = useState<AttemptResult | null>(null)
+  // The one tip for a sung task, from what the tracker heard; the guitar card has its numbers instead.
+  const [lastTip, setLastTip] = useState<string | null>(null)
   const [empty, setEmpty] = useState(false)
   const builtRef = useRef(false)
   const finishingRef = useRef(false)
 
   const age = calibrationAgeDays(settings)
   const calibrated = age !== null && age <= CALIBRATION_MAX_AGE_DAYS
-  const gateOpen = calibrated || (type === 'placement' && override)
+  // A sung check never waits for the sound sync: when a sung note begins is no part of its result.
+  const gateOpen = sung || calibrated || (type === 'placement' && override)
   const ready = model !== undefined && profile !== undefined
+  // A singer who has not been through the set-up has no check to take: the set-up comes first.
+  const notSetUp = sung && profile !== undefined && !voiceIsSetUp(profile)
 
   // Build the task list exactly once, when the gate is open and data is loaded.
   useEffect(() => {
-    if (!gateOpen || !ready || builtRef.current) return
+    if (!gateOpen || !ready || notSetUp || builtRef.current) return
     builtRef.current = true
-    buildTasks(type, model, profile)
+    buildTasks(type, instrument, model, profile)
       .then((tasks) => {
         if (tasks.length === 0) setEmpty(true)
         else dispatch({ type: 'loaded', tasks })
@@ -208,10 +233,10 @@ function TestFlowInner({ type }: { type: TestType }) {
       .catch((e: unknown) =>
         dispatch({
           type: 'fail',
-          message: e instanceof Error ? e.message : 'Could not build the test.',
+          message: e instanceof Error ? e.message : words.trouble.build,
         }),
       )
-  }, [gateOpen, ready, model, profile, type])
+  }, [gateOpen, ready, notSetUp, model, profile, type, instrument, words])
 
   // Save the results when the last task is done. Saving also closes the check's block in today's plan.
   useEffect(() => {
@@ -220,23 +245,21 @@ function TestFlowInner({ type }: { type: TestType }) {
     if (state.results.length === 0) {
       dispatch({
         type: 'fail',
-        message: 'No tasks could be played, so nothing was saved.',
+        message: words.noTasks,
       })
       return
     }
-    saveFinishedTest(type, state.tasks, state.results)
+    saveFinishedTest(type, state.tasks, state.results, Date.now(), instrument)
       .then((record) => dispatch({ type: 'done', record }))
       .catch((e: unknown) =>
         dispatch({
           type: 'fail',
-          message: e instanceof Error ? e.message : 'Could not save the test.',
+          message: e instanceof Error ? e.message : words.trouble.save,
         }),
       )
-  }, [state.phase, state.tasks, state.results, type])
+  }, [state.phase, state.tasks, state.results, type, instrument, words])
 
   const active = state.phase === 'intro' || state.phase === 'task-intro' || state.phase === 'playing' || state.phase === 'task-result'
-  const activeRef = useRef(active)
-  activeRef.current = active
 
   // Browser back and tab close while a test is in progress.
   useEffect(() => {
@@ -245,7 +268,7 @@ function TestFlowInner({ type }: { type: TestType }) {
     let leaving = false
     const onPop = () => {
       if (leaving) return
-      if (window.confirm('Leave the test? Your progress will not be saved.')) {
+      if (window.confirm(words.leave)) {
         leaving = true
         window.history.back()
       } else {
@@ -261,11 +284,11 @@ function TestFlowInner({ type }: { type: TestType }) {
       window.removeEventListener('popstate', onPop)
       window.removeEventListener('beforeunload', onUnload)
     }
-  }, [active])
+  }, [active, words])
 
   const confirmLeave = useCallback(() => {
-    if (window.confirm('Leave the test? Your progress will not be saved.')) navigate('/')
-  }, [navigate])
+    if (window.confirm(words.leave)) navigate('/')
+  }, [navigate, words])
 
   const task = state.current
   const playerRef = useRef<PlayerHandle>(null)
@@ -276,7 +299,7 @@ function TestFlowInner({ type }: { type: TestType }) {
     if (!task) return
     setPreparing(true)
     try {
-      const m = await prepareMedia(task, tuning)
+      const m = await prepareMedia(task, tuning, instrument, words)
       if (!m) {
         dispatch({ type: 'skipTask', taskId: task.id })
         return
@@ -286,14 +309,14 @@ function TestFlowInner({ type }: { type: TestType }) {
     } catch (e) {
       dispatch({
         type: 'fail',
-        message: e instanceof Error ? e.message : 'Could not prepare the task.',
+        message: e instanceof Error ? e.message : words.trouble.prepare,
       })
     } finally {
       setPreparing(false)
     }
   }
 
-  const onFinished = (summary: ScoreSummary, result: AttemptResult) => {
+  const onFinished = (summary: ScoreSummary, result: AttemptResult, chart: Chart) => {
     if (!task || state.phase !== 'playing') return
     // A task the app could not hear (or where it heard its own playback) is played again, not marked as failed.
     const verdict = runVerdict(summary, result)
@@ -303,16 +326,20 @@ function TestFlowInner({ type }: { type: TestType }) {
     }
     setNotCounted(null)
     const passed = evaluateTask(task, result)
-    const attempt = attemptForTask(task, result, settings)
+    // Whose run it is has to be said here: a song task names no skill to read it from.
+    const attempt = attemptForTask(task, result, settings, Date.now(), instrument)
     setLastResult(result)
+    setLastTip(sung ? voiceResultCopy(summary, chart.voice).tip : null)
     dispatch({
       type: 'finishedTask',
       result: { taskId: task.id, attempt, passed },
     })
   }
 
-  let body: React.ReactNode
-  if (state.phase === 'error') {
+  let body: ReactNode
+  if (notSetUp) {
+    return <Navigate to="/start?instrument=voice" replace />
+  } else if (state.phase === 'error') {
     body = (
       <Centered>
         <Card>
@@ -348,54 +375,70 @@ function TestFlowInner({ type }: { type: TestType }) {
   } else if (empty) {
     body = (
       <Centered>
-        <PageHeader title="Nothing to test yet" subtitle="Practise a few skills first, then come back." />
+        <PageHeader title={words.nothing.title} subtitle={words.nothing.subtitle} />
         <Link to="/" className="text-accent underline">
           Back to Today
         </Link>
       </Centered>
     )
   } else if (state.phase === 'gate') {
-    body = <div className="py-10 text-center text-muted">Preparing your test…</div>
+    body = <div className="py-10 text-center text-muted">{words.preparing}</div>
   } else if (state.phase === 'intro') {
     body = (
-      <TaskIntro type={type} taskCount={state.tasks.length} onStart={() => dispatch({ type: 'start' })} onCancel={() => navigate('/')} />
+      <TaskIntro
+        type={type}
+        taskCount={state.tasks.length}
+        onStart={() => dispatch({ type: 'start' })}
+        onCancel={() => navigate('/')}
+        instrument={instrument}
+      />
     )
   } else if (state.phase === 'task-intro' && task) {
     const { position, total } = progressOf(state)
-    body = <TaskCard task={task} position={position} total={total} onPlay={() => void playTask()} busy={preparing} />
+    body = <TaskCard task={task} position={position} total={total} onPlay={() => void playTask()} busy={preparing} instrument={instrument} />
   } else if (state.phase === 'playing' && task && media) {
+    const play = (m: PlayMedia) => (
+      <Player
+        ref={playerRef}
+        title={m.title}
+        subtitle={task.title}
+        chart={m.chart}
+        notes={m.notes}
+        audio={m.audio}
+        backingIsClick={m.clickOnly}
+        mode="test"
+        speed={1}
+        playedTempo={m.tempo}
+        targetTempo={m.tempo}
+        resetKey={task.id}
+        readyHint={m.hint}
+        onExit={confirmLeave}
+        onFinished={(summary, result) => onFinished(summary, result, m.chart)}
+        onPhaseChange={(p) => p !== 'finished' && setNotCounted(null)}
+        resultsOverlay={
+          notCounted ? (
+            <NotCountedCard
+              verdict={notCounted}
+              instrument={instrument}
+              onRetry={() => {
+                setNotCounted(null)
+                playerRef.current?.restart()
+                playerRef.current?.start()
+              }}
+            />
+          ) : null
+        }
+      />
+    )
     return (
       <div className="fixed inset-0 z-40 bg-bg" data-testid="test-flow">
-        <Player
-          ref={playerRef}
-          title={media.title}
-          subtitle={task.title}
-          chart={media.chart}
-          notes={media.notes}
-          audio={media.audio}
-          backingIsClick={media.clickOnly}
-          mode="test"
-          speed={1}
-          playedTempo={media.tempo}
-          targetTempo={media.tempo}
-          resetKey={task.id}
-          readyHint={media.hint}
-          onExit={confirmLeave}
-          onFinished={onFinished}
-          onPhaseChange={(p) => p !== 'finished' && setNotCounted(null)}
-          resultsOverlay={
-            notCounted ? (
-              <NotCountedCard
-                verdict={notCounted}
-                onRetry={() => {
-                  setNotCounted(null)
-                  playerRef.current?.restart()
-                  playerRef.current?.start()
-                }}
-              />
-            ) : null
-          }
-        />
+        {'sungSong' in media ? (
+          <SungSongTask key={task.id} task={media} waiting={words.gettingSongReady} onLeftOut={() => dispatch({ type: 'skipTask', taskId: task.id })}>
+            {play}
+          </SungSongTask>
+        ) : (
+          play(media)
+        )}
       </div>
     )
   } else if (state.phase === 'task-result' && task) {
@@ -407,13 +450,15 @@ function TestFlowInner({ type }: { type: TestType }) {
         result={lastResult}
         last={isComplete(state)}
         onNext={() => dispatch({ type: 'next' })}
+        instrument={instrument}
+        tip={lastTip}
       />
     )
   } else if (state.phase === 'finishing') {
     body = <div className="py-10 text-center text-muted">Saving your results…</div>
   } else if (state.phase === 'report' && state.record) {
-    const notes = state.skipped.map((t) => `${t}: skipped (song not in your library)`)
-    body = <TestReportView record={state.record} notes={notes} onHome={() => navigate('/')} onProgress={() => navigate('/progress')} />
+    const notes = state.skipped.map((t) => words.skipped(t))
+    body = <TestReportView record={state.record} notes={notes} onHome={() => navigate('/')} onProgress={() => navigate('/progress')} instrument={instrument} />
   } else {
     body = <div className="py-10 text-center text-muted">Loading…</div>
   }

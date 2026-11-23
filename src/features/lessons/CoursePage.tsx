@@ -1,14 +1,19 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { Check, Lock } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link, Navigate, useNavigate } from 'react-router'
+import { useSettings } from '../../app/settings'
 import { Button, Card, PageHeader, cx } from '../../components/ui'
-import { COURSE, nextAvailableLesson, unlockedSongIds } from '../../lessons/course'
+import { unlockedSongIds } from '../../lessons/course'
 import { courseProgress, initialiseCourse } from '../../lessons/store'
+import { DEFAULT_RANGES } from '../../music/keys'
 import { builtInSong, builtInSongRecord } from '../../songs'
+import { vocalSongRecord } from '../../songs/vocal/install'
+import { activeInstrument, courseFor } from '../../training/instruments'
 import { useProfile } from '../../training/useTraining'
+import { singPath } from '../sing/singPage'
 import { resumeNote } from '../today/courseEntry'
-import { lessonStatus } from './lessonUtils'
+import { COMES_LATER, courseCopy, courseGate, courseSummary, lessonStatus, ownProfile, songsToSing } from './lessonUtils'
 
 export function ProgressBar({ value, max, label }: { value: number; max: number; label: string }) {
   return (
@@ -21,27 +26,53 @@ export function ProgressBar({ value, max, label }: { value: number; max: number;
   )
 }
 
-/** The First steps course: ten lessons in order, and the songs they unlock. */
+/**
+ * The First steps course of the instrument the app is switched to: its ten lessons in order, and the
+ * songs they have opened. The lesson table holds the rows of both courses; this page reads and counts
+ * the rows of its own course only.
+ */
 export function CoursePage() {
   const navigate = useNavigate()
-  const progress = useLiveQuery(() => courseProgress(), [])
-  const profile = useProfile()
+  const instrument = activeInstrument(useSettings())
+  const course = courseFor(instrument)
+  const progress = useLiveQuery(() => courseProgress(course.map((l) => l.id)), [course])
+  // The instrument can change while this page is up (the switch sits above it), and the profile hook
+  // then goes on answering with the other learner's row for a moment. Only the row of the instrument
+  // that is shown is ever read here (see `ownProfile`).
+  const profile = ownProfile(instrument, useProfile(instrument))
   const [error, setError] = useState<string | null>(null)
+  // The guitar course is made the first time this page is seen, as it always was. The singing course
+  // gets its rows from the singing set-up and from nothing else.
+  const gate = courseGate(instrument, profile)
+  const mayStart = gate === 'open'
 
   useEffect(() => {
-    void initialiseCourse(COURSE.map((l) => l.id)).catch(() => {})
-  }, [])
+    if (!mayStart) return
+    void initialiseCourse(course.map((l) => l.id)).catch(() => {})
+  }, [course, mayStart])
 
-  const doneCount = progress ? progress.filter((p) => p.status === 'done').length : 0
-  const next = progress ? nextAvailableLesson(progress) : undefined
-  const label = doneCount >= COURSE.length ? `All ${COURSE.length} lessons done` : `Lesson ${next?.number ?? doneCount + 1} of ${COURSE.length}`
-  const songs = (progress ? unlockedSongIds(progress) : []).map((id) => builtInSong(id)).filter((s) => !!s)
-  // Someone who skipped the course and came back: say that carrying on is fine.
-  const resume = resumeNote(profile, progress)
+  if (gate === 'set-up') return <Navigate to="/start?instrument=voice" replace />
+
+  const { done: doneCount, label } = courseSummary(course, progress)
+  const copy = courseCopy(instrument, course)
+  const opened = progress ? unlockedSongIds(progress, course) : []
+  // A singer's songs are songs to sing, and only those that fit their easy notes can be sung now.
+  const toSing = instrument === 'voice' ? songsToSing(opened, profile?.voice?.range ?? DEFAULT_RANGES.lower) : null
+  const songs: { id: string; title: string; description: string }[] = toSing ? toSing.ready : opened.map((id) => builtInSong(id)).filter((s) => !!s)
+  const later = toSing?.later ?? []
+  // Someone who skipped the course and came back: say that carrying on is fine. (Asked only while
+  // lessons of this course remain: the note itself counts by the guitar course.)
+  const resume = doneCount >= course.length ? null : resumeNote(profile, progress)
 
   const playSong = async (id: string) => {
     setError(null)
     try {
+      if (instrument === 'voice') {
+        // The row is written first when it is missing, and a sung song has its own page.
+        const record = await vocalSongRecord(id)
+        navigate(singPath(record.id))
+        return
+      }
       const record = await builtInSongRecord(id)
       navigate(`/play/${record.id}`)
     } catch {
@@ -50,10 +81,10 @@ export function CoursePage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl" data-testid="course-page">
-      <PageHeader title="First steps" subtitle="Ten short lessons, from holding the guitar to playing your first songs." />
+    <div className="mx-auto max-w-2xl" data-testid="course-page" data-instrument={instrument}>
+      <PageHeader title="First steps" subtitle={copy.subtitle} />
       <Card className="mb-4">
-        <ProgressBar value={doneCount} max={COURSE.length} label={label} />
+        <ProgressBar value={doneCount} max={course.length} label={label} />
         {resume && (
           <p className="mt-3 text-sm text-muted" data-testid="course-resume">
             {resume}
@@ -62,7 +93,7 @@ export function CoursePage() {
       </Card>
 
       <ol className="space-y-2">
-        {COURSE.map((lesson) => {
+        {course.map((lesson) => {
           const status = lessonStatus(lesson.id, progress)
           // After the course (finished or skipped) every lesson can be opened, to look something up.
           const open = status !== 'locked' || !!profile?.firstStepsDoneAt
@@ -106,9 +137,9 @@ export function CoursePage() {
       </ol>
 
       <Card className="mt-6" >
-        <h2 className="text-lg font-semibold">Songs you can play now</h2>
+        <h2 className="text-lg font-semibold">{copy.songsTitle}</h2>
         {songs.length === 0 ? (
-          <p className="mt-2 text-sm text-muted">Finish a lesson and your first songs will appear here.</p>
+          <p className="mt-2 text-sm text-muted">{copy.noSongs}</p>
         ) : (
           <ul className="mt-3 divide-y divide-line" data-testid="unlocked-songs">
             {songs.map((song) => (
@@ -118,11 +149,22 @@ export function CoursePage() {
                   <div className="text-sm text-muted">{song.description}</div>
                 </div>
                 <Button size="sm" variant="primary" onClick={() => void playSong(song.id)} data-testid={`song-play-${song.id}`}>
-                  Play
+                  {copy.songAction}
                 </Button>
               </li>
             ))}
           </ul>
+        )}
+        {later.length > 0 && (
+          <div className="mt-4 border-t border-line pt-3" data-testid="songs-later">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">{COMES_LATER.title}</div>
+            <ul className="mt-2 space-y-1 text-slate-200">
+              {later.map((song) => (
+                <li key={song.id}>{song.title}</li>
+              ))}
+            </ul>
+            <p className="mt-2 text-sm text-muted">{COMES_LATER.why(later.length)}</p>
+          </div>
         )}
         {error && <p className="mt-2 text-sm text-red-300">{error}</p>}
       </Card>

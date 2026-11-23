@@ -40,6 +40,11 @@ export function isVoiced(frame: EarFrame, gate: number = VOICE.minRms): boolean 
  * A sudden jump in level: the rule the guitar side's `PitchSmoother` flags a new pick with, number for
  * number (a test holds the two together). The player counts these during the count-in: attacks right
  * after its own clicks mean the microphone hears the speaker.
+ *
+ * Like the guitar's, it counts frames: the level heard dies away by 8 % a frame, which takes longer
+ * where frames are long (a microphone at 16 or 24 kHz). The clicks of a count-in are a beat apart and
+ * are still flagged one by one there. What is lost at those rates is a faint click, whose level is
+ * taken over a window two or three times as long; the cues then tell (voice.bleed.sim.test.ts).
  */
 export class LevelJump {
   private envelope = 0

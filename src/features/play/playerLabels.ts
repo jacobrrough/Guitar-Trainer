@@ -72,7 +72,8 @@ export const VOICE_LABELS: PlayerLabels = {
   // Speaker mode (echo cancellation) is no way out for singing: it would take the voice out with the guide.
   bleedAction: null,
   // "Seems": a singer with headphones on who joins in with the guide from its first moment is heard exactly as the speaker would be.
-  ownSoundNotice: 'The microphone seems to be hearing the guide, so this run will not count. Use headphones, or turn the guide off.',
+  // The player switches the guide off as it shows this (the run is over), so the notice says so and how to get it back.
+  ownSoundNotice: 'The microphone seems to be hearing the guide, so this run will not count. The guide is off now. With headphones on, tap the speaker icon to turn it back on.',
   deviceChangedNotice: 'Your headphones or speaker changed, so this run is for practice and will not be saved. Start again when you are ready.',
   micError: (message) => `Microphone: ${message}. You can still sing along without scoring.`,
   // The browser's own words are passed on as they are (someone may be asked for help with them); ours stay plain.

@@ -1,20 +1,41 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { ArrowLeft, Check } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, Navigate, useNavigate, useParams } from 'react-router'
+import { voiceEnabled } from '../../app/features'
 import { useSettings } from '../../app/settings'
 import { Illustration } from '../../components/diagrams'
 import { Button, Card, cx } from '../../components/ui'
 import { db } from '../../db/db'
-import { COURSE, lessonById, nextLessonAfter } from '../../lessons/course'
+import { courseOfLesson, lessonTool, nextLessonAfter } from '../../lessons/course'
 import { forHand } from '../../lessons/fingering'
 import { finishLesson } from '../../lessons/finish'
 import { initialiseCourse, patchLessonProgress } from '../../lessons/store'
 import type { Lesson } from '../../lessons/types'
+import { DEFAULT_RANGES, type RangeEdges } from '../../music/keys'
+import { instrumentOfLessonId } from '../../training/instruments'
 import { useProfile } from '../../training/useTraining'
 import { builtInSong } from '../../songs'
 import { GuidedTuner } from '../tuner/GuidedTuner'
-import { STEP_LABEL, doneText, lessonSteps, resumeOffer, stepAfterCards, type ResumeOffer, type StepId } from './lessonUtils'
+import { NoteMatch } from '../voice/NoteMatch'
+import { RangeFinder } from '../voice/RangeFinder'
+import {
+  COMES_LATER,
+  courseGate,
+  doneText,
+  lessonOnScreen,
+  lessonSteps,
+  markQueue,
+  mistakesHeading,
+  ownProfile,
+  resumeOffer,
+  songsToSing,
+  stepAfter,
+  stepAfterCards,
+  stepLabel,
+  type ResumeOffer,
+  type StepId,
+} from './lessonUtils'
 import { PlayStep, TryStep } from './PlayerSteps'
 
 function Stepper({ steps, current, lesson }: { steps: StepId[]; current: StepId; lesson: Lesson }) {
@@ -31,7 +52,7 @@ function Stepper({ steps, current, lesson }: { steps: StepId[]; current: StepId;
           >
             {i < index ? <Check className="h-3 w-3" /> : i + 1}
           </span>
-          <span className={cx('hidden sm:inline', i === index ? 'font-medium text-slate-100' : 'text-muted')}>{STEP_LABEL[s]}</span>
+          <span className={cx('hidden sm:inline', i === index ? 'font-medium text-slate-100' : 'text-muted')}>{stepLabel(lesson, s)}</span>
           {i < steps.length - 1 && <span className="h-px w-4 bg-line" />}
         </li>
       ))}
@@ -86,7 +107,7 @@ function LearnStep({ lesson, onDone }: { lesson: Lesson; onDone: () => void }) {
         </div>
         {card.mistakes && card.mistakes.length > 0 && (
           <div className="mt-4 rounded-lg border border-line bg-panel-2 p-3 text-sm">
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">If something goes wrong</div>
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">{mistakesHeading(lesson)}</div>
             <ul className="list-disc space-y-1 pl-5 text-slate-200">
               {card.mistakes.map((m) => (
                 <li key={m}>{say(m)}</li>
@@ -135,20 +156,48 @@ function TuneStep({ onDone }: { onDone: () => void }) {
   )
 }
 
-function DoneStep({ lesson, played }: { lesson: Lesson; played: boolean }) {
+/**
+ * The tool of a singing lesson, where a guitar lesson has its tuner: the range finder or "meet the
+ * note". Each brings its own heading and card. Nothing in a tool is scored, so leaving it either way
+ * moves the lesson on, as with the tuner.
+ */
+function ToolStep({ tool, hasRange, onDone }: { tool: 'range' | 'match'; hasRange: boolean; onDone: () => void }) {
+  return (
+    <div data-testid="lesson-tool" data-tool={tool}>
+      {tool === 'range' ? (
+        // "Not now" leaves without easy notes, so it is only offered to a singer who already has some.
+        // Without any, the practice rounds and the songs after this lesson would have nothing of the
+        // singer's own to be placed in, and the closing line ("the app knows which notes are easy for
+        // you") would not be true. Picking a starting point is always on offer in the finder itself.
+        <RangeFinder onDone={onDone} onSkip={hasRange ? onDone : undefined} />
+      ) : (
+        <NoteMatch onDone={onDone} onSkip={onDone} />
+      )}
+    </div>
+  )
+}
+
+function DoneStep({ lesson, played, range, marksStored }: { lesson: Lesson; played: boolean; range: RangeEdges; marksStored: () => Promise<void> }) {
   const navigate = useNavigate()
   const next = nextLessonAfter(lesson.id)
   const [saved, setSaved] = useState<{ courseComplete: boolean } | null>(null)
   useEffect(() => {
     let cancelled = false
-    void finishLesson(lesson.id)
+    // The finish is the last to write the lesson's row: not before every mark of the lesson that is
+    // still on its way has been stored (see `markQueue` for the trap).
+    void marksStored()
+      .then(() => finishLesson(lesson.id))
       .then((r) => !cancelled && setSaved(r))
       .catch(() => !cancelled && setSaved({ courseComplete: false }))
     return () => {
       cancelled = true
     }
-  }, [lesson.id])
-  const songs = lesson.unlocks.map((id) => builtInSong(id)).filter((s) => !!s)
+  }, [lesson.id, marksStored])
+  // The songs of a singing lesson are songs to sing, and one that is wider than the singer's easy notes
+  // is not a new song for them yet: it waits under "Comes later".
+  const toSing = instrumentOfLessonId(lesson.id) === 'voice' ? songsToSing(lesson.unlocks, range) : null
+  const songs: { id: string; title: string }[] = toSing ? toSing.ready : lesson.unlocks.map((id) => builtInSong(id)).filter((s) => !!s)
+  const later = toSing?.later ?? []
   return (
     <div data-testid="lesson-done" className="text-center">
       <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-ok/20 text-green-300">
@@ -166,6 +215,19 @@ function DoneStep({ lesson, played }: { lesson: Lesson; played: boolean }) {
               </li>
             ))}
           </ul>
+        </Card>
+      )}
+      {later.length > 0 && (
+        <Card className="mx-auto mt-3 max-w-md text-left">
+          <div data-testid="lesson-songs-later">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted">{COMES_LATER.title}</div>
+            <ul className="mt-2 space-y-1 text-slate-200">
+              {later.map((s) => (
+                <li key={s.id}>{s.title}</li>
+              ))}
+            </ul>
+            <p className="mt-2 text-sm text-muted">{COMES_LATER.why(later.length)}</p>
+          </div>
         </Card>
       )}
       <div className="mt-6 flex flex-wrap justify-center gap-2">
@@ -194,23 +256,37 @@ export function LessonPage() {
 }
 
 function LessonFlow({ lessonId }: { lessonId: string | undefined }) {
-  const lesson = lessonById(lessonId ?? '')
-  const courseOver = !!useProfile()?.firstStepsDoneAt
+  // While the singing side is switched off, the address of a singing lesson finds nothing.
+  const lesson = lessonOnScreen(lessonId, voiceEnabled())
+  // The course, its lock and whether it has ended all belong to the lesson's own instrument: a guitar
+  // lesson is judged by the guitar profile and a singing lesson by the singing profile, whichever side
+  // the switch is on. Never by the other one's row (see `ownProfile`).
+  const instrument = lesson ? instrumentOfLessonId(lesson.id) : 'guitar'
+  const profile = ownProfile(instrument, useProfile(instrument))
+  const courseOver = !!profile?.firstStepsDoneAt
+  const course = courseOfLesson(lesson?.id ?? '')
+  // The guitar course is made the first time a lesson is opened, as it always was. The singing course
+  // gets its rows from the singing set-up and from nothing else, so a typed address cannot start it.
+  const gate = courseGate(instrument, profile)
+  const mayStart = gate === 'open'
   const navigate = useNavigate()
   // Null until the learner has moved on by themselves: until then the saved progress says where the lesson opens.
   const [chosen, setStep] = useState<StepId | null>(null)
   const [ready, setReady] = useState(false)
+  // The marks of this lesson that are on their way to being stored; the finish waits for them.
+  const [marks] = useState(markQueue)
   const progress = useLiveQuery(async () => (lessonId ? ((await db.lessons.get(lessonId)) ?? null) : null), [lessonId], undefined)
 
   useEffect(() => {
+    if (!mayStart) return
     let cancelled = false
-    initialiseCourse(COURSE.map((l) => l.id))
+    initialiseCourse(course.map((l) => l.id))
       .catch(() => {})
       .finally(() => !cancelled && setReady(true))
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [course, mayStart])
 
   const steps = useMemo(() => (lesson ? lessonSteps(lesson) : []), [lesson])
 
@@ -224,6 +300,7 @@ function LessonFlow({ lessonId }: { lessonId: string | undefined }) {
       </div>
     )
   }
+  if (gate === 'set-up') return <Navigate to="/start?instrument=voice" replace />
   if (!ready || progress === undefined) return <div className="flex h-dvh items-center justify-center text-muted">Loading…</div>
   // Lessons open one after the other while the course is running. Someone who has left the course
   // (finished it, or skipped it because they play already) can open any lesson to look something up.
@@ -241,12 +318,24 @@ function LessonFlow({ lessonId }: { lessonId: string | undefined }) {
 
   const offer = chosen === null ? resumeOffer(lesson, progress) : null
   const step: StepId = chosen ?? 'learn'
-  const after = (from: StepId) => steps[steps.indexOf(from) + 1] ?? 'done'
+  const after = (from: StepId) => stepAfter(lesson, from)
   const go = (to: StepId) => () => setStep(to)
+  // Every mark is stored on the way and the lesson moves on at once, as it always did. The finish may
+  // come straight after (the cards read again in a lesson that only had its finish left, a lesson that
+  // ends on its tool), so each write is handed to `marks`, and the finish waits for them.
   const markLearnt = () => {
-    void patchLessonProgress(lesson.id, { learnSeen: true, startedAt: progress.startedAt ?? Date.now() }).catch(() => {})
+    marks.add(patchLessonProgress(lesson.id, { learnSeen: true, startedAt: progress.startedAt ?? Date.now() }).catch(() => {}))
     setStep(stepAfterCards(lesson, progress))
   }
+  // The tuner and the tools of the singing course stand where a practice round stands, and are marked
+  // done the same way.
+  const middleDone = (from: StepId) => () => {
+    marks.add(patchLessonProgress(lesson.id, { drillDone: true }).catch(() => {}))
+    setStep(after(from))
+  }
+  const tool = lessonTool(lesson)
+  // A singer always has notes to sing in: their own, or the lower starting notes until those are found.
+  const range = profile?.voice?.range ?? DEFAULT_RANGES.lower
 
   if (offer) {
     return (
@@ -257,23 +346,17 @@ function LessonFlow({ lessonId }: { lessonId: string | undefined }) {
   }
 
   if (step === 'try' && lesson.drill) {
-    return <TryStep key={lesson.id} lesson={lesson} drill={lesson.drill} onExit={() => navigate('/lessons')} onContinue={go(after('try'))} />
+    return <TryStep key={lesson.id} lesson={lesson} drill={lesson.drill} onExit={() => navigate('/lessons')} onContinue={go(after('try'))} onMark={marks.add} />
   }
   if (step === 'play' && lesson.play) {
-    return <PlayStep key={lesson.id} lesson={lesson} play={lesson.play} onExit={() => navigate('/lessons')} onContinue={go(after('play'))} />
+    return <PlayStep key={lesson.id} lesson={lesson} play={lesson.play} onExit={() => navigate('/lessons')} onContinue={go(after('play'))} onMark={marks.add} />
   }
   return (
     <Frame lesson={lesson} steps={steps} current={step}>
       {step === 'learn' && <LearnStep key={lesson.id} lesson={lesson} onDone={markLearnt} />}
-      {step === 'tune' && (
-        <TuneStep
-          onDone={() => {
-            void patchLessonProgress(lesson.id, { drillDone: true }).catch(() => {})
-            setStep(after('tune'))
-          }}
-        />
-      )}
-      {step === 'done' && <DoneStep lesson={lesson} played={!!progress.playDone} />}
+      {step === 'tune' && <TuneStep onDone={middleDone('tune')} />}
+      {step === 'tool' && (tool === 'range' || tool === 'match') && <ToolStep tool={tool} hasRange={!!profile?.voice?.range} onDone={middleDone('tool')} />}
+      {step === 'done' && <DoneStep lesson={lesson} played={!!progress.playDone} range={range} marksStored={marks.settled} />}
     </Frame>
   )
 }

@@ -3,13 +3,18 @@ import { Link } from 'react-router'
 import { Button, Card } from '../../components/ui'
 import { COURSE, nextAvailableLesson } from '../../lessons/course'
 import { courseProgress } from '../../lessons/store'
+import type { Lesson } from '../../lessons/types'
 import { ProgressBar } from './CoursePage'
 
-/** Today-page card pointing at the next First steps lesson. */
-export function FirstStepsCard() {
-  const progress = useLiveQuery(() => courseProgress(), [])
+/**
+ * Today-page card pointing at the next First steps lesson. It shows the guitar course unless it is
+ * handed another one (the singing course), and reads the rows of that course only: an open lesson of
+ * the other course is not this one's next lesson.
+ */
+export function FirstStepsCard({ course = COURSE }: { course?: Lesson[] }) {
+  const progress = useLiveQuery(() => courseProgress(course.map((l) => l.id)), [course])
   if (!progress || progress.length === 0) return null
-  const next = nextAvailableLesson(progress)
+  const next = nextAvailableLesson(progress, course)
   if (!next) return null
   return (
     <Card className="mb-4" >
@@ -21,7 +26,7 @@ export function FirstStepsCard() {
         <p className="text-sm text-muted">{next.subtitle}</p>
         <p className="mt-1 text-xs text-muted">{next.minutes} minutes</p>
         <div className="mt-3">
-          <ProgressBar value={next.number - 1} max={COURSE.length} label={`Lesson ${next.number} of ${COURSE.length}`} />
+          <ProgressBar value={next.number - 1} max={course.length} label={`Lesson ${next.number} of ${course.length}`} />
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Link to={`/lessons/${next.id}`} data-testid="first-steps-start">

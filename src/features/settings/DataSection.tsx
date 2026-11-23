@@ -1,17 +1,40 @@
 import { useRef, useState } from 'react'
+import { voiceEnabled } from '../../app/features'
 import { isIOS } from '../../app/platform'
 import { Button, Card } from '../../components/ui'
-import { exportTrainingData, importTrainingData, resetTrainingData } from '../../training/store'
-import { exportFileName, formatError, importStatusText } from './dataSection'
+import { exportTrainingData, resetTrainingData } from '../../training/store'
+import { exportFileName, formatError, importStatusText, pickBackup, restoreBackup, type PickedBackup } from './dataSection'
 import { ImportConfirm } from './ImportConfirm'
-import { IMPORT_NOTE, RESET_WARNING, backupSaved, importFlow, type ExportOutcome, type ImportEvent, type ImportFlow } from './importConfirm'
+import {
+  RESET_SCOPES,
+  backupSaved,
+  exportNote,
+  importFlow,
+  importNote,
+  resetDone,
+  resetLabel,
+  resetSide,
+  resetWarning,
+  type ExportOutcome,
+  type ImportEvent,
+  type ImportFlow,
+  type ResetScope,
+} from './importConfirm'
 
-/** Settings card to export training data, import it (replacing what is there, after a yes) and reset it. */
+/**
+ * Settings card to export training data, import it (replacing what is there, after a yes) and reset it.
+ *
+ * One backup holds both instruments. While the singing side is off the card reads and works as it
+ * always did. Once it is on, the card says that a backup holds guitar and singing, the question before
+ * an import says what that file replaces, and there is a reset for guitar, for singing and for both.
+ */
 export function DataSection() {
+  const voiceOn = voiceEnabled()
   const [busy, setBusy] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  // The reset waiting for a yes. With the singing side off there is one reset and it names no side.
+  const [confirming, setConfirming] = useState<{ scope?: ResetScope } | null>(null)
   const [status, setStatus] = useState('')
-  const [importing, setImporting] = useState<ImportFlow<File>>({ step: 'idle' })
+  const [importing, setImporting] = useState<ImportFlow<PickedBackup<File>>>({ step: 'idle' })
   const fileRef = useRef<HTMLInputElement>(null)
 
   /** Runs `fn` and shows its message, or the error when it failed. */
@@ -68,12 +91,15 @@ export function DataSection() {
   }
 
   // A picked file only waits here; the data is replaced when the learner confirms.
-  const onImport = (event: ImportEvent<File>) => {
+  const onImport = (event: ImportEvent<PickedBackup<File>>) => {
     const next = importFlow(importing, event)
     setImporting(next.state)
-    const file = next.importFile
-    if (file) void run(async () => importStatusText(await importTrainingData(await file.text())))
+    const picked = next.importFile
+    if (picked) void run(async () => importStatusText(await restoreBackup(await picked.file.text())))
   }
+
+  // With two instruments the question depends on what the file holds, so the file is looked at first.
+  const onPicked = async (file: File | undefined) => onImport({ type: 'picked', file: await pickBackup(file, voiceOn) })
 
   const backUpFirst = async () => {
     // Only say "Backup saved" when a file was really handed over.
@@ -81,10 +107,11 @@ export function DataSection() {
   }
 
   const doReset = () => {
-    setConfirming(false)
+    const scope = confirming?.scope
+    setConfirming(null)
     void run(async () => {
-      await resetTrainingData()
-      return 'Training data reset.'
+      await resetTrainingData(resetSide(scope))
+      return resetDone(scope)
     })
   }
 
@@ -94,27 +121,29 @@ export function DataSection() {
       <div className="flex flex-col gap-4 text-sm">
         <div>
           <div className="font-medium text-slate-200">Export</div>
-          <p className="mb-2 text-xs text-muted">Save your lessons, practice history, skill checks and skill ratings as a backup file.</p>
+          <p className="mb-2 text-xs text-muted">{exportNote(voiceOn)}</p>
           <Button data-testid="data-export" disabled={busy} onClick={() => void doExport()}>
             Export training data
           </Button>
         </div>
         <div>
           <div className="font-medium text-slate-200">Import</div>
-          <p className="mb-2 text-xs text-muted">{IMPORT_NOTE}</p>
+          <p className="mb-2 text-xs text-muted">{importNote(voiceOn)}</p>
           <input
             ref={fileRef}
             type="file"
             accept=".json,application/json"
             className="hidden"
             onChange={(e) => {
-              onImport({ type: 'picked', file: e.target.files?.[0] })
+              void onPicked(e.target.files?.[0])
               e.target.value = ''
             }}
           />
           {importing.step === 'confirm' ? (
             <ImportConfirm
-              fileName={importing.file.name}
+              fileName={importing.file.file.name}
+              backup={importing.file.backup}
+              singerHere={importing.file.singerHere}
               backedUp={importing.backedUp}
               busy={busy}
               onBackup={() => void backUpFirst()}
@@ -131,20 +160,33 @@ export function DataSection() {
           <div className="font-medium text-slate-200">Reset training data</div>
           {confirming ? (
             <>
-              <p className="mb-2 text-xs text-red-300">{RESET_WARNING}</p>
+              <p className="mb-2 text-xs text-red-300" data-testid="data-reset-warning">
+                {resetWarning(confirming.scope)}
+              </p>
               <div className="flex gap-2">
                 <Button variant="danger" data-testid="data-reset-confirm" disabled={busy} onClick={doReset}>
                   Confirm
                 </Button>
-                <Button variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
+                <Button variant="ghost" disabled={busy} onClick={() => setConfirming(null)}>
                   Cancel
                 </Button>
+              </div>
+            </>
+          ) : voiceOn ? (
+            <>
+              <p className="mb-2 text-xs text-muted">Start from scratch on guitar, on singing, or on both.</p>
+              <div className="flex flex-wrap gap-2">
+                {RESET_SCOPES.map((scope) => (
+                  <Button key={scope} variant="danger" data-testid={`data-reset-${scope}`} disabled={busy} onClick={() => setConfirming({ scope })}>
+                    {resetLabel(scope)}
+                  </Button>
+                ))}
               </div>
             </>
           ) : (
             <>
               <p className="mb-2 text-xs text-muted">Start training from scratch.</p>
-              <Button variant="danger" data-testid="data-reset" disabled={busy} onClick={() => setConfirming(true)}>
+              <Button variant="danger" data-testid="data-reset" disabled={busy} onClick={() => setConfirming({})}>
                 Reset training data…
               </Button>
             </>

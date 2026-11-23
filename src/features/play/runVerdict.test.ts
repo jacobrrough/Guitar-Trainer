@@ -53,6 +53,11 @@ describe('what a run that does not count is told', () => {
     expect(NOT_COUNTED_VOICE.unscored.body).toMatch(/closer/)
     expect(NOT_COUNTED_VOICE.bleed.body).toMatch(/headphones/i)
     expect(NOT_COUNTED_VOICE.bleed.body).toMatch(/guide off/)
+    // By the time this card is read the player has switched the guide off, so that "Try again" is not
+    // lost the same way. The card says so, and how a singer who does wear headphones gets it back.
+    expect(NOT_COUNTED_VOICE.bleed.body).toMatch(/turned the guide off/)
+    expect(NOT_COUNTED_VOICE.bleed.body).toMatch(/speaker icon/)
+    expect(NOT_COUNTED_VOICE.bleed.body).toMatch(/back on/)
     // Practice, sung: and headphones that were changed on the way are one of the reasons.
     expect(NOT_COUNTED_VOICE.partial.body).toMatch(/sung/)
     expect(NOT_COUNTED_VOICE.partial.body).toMatch(/headphones/)

@@ -5,13 +5,13 @@ import { audioEngine } from '../../audio/AudioEngine'
 import { primeMediaElement } from '../../audio/primeMedia'
 import { encodeWav } from '../../audio/synth'
 import { Button, Modal, cx } from '../../components/ui'
+import type { InstrumentId } from '../../training/types'
 import { PlaybackClock } from '../play/PlaybackClock'
 import {
   CLICK_COUNT,
   ClickMatcher,
   MATCH_AFTER,
   RunGuard,
-  calibrationAdvice,
   createOnsetDetector,
   noiseFloor,
   summarise,
@@ -19,6 +19,7 @@ import {
   type LevelFrame,
 } from './calibration'
 import { CLICK_TRACK_RATE, clickTimes, renderClickTrack } from './clickTrack'
+import { syncWords } from './dataSection'
 
 type Phase = 'intro' | 'running' | 'done' | 'error'
 
@@ -41,8 +42,22 @@ function friendlyError(err: unknown): string {
  * media element, the microphone frames are placed on that element's clock exactly as the player
  * places them on a song's clock, and the microphone runs with the options used for playing. So
  * whatever the device adds on the way out and on the way in is in the number, and nothing else.
+ *
+ * `instrument` only chooses the words (`syncWords`): a singer has nothing to strum, and is asked to let
+ * the phone listen to its own clicks or to clap along. What is measured, and how, is the same.
  */
-export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: string; onClose: () => void; onResult: (ms: number) => void }) {
+export function CalibrationDialog({
+  deviceId,
+  onClose,
+  onResult,
+  instrument = 'guitar',
+}: {
+  deviceId?: string
+  onClose: () => void
+  onResult: (ms: number) => void
+  instrument?: InstrumentId
+}) {
+  const words = syncWords(instrument)
   const [phase, setPhase] = useState<Phase>('intro')
   const [count, setCount] = useState(0)
   const [hits, setHits] = useState<boolean[]>(() => new Array<boolean>(CLICK_COUNT).fill(false))
@@ -169,7 +184,7 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
       audioEngine.stopMic()
       const summary = summarise(matcher.offsets)
       if (!summary) {
-        setError(calibrationAdvice(matcher.heard, CLICK_COUNT, floor))
+        setError(words.advice(matcher.heard, CLICK_COUNT, floor))
         setPhase('error')
         return
       }
@@ -185,16 +200,19 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
     }
   }
 
+  const intro = words.intro(CLICK_COUNT)
+  const measured = words.result(result?.ms ?? 0)
   return (
     <Modal title="Sync your sound" onClose={onClose}>
       <audio ref={audioRef} src={trackUrl} preload="auto" playsInline />
       {phase === 'intro' && (
         <div className="flex flex-col gap-4 text-sm">
           <p>
-            You will hear {CLICK_COUNT} clicks. Rest your fingers lightly across the strings so they do not ring, and{' '}
-            <strong>strum on each click</strong>. The app measures how long your sound takes to arrive and lines up the scoring to match.
+            {intro[0]}
+            <strong>{intro[1]}</strong>
+            {intro[2]}
           </p>
-          <p className="text-muted">Use the speakers or headphones you normally play with, and keep the phone where you usually keep it.</p>
+          <p className="text-muted">{words.place}</p>
           <Button variant="primary" onClick={run} data-testid="calibrate-start">
             Start
           </Button>
@@ -203,7 +221,7 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
       {phase === 'running' && (
         <div className="flex flex-col items-center gap-4 py-4" data-testid="calibrate-running">
           <div className="text-6xl font-bold tabular-nums">{count}</div>
-          <p className="text-sm text-muted">{count === 0 ? 'Get ready…' : 'Strum on every click…'}</p>
+          <p className="text-sm text-muted">{count === 0 ? words.ready : words.running}</p>
           <div className="flex gap-2" aria-label="Clicks heard">
             {hits.map((hit, i) => (
               <span key={i} className={cx('h-3 w-3 rounded-full', hit ? 'bg-ok' : i < count ? 'bg-panel-2 ring-1 ring-line' : 'bg-panel-2')} />
@@ -215,14 +233,13 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
         </div>
       )}
       {phase === 'done' && result && (
-        <div className="flex flex-col gap-4 text-sm" data-testid="calibrate-result">
+        <div className="flex flex-col gap-4 text-sm" data-testid="calibrate-result" data-ms={result.ms}>
           <p className="text-base">
-            Your sound reaches the app about <strong className="text-lg">{result.ms} ms</strong> after the beat.
+            {measured[0]}
+            <strong className="text-lg">{measured[1]}</strong>
+            {measured[2]}
           </p>
-          <p className="text-muted">
-            {result.samples} of {CLICK_COUNT} clicks heard
-            {result.steady ? '.' : '. The gap varied a lot between clicks, so this is rough: measure again and strum right on each click.'}
-          </p>
+          <p className="text-muted">{words.heard(result.samples, CLICK_COUNT, result.steady)}</p>
           <div className="flex justify-end gap-2">
             <Button onClick={run}>Measure again</Button>
             <Button
@@ -233,7 +250,7 @@ export function CalibrationDialog({ deviceId, onClose, onResult }: { deviceId?: 
                 onClose()
               }}
             >
-              Use {Math.max(0, result.ms)} ms
+              {words.use(Math.max(0, result.ms))}
             </Button>
           </div>
         </div>

@@ -11,8 +11,9 @@
  *
  * A plain test run plays every scene once, at one of the two rates, which take turns (about twenty
  * seconds). FULL_SIM=1 plays each at both rates, with the speaker loud, half as loud and faint in the
- * microphone, and with the latency setting off both ways (about forty seconds). Run that after any
- * change to the tracker's attack flag or to its rule for its own cues.
+ * microphone, and with the latency setting off both ways, and the bare speaker once more where the
+ * microphone runs at 16 or 24 kHz (about fifty seconds). Run that after any change to the tracker's
+ * attack flag or to its rule for its own cues.
  */
 import { describe, expect, it, vi } from 'vitest'
 import { renderDrums } from '../../../audio/synth'
@@ -222,6 +223,23 @@ describe('the guide on a bare speaker', () => {
       for (const off of whole ? [-0.05, 0.05] : [[-0.05, 0.05][k % 2]]) {
         const o = play(p, sampleRate, { speaker: guideTrack, noCountIn: true, settingOff: off })
         expect(o.run.ownSound, `${sampleRate} setting off by ${off}`).toBe(true)
+      }
+    }
+  })
+
+  it.skipIf(!whole)('where the microphone runs at 16 or 24 kHz the count-in may miss a faint speaker, and the cues still tell', () => {
+    // A frame's level is taken over its whole window, which is 128 or 85 ms long there (46 at 44.1 kHz):
+    // a click of 50 ms is a small part of it. With the speaker faint in the microphone only the first,
+    // louder click is still flagged as an attack, which is not enough for the count-in check. So at
+    // these rates it is the cues that catch a faint speaker; from half the voice's level up both do.
+    for (const p of [tunePiece(), echoPiece()]) {
+      for (const sampleRate of [16000, 24000]) {
+        const faint = play(p, sampleRate, { speaker: guideTrack, gain: 0.2 })
+        expect(faint.run.ownSound, `${p.name} ${sampleRate} x0.2`).toBe(true)
+        expect(bleed(true, faint), `${p.name} ${sampleRate} x0.2`).toBe(true)
+        const half = play(p, sampleRate, { speaker: guideTrack, gain: 0.5 })
+        expect(half.clicksHeard, `${p.name} ${sampleRate} x0.5`).toBe(true)
+        expect(half.run.ownSound, `${p.name} ${sampleRate} x0.5`).toBe(true)
       }
     }
   })

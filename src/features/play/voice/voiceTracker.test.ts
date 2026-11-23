@@ -1131,6 +1131,14 @@ describe('the pitch standard of a sung chart', () => {
     expect(pitches(450)).toEqual(pitches())
     expect(pitches(430)).toEqual(pitches())
   })
+
+  it('the ear told no standard reads against the same 440 Hz, as the range finder uses it; told one, it still follows it', () => {
+    const a = { freq: 440, clarity: 0.95, rms: 0.05, time: 0 }
+    expect(new VoiceEar(SR).listen(a, 0)[0].midi).toBeCloseTo(69, 6)
+    // The third argument is from before the standard was settled, and other screens may still hand it over.
+    expect(new VoiceEar(SR).listen({ ...a, freq: 432 }, 0, 432)[0].midi).toBeCloseTo(69, 6)
+    expect(new VoiceEar(SR).listen({ ...a, freq: 432 }, 0)[0].midi).toBeCloseTo(69 + 12 * Math.log2(432 / 440), 6)
+  })
 })
 
 /**
@@ -1143,12 +1151,14 @@ const MIC_RATES = [16000, 24000, 44100, 48000]
 describe('frames of any length: the rules are in seconds', () => {
   /** What each frame came to whose pitch lies in [from, to) of song time, from a run listened to from the start. */
   function outcomesBetween(tracker: VoiceTracker, sounds: Sound[], from: number, to: number, o: Listening): FrameOutcome[] {
+    const speed = o.speed ?? 1
     const hop = 512 / (o.sampleRate ?? SR)
     const centre = 1024 / (o.sampleRate ?? SR)
-    const first = Math.round(-0.5 / hop)
+    const first = Math.round(-0.5 / speed / hop)
+    tracker.setSpeed(speed)
     tracker.seek(0)
-    return listen(tracker, sounds, to + centre, o).filter((_, i) => {
-      const pitchTime = (first + i) * hop - centre
+    return listen(tracker, sounds, to + centre * speed, o).filter((_, i) => {
+      const pitchTime = ((first + i) * hop - centre) * speed
       return pitchTime >= from && pitchTime < to
     })
   }
@@ -1211,6 +1221,60 @@ describe('frames of any length: the rules are in seconds', () => {
     expect(two[2].length).toBeGreaterThan(10)
     expect(two[2].some(Boolean)).toBe(false)
     expect(two[3].every(Boolean)).toBe(true)
+  })
+
+  it.each(MIC_RATES)('%i Hz: the pace is by the singer\'s clock: with the song at half speed a vibrato is as fast as it was sung, and every frame of it is the voice', (sampleRate) => {
+    // 80 cents at 6 a second in the room, which is 12 a second of song time while the song plays at
+    // half speed. Measured over song time, the same swing looked twice as fast as a voice moves.
+    const swing = (t: number) => 60 + 0.8 * Math.sin(2 * Math.PI * 12 * t)
+    const t = trackerFor([[1, 2, 60]], { judge: { band: 50 } }, sampleRate)
+    const during = outcomesBetween(t, [{ from: 1, to: 3, midi: swing }], 1.35, 2.9, { sampleRate, speed: 0.5 })
+    expect(during.length).toBeGreaterThan((3 * sampleRate) / 512)
+    expect(during.filter((o) => !o.matches).length, 'frames not taken for the voice').toBe(0)
+    t.advance(Number.POSITIVE_INFINITY)
+    expect(t.stateOfNote(0)).toMatchObject({ status: 'hit', judgement: 'perfect' })
+  })
+
+  it.each([...MIC_RATES, 96000])('%i Hz: the line between a held pitch and a falling one is the same pace at every rate: 60 cents in the 11.6 ms of a frame at 44.1 kHz', (sampleRate) => {
+    const hop = 512 / sampleRate
+    const centre = 1024 / sampleRate
+    const line = (60 * 44100) / 512
+    // A pitch that steps up and down by the same amount from every frame to the next, three semitones
+    // over the note. It is never on the note, so all that can come of it is heard (and too high) or not
+    // heard at all, and that turns on the pace alone.
+    const stepping = (centsASecond: number) => (t: number) => 63 + ((Math.round((t + centre) / hop) % 2 ? 0.5 : -0.5) * centsASecond * hop) / 100
+    const taken = (centsASecond: number) => {
+      const t = sing(trackerFor(ONE, {}, sampleRate), [{ from: 1, to: 2, midi: stepping(centsASecond) }], 3, { sampleRate })
+      return { reason: t.progressOf(0)!.reason, coverage: result(t).coverage }
+    }
+    expect(taken(0.95 * line)).toEqual({ reason: 'high', coverage: 1 })
+    expect(taken(1.05 * line)).toEqual({ reason: 'silent', coverage: 0 })
+  })
+
+  it.each(MIC_RATES)('%i Hz: the room is known after a quarter of a second of count-in, however few frames that is', (sampleRate) => {
+    // A room at 0.005 asks a voice for 0.01. This one, at 0.009, clears the least level and not the room.
+    const soft: Sound[] = [{ from: 1, to: 2, midi: 60, rms: 0.009 }]
+    const { chart, notes } = sungChart(ONE)
+    // Told the rate, or asking for it when the first frame arrives, as the player has it.
+    for (const rate of [sampleRate, () => sampleRate]) {
+      const after = (countIn: number) => sing(new VoiceTracker(chart, notes, { sampleRate: rate }), soft, 3, { sampleRate, from: -countIn, room: 0.005 }).stateOfNote(0)?.status
+      // 0.3 s is nine frames at 16 kHz. Taken for frames of 11.6 ms they are a tenth of a second: no
+      // measurement, and the soft voice would pass for one above the room.
+      expect(after(0.3), typeof rate).toBe('miss')
+      // Under a quarter of a second there is no measurement at any rate, only the least level.
+      expect(after(0.2), typeof rate).toBe('hit')
+    }
+  })
+
+  it('a microphone that cannot say its rate yet is asked again with the next frame, and once it can, no more', () => {
+    const { chart, notes } = sungChart(ONE)
+    const sounds: Sound[] = [{ from: 1, to: 2, midi: 60 }]
+    let asked = 0
+    // Nothing to ask for the first five frames of the count-in, then a headset at 16 kHz.
+    const t = sing(new VoiceTracker(chart, notes, { sampleRate: () => (asked++ < 5 ? 0 : 16000) }), sounds, 3, { sampleRate: 16000 })
+    expect(asked).toBe(6)
+    expect(t.stateOfNote(0)).toMatchObject({ status: 'hit', judgement: 'perfect' })
+    expect(t.progressOf(0)).toEqual(sing(new VoiceTracker(chart, notes, { sampleRate: 16000 }), sounds, 3, { sampleRate: 16000 }).progressOf(0))
   })
 
   it.each([...MIC_RATES, 96000])('%i Hz: a pitch falling as fast as a drum\'s is not a voice, however short or long the frame', (sampleRate) => {

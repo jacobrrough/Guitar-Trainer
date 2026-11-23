@@ -1,8 +1,8 @@
 import { ArrowDown, ArrowUp, ClipboardCheck } from 'lucide-react'
 import { Badge, Button, Card, PageHeader } from '../../components/ui'
-import { SKILLS_BY_ID } from '../../training/skills'
-import type { TestRecord } from '../../training/types'
-import { TEST_TITLES } from './TaskIntro'
+import { instrumentOf, skillById } from '../../training/instruments'
+import type { InstrumentId, TestRecord } from '../../training/types'
+import { checkWords } from './taskResult'
 
 export interface TestReportViewProps {
   record: TestRecord
@@ -10,11 +10,17 @@ export interface TestReportViewProps {
   notes?: string[]
   onHome: () => void
   onProgress: () => void
+  /** Whose check it was. Read from the record's own stamp when left out (no stamp = guitar). */
+  instrument?: InstrumentId
 }
 
-const skillName = (id: string) => SKILLS_BY_ID[id]?.name ?? id
+const skillName = (id: string) => skillById(id)?.name ?? id
 
-function DeltaRow({ skillId, value, placement }: { skillId: string; value: number; placement: boolean }) {
+/**
+ * One skill whose rating the check moved. The guitar report shows by how much. A singer's shows which
+ * way, in words: a rating is a number a beginner has no use for.
+ */
+function DeltaRow({ skillId, value, placement, moved }: { skillId: string; value: number; placement: boolean; moved?: (up: boolean) => string }) {
   const rounded = Math.round(value * 10) / 10
   if (placement) {
     return (
@@ -26,6 +32,19 @@ function DeltaRow({ skillId, value, placement }: { skillId: string; value: numbe
   }
   const up = rounded > 0
   const flat = rounded === 0
+  if (moved) {
+    // Counted from the value itself, not the rounded one: a small move is still a move in that direction.
+    const rising = value > 0
+    return (
+      <li className="flex items-center justify-between gap-3 text-sm">
+        <span>{skillName(skillId)}</span>
+        <span className={`inline-flex items-center gap-1 text-right ${rising ? 'text-green-300' : 'text-amber-200'}`}>
+          {rising ? <ArrowUp className="h-3.5 w-3.5 shrink-0" /> : <ArrowDown className="h-3.5 w-3.5 shrink-0" />}
+          {moved(rising)}
+        </span>
+      </li>
+    )
+  }
   return (
     <li className="flex items-center justify-between text-sm">
       <span>{skillName(skillId)}</span>
@@ -38,8 +57,9 @@ function DeltaRow({ skillId, value, placement }: { skillId: string; value: numbe
   )
 }
 
-export function TestReportView({ record, notes = [], onHome, onProgress }: TestReportViewProps) {
+export function TestReportView({ record, notes = [], onHome, onProgress, instrument = instrumentOf(record) }: TestReportViewProps) {
   const { report, type } = record
+  const words = checkWords(instrument)
   const placement = type === 'placement'
   // Placement reports carry the new rating as the "delta"; hide untouched zeros there.
   const deltas = Object.entries(report.ratingDeltas)
@@ -47,7 +67,7 @@ export function TestReportView({ record, notes = [], onHome, onProgress }: TestR
     .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
   return (
     <div className="mx-auto max-w-xl" data-testid="test-report">
-      <PageHeader title={TEST_TITLES[type]} subtitle="Results" />
+      <PageHeader title={words.title(type)} subtitle="Results" />
       <Card>
         <div className="mb-3 flex items-start gap-2">
           <ClipboardCheck className="mt-0.5 h-5 w-5 shrink-0 text-accent" />
@@ -67,17 +87,17 @@ export function TestReportView({ record, notes = [], onHome, onProgress }: TestR
         )}
         {deltas.length > 0 && (
           <>
-            <h3 className="mb-2 text-sm font-semibold">{placement ? 'Starting ratings' : 'Rating changes'}</h3>
+            <h3 className="mb-2 text-sm font-semibold">{words.changes(placement)}</h3>
             <ul className="mb-4 space-y-1.5 rounded-lg bg-panel-2 p-3">
               {deltas.map(([id, v]) => (
-                <DeltaRow key={id} skillId={id} value={v} placement={placement} />
+                <DeltaRow key={id} skillId={id} value={v} placement={placement} moved={instrument === 'voice' ? words.moved : undefined} />
               ))}
             </ul>
           </>
         )}
         {report.nextFocus.length > 0 && (
           <>
-            <h3 className="mb-2 text-sm font-semibold">Next focus</h3>
+            <h3 className="mb-2 text-sm font-semibold">{words.nextFocus}</h3>
             <div className="mb-4 flex flex-wrap gap-1.5">
               {report.nextFocus.map((id) => (
                 <Badge key={id} tone="accent">

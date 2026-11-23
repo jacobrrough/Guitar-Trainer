@@ -3,13 +3,16 @@ import { ChevronDown, ChevronRight, Lock, Pin } from 'lucide-react'
 import { useState } from 'react'
 import { useSettings } from '../../app/settings'
 import { Badge, Card, cx } from '../../components/ui'
+import { COURSE } from '../../lessons/course'
 import { courseProgress } from '../../lessons/store'
+import type { Lesson } from '../../lessons/types'
 import { masteryBand } from '../../training/learner'
-import { CATEGORY_LABELS, SKILLS, skillsForCategory } from '../../training/skills'
-import type { LearnerModel, MasteryBand, SkillCategory } from '../../training/types'
+import { CATEGORY_LABELS, SKILLS } from '../../training/skills'
+import type { LearnerModel, MasteryBand, SkillDef } from '../../training/types'
 import { missingPrerequisites, openContextOf, skillOpener, taughtSkillIds as lessonSkills } from '../../training/unlock'
 import { simpleBandLabel } from '../today/todayUtils'
 import { RatingChart } from './RatingChart'
+import { categoriesOf, skillPaceText } from './progressStats'
 
 interface SkillMapProps {
   model: LearnerModel
@@ -19,9 +22,24 @@ interface SkillMapProps {
   seriesFor: (skillId: string) => { at: number; rating: number }[]
   /** Skills the finished First steps lessons drilled; the Coach keeps these open. Read from the lesson rows when absent. */
   taughtSkillIds?: string[]
+  /**
+   * The skills to draw: one instrument's list. The cards are the categories these skills have, and what
+   * is open or locked is worked out among them alone. The guitar's when left out.
+   */
+  skills?: SkillDef[]
+  /** The First steps course of the same instrument, whose finished lessons keep skills open. The guitar's when left out. */
+  course?: Pick<Lesson, 'id' | 'drill'>[]
+  /**
+   * Print the score (0 to 100) beside each bar, as the guitar map always has. A singer in plain mode is
+   * shown the bar and its word alone: the number is a rating, and the singing side keeps those off the screen.
+   */
+  scores?: boolean
+  /**
+   * For each step skill, the highest step this singer's range has room for (`voiceMaxSteps`). The step
+   * named under a bar is held to it. A skill that is not named can reach its last step.
+   */
+  maxSteps?: Record<string, number>
 }
-
-const CATEGORIES: SkillCategory[] = ['fretting', 'picking', 'chords', 'lead', 'timing', 'ear']
 
 const BAND_BAR: Record<MasteryBand, string> = {
   new: 'bg-muted/60',
@@ -31,23 +49,47 @@ const BAND_BAR: Record<MasteryBand, string> = {
   mastered: 'bg-green-400',
 }
 
-export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSkillIds }: SkillMapProps) {
+/**
+ * What opens under a skill: what it is, how to go about it, and how its rating has moved.
+ *
+ * The chart is a line of ratings with its grid labelled 50, 75 and 90, so it goes with the scores:
+ * where they are left out (`scores` off: a singer in plain mode) it is left out too, and the words stand alone.
+ */
+export function SkillDetails({ skill, series, scores = true }: { skill: Pick<SkillDef, 'description' | 'tips'>; series: { at: number; rating: number }[]; scores?: boolean }) {
+  return (
+    <div className="mt-3 space-y-3 pl-6 text-sm">
+      <p className="text-slate-300">{skill.description}</p>
+      {skill.tips.length > 0 && (
+        <ul className="list-disc space-y-1 pl-5 text-xs text-muted">
+          {skill.tips.map((tip) => (
+            <li key={tip}>{tip}</li>
+          ))}
+        </ul>
+      )}
+      {scores && <RatingChart series={series} />}
+    </div>
+  )
+}
+
+export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSkillIds, skills = SKILLS, course = COURSE, scores = true, maxSteps }: SkillMapProps) {
   const [open, setOpen] = useState<string | null>(null)
   const simple = useSettings().simpleFeedback
   // The same rule and the same facts the Coach plans with (what the finished lessons taught included),
-  // so a skill is never drawn locked while it is in today's plan.
-  const lessonRows = useLiveQuery(() => courseProgress(), [])
-  const context = openContextOf(model, now, taughtSkillIds ?? lessonSkills(lessonRows ?? []))
+  // so a skill is never drawn locked while it is in today's plan. The lesson table holds the rows of
+  // both courses: only this course's are asked for.
+  const lessonIds = course.map((l) => l.id)
+  const lessonRows = useLiveQuery(() => courseProgress(lessonIds), [lessonIds.join(' ')])
+  const context = openContextOf(model, now, taughtSkillIds ?? lessonSkills(lessonRows ?? [], course))
   const ratings = context.ratings
-  const isOpen = skillOpener(SKILLS, context)
+  const isOpen = skillOpener(skills, context)
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      {CATEGORIES.map((category) => (
+      {categoriesOf(skills).map((category) => (
         <Card key={category}>
           <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">{CATEGORY_LABELS[category]}</h3>
           <ul className="divide-y divide-line">
-            {skillsForCategory(category).map((skill) => {
+            {skills.filter((s) => s.category === category).map((skill) => {
               const state = model.skills[skill.id]
               const eff = ratings[skill.id] ?? 0
               const rating = state?.rating ?? 0
@@ -56,7 +98,9 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSk
               const unlocked = isOpen(skill)
               const expanded = open === skill.id
               const pinned = pinnedSkillId === skill.id
-              const missing = missingPrerequisites(skill, ratings, SKILLS).map((p) => p.name)
+              const missing = missingPrerequisites(skill, ratings, skills).map((p) => p.name)
+              // A tempo skill's ceiling (technical numbers only), or the step a step skill is practised from.
+              const pace = skillPaceText(skill, state, simple, maxSteps?.[skill.id])
               return (
                 <li key={skill.id} className="py-2">
                   <div className="flex items-start gap-2">
@@ -94,11 +138,11 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSk
                               }}
                             />
                           </span>
-                          <span className="w-8 text-right text-xs tabular-nums text-slate-300">{Math.round(eff)}</span>
+                          {scores && <span className="w-8 text-right text-xs tabular-nums text-slate-300">{Math.round(eff)}</span>}
                         </span>
                         <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
                           <span>{simple ? simpleBandLabel(band) : band}</span>
-                          {!simple && state && state.tempoCeiling > 0 && <span>ceiling {Math.round(state.tempoCeiling)} bpm</span>}
+                          {pace && <span>{pace}</span>}
                           {rust > 0 && <span className="text-amber-300">{simple ? 'a bit rusty' : `rusty −${rust}`}</span>}
                           {!unlocked && (
                             <span className="inline-flex items-center gap-1">
@@ -121,19 +165,7 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSk
                       <Pin size={16} />
                     </button>
                   </div>
-                  {expanded && (
-                    <div className="mt-3 space-y-3 pl-6 text-sm">
-                      <p className="text-slate-300">{skill.description}</p>
-                      {skill.tips.length > 0 && (
-                        <ul className="list-disc space-y-1 pl-5 text-xs text-muted">
-                          {skill.tips.map((tip) => (
-                            <li key={tip}>{tip}</li>
-                          ))}
-                        </ul>
-                      )}
-                      <RatingChart series={seriesFor(skill.id)} />
-                    </div>
-                  )}
+                  {expanded && <SkillDetails skill={skill} series={seriesFor(skill.id)} scores={scores} />}
                 </li>
               )
             })}

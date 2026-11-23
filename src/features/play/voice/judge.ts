@@ -15,6 +15,14 @@
 import type { VoiceChart, VoiceJudge } from '../../../chart/types'
 import { midiToFreq } from '../../../music/pitch'
 
+/**
+ * How far a voice may move from one detector frame to the next, in cents, as it was measured: with
+ * frames of 512 samples at 44.1 kHz, 86 of them a second. The rule itself is a pace
+ * (`VOICE.steadyRate`), worked out from these two, so that the number is written down once.
+ */
+const STEADY_STEP = 60
+const STEADY_STEP_FRAMES_A_SECOND = 44100 / 512
+
 export const VOICE = {
   /**
    * The pitch standard of everything sung: A4 in Hz. What the app plays for singing (the starting
@@ -30,7 +38,7 @@ export const VOICE = {
    * A frame is a voice from this clarity on. Room noise alone reads at most 0.59. A quiet, breathy
    * voice through the phone model reads 0.68 to 0.87 (a full voice 0.97 and up), which is where the
    * click's kick drum (0.65 to 0.78) and a strummed chord (up to 0.89) read too: clarity cannot tell
-   * those from a soft voice. The kick is left out by `steadyStep`; chords stay off the scored track.
+   * those from a soft voice. The kick is left out by `steadyRate`; chords stay off the scored track.
    */
   clarity: 0.6,
   /** ... and from this level on, whatever the room. */
@@ -102,22 +110,28 @@ export const VOICE = {
    *
    * Measured at 44.1 kHz, from one frame to the next (11.6 ms): the kick falls 46 to 276 cents; the
    * singer moves at most 12, with a vibrato of 80 cents at 7 a second 42, of 100 cents 56. The line
-   * between them was drawn at 60 cents a frame ...
+   * between them was drawn at 60 cents a frame. This is that measurement, kept as the number the rule
+   * comes from; nothing reads it frame by frame any more ...
    */
-  steadyStep: 60,
+  steadyStep: STEADY_STEP,
   /**
-   * ... which is this many cents a second, and that is the rule: a frame may lie this far from the one
-   * before it for every second between the two. As a number of cents a frame it meant something else
-   * at every sample rate. At 16 kHz a frame is 32 ms, and a vibrato of 80 cents at 6 a second moves 91
-   * cents in that time: more than half of its frames were thrown away and the short notes of an echo
-   * were lost (Coach accuracy 0.84; 0.89 at 24 kHz). And where frames are shorter than at 44.1 kHz a
-   * drum falls less from one to the next, and passed.
+   * ... because it is this many cents a second (5168), and that is the rule: a frame may lie this far
+   * from the one before it for every second between the two. As a number of cents a frame it meant
+   * something else at every sample rate. At 16 kHz a frame is 32 ms, and a vibrato of 80 cents at 6 a
+   * second moves 91 cents in that time: more than half of its frames were thrown away and the short
+   * notes of an echo were lost (Coach accuracy 0.84; 0.89 at 24 kHz). And where frames are shorter
+   * than at 44.1 kHz a drum falls less from one to the next, and passed.
    *
    * What this cannot mend: at 16 kHz the detector's window is 128 ms long, most of one swing of a
    * vibrato, and what it reports of a low voice (A2) swinging 80 cents is blurred. Such a singer comes
    * to 0.71 there, and to a clean round from 24 kHz up on the echo and on quarter notes.
+   *
+   * And what it costs: that window also smears the step from one note to the next into a glide, which
+   * is slower than a vibrato, so no pace can tell the two apart. A singer steadily 60 cents off passes
+   * through the band on the way, and on eighth notes at 16 kHz that makes 4 notes in 18 good (it was 1
+   * or 2 at 60 cents a frame): Coach accuracy 0.18, far from a pass. From 24 kHz up it is none.
    */
-  steadyRate: (60 * 44100) / 512,
+  steadyRate: STEADY_STEP * STEADY_STEP_FRAMES_A_SECOND,
   /** A note under this long is a quick note: a hit needs `shortInTune` seconds in tune, whatever the share. */
   shortNote: 0.25,
   shortInTune: 0.08,

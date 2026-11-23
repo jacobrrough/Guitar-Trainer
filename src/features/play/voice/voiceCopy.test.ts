@@ -4,7 +4,8 @@
  * own: its words and its rules are held here).
  */
 import { describe, expect, it } from 'vitest'
-import { emptyChart, type VoiceChart } from '../../../chart/types'
+import { constantBeatGrid } from '../../../chart/timing'
+import { emptyChart, type ChartNote, type VoiceChart } from '../../../chart/types'
 import { midiToFreq } from '../../../music/pitch'
 import {
   DEVICE_SETTLE_SEC,
@@ -20,10 +21,11 @@ import {
   soundMaySwap,
   type PlayerLabels,
 } from '../playerLabels'
+import { NOT_COUNTED_VOICE, runVerdict } from '../runVerdict'
 import type { ScoreSummary } from '../scoring'
 import { VOICE, voiceDetector } from './judge'
 import { VOICE_TIPS, voiceResultCopy, voiceResultLine, voiceTip } from './voiceCopy'
-import type { NoteReason, VoiceFeedback, VoiceScoreSummary } from './voiceTracker'
+import { VoiceTracker, type NoteReason, type VoiceFeedback, type VoiceScoreSummary } from './voiceTracker'
 
 const feedback = (over: Partial<Omit<VoiceFeedback, 'reasons'>> & { reasons?: Partial<Record<NoteReason, number>> } = {}): VoiceFeedback => ({
   notes: 12,
@@ -166,6 +168,68 @@ describe('voice result copy from a run', () => {
   })
 })
 
+/**
+ * The same words from a run the voice tracker really scored. The feedback above is written by hand;
+ * here it is the tracker's own, so "under" cannot quietly come to mean "over" between the two files.
+ */
+describe('voice result copy from a real run', () => {
+  const SR = 44100
+  const HOP = 512 / SR
+  /** A frame reports the pitch of the middle of its window, which lies this far before its time stamp. */
+  const CENTRE = 1024 / SR
+  const voice: VoiceChart = { judge: { band: 80, minShare: 0.5 }, cues: [], low: 60, high: 64, tonic: 60, shift: 0, lineStarts: [1] }
+  // Three notes of a second each with a second of rest between them.
+  const notes: ChartNote[] = [60, 62, 64].map((midi, id) => ({ id, time: 1 + 2 * id, duration: 1, midi, string: 0, fret: 0, velocity: 0.8, chordId: id, lyric: 'la' }))
+  const chart = emptyChart({ source: 'builtin', duration: 8, notes, beats: constantBeatGrid(60, 0, 8, 4), tempos: [{ time: 0, bpm: 60 }], voice })
+
+  /** A singer who sings every note `semitones` away from where it is written (none = nobody sings), heard to the end. */
+  function run(semitones: number | null) {
+    const tracker = new VoiceTracker(chart, notes, { sampleRate: SR })
+    tracker.seek(0)
+    for (let k = Math.round(-0.5 / HOP); k * HOP < 7.5; k++) {
+      const time = k * HOP
+      const sung = semitones === null ? undefined : notes.find((n) => time - CENTRE >= n.time && time - CENTRE < n.time + n.duration)
+      const frame = sung ? { freq: midiToFreq(sung.midi + semitones!), clarity: 0.95, rms: 0.05, time } : { freq: 0, clarity: 0, rms: 0.001, time }
+      tracker.frame(frame, time, { clarityThreshold: 0.85, a4: 440 })
+      tracker.advance(time)
+    }
+    tracker.advance(Number.POSITIVE_INFINITY)
+    const summary = tracker.summary()
+    const result = tracker.toAttemptResult({ playedTempo: 60, targetTempo: 60, speed: 1, durationSec: 8 })
+    return { summary, verdict: runVerdict(summary, result), copy: voiceResultCopy(summary, chart.voice) }
+  }
+
+  it('in tune where it is written: every note, and nothing to add', () => {
+    expect(run(0)).toMatchObject({ verdict: 'counted', copy: { line: 'You were on the note for 3 of 3 notes.', tip: null } })
+  })
+
+  it('in tune an octave lower or higher: every note, and the word that this counts', () => {
+    expect(run(-12).copy).toEqual({ line: 'You were on the note for 3 of 3 notes.', tip: VOICE_TIPS.octaveLower })
+    expect(run(12).copy).toEqual({ line: 'You were on the note for 3 of 3 notes.', tip: VOICE_TIPS.octaveHigher })
+  })
+
+  it('a tone and a half under the notes is told "under", and over them "over"', () => {
+    const under = run(-1.5)
+    expect(under.verdict).toBe('counted')
+    expect(under.copy).toEqual({ line: 'You were on the note for 0 of 3 notes.', tip: VOICE_TIPS.low })
+    expect(run(1.5).copy).toEqual({ line: 'You were on the note for 0 of 3 notes.', tip: VOICE_TIPS.high })
+  })
+
+  it('under the notes in another octave is still "under": the octave is not what was the matter', () => {
+    expect(run(-13.5).copy.tip).toBe(VOICE_TIPS.low)
+    expect(run(10.5).copy.tip).toBe(VOICE_TIPS.low)
+  })
+
+  it('nobody singing is not a result: the card for it says the app could not hear, and never to sing louder', () => {
+    const silent = run(null)
+    expect(silent.verdict).toBe('unscored')
+    expect(silent.summary.perfects + silent.summary.goods).toBe(0)
+    expect(NOT_COUNTED_VOICE[silent.verdict === 'counted' ? 'unscored' : silent.verdict].body).toMatch(/could not hear you sing/)
+    // Should a screen show the tip all the same, it is the one about the phone.
+    expect(silent.copy.tip).toBe(VOICE_TIPS.silent)
+  })
+})
+
 describe('what the player says', () => {
   it('says to a guitarist exactly what it has always said', () => {
     const g = GUITAR_LABELS
@@ -236,6 +300,16 @@ describe('what the player says', () => {
     expect(VOICE_LABELS.ownSoundNotice).toMatch(/seems|may/i)
     expect(VOICE_LABELS.ownSoundNotice).toMatch(/headphones/)
     expect(VOICE_LABELS.ownSoundNotice).toMatch(/guide/)
+  })
+
+  it('says that the guide has gone off with that notice, and how to get it back', () => {
+    // The player switches the guide off when the run is over, so that the next try is not lost the same
+    // way. A singer who does wear headphones must not be left wondering where the guide went.
+    expect(VOICE_LABELS.ownSoundNotice).toMatch(/guide is off now/)
+    expect(VOICE_LABELS.ownSoundNotice).toMatch(/speaker icon/)
+    expect(VOICE_LABELS.ownSoundNotice).toMatch(/back on/)
+    // The same button is named the same way wherever a singer reads about it.
+    expect(VOICE_LABELS.guideOffWhy).toMatch(/speaker icon/)
   })
 
   it('tells a singer that the sound did not start without calling anything a failure', () => {

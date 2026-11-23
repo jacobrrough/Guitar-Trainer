@@ -1,14 +1,20 @@
+import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { BUILD_ID, applyUpdate, checkForUpdate, useUpdateReady, type UpdateCheck } from '../../app/appUpdate'
+import { voiceEnabled } from '../../app/features'
 import { isStandalone } from '../../app/platform'
 import { DEFAULT_SETTINGS, updateSettings, useSettings } from '../../app/settings'
 import { installProtects, protectStorage, storageProtection, storageStatusText } from '../../app/storage'
 import { audioEngine } from '../../audio/AudioEngine'
 import { Button, Card, Field, PageHeader, Select, Toggle } from '../../components/ui'
 import { TUNINGS } from '../../music/tunings'
+import { activeInstrument } from '../../training/instruments'
+import { loadVoiceProfile } from '../../training/voiceProfile'
+import { EasyNotes } from '../voice/PitchLadder'
 import { CalibrationDialog } from './CalibrationDialog'
 import { DataSection } from './DataSection'
+import { SINGING_CARD } from './dataSection'
 
 const SENSITIVITY = [
   { value: 0.9, label: 'Clean tone (strict)' },
@@ -83,6 +89,52 @@ function StorageRow() {
   )
 }
 
+/**
+ * The "Singing" card: the singer's easy notes with the two small moves ("A bit lower", "A bit higher",
+ * which stop at the lowest and highest notes the app can follow and say so), the way to find them
+ * again, and whether the singer wears headphones. Drawn only while the singing side is on.
+ *
+ * The headphones switch can be off again without anyone having touched it: a sung run that hears the
+ * guide from a speaker turns it off (the Player does), and the line under the switch says so.
+ */
+function SingingCard() {
+  const settings = useSettings()
+  const navigate = useNavigate()
+  // Read live: a move of the easy notes is stored by the buttons themselves, and shown as it was stored.
+  const voice = useLiveQuery(loadVoiceProfile)
+  const range = voice?.range
+  return (
+    <Card>
+      <div data-testid="singing-settings">
+        <h2 className="mb-3 font-semibold">{SINGING_CARD.title}</h2>
+        {range ? (
+          <EasyNotes range={range}>
+            <Button onClick={() => navigate('/range')} data-testid="singing-find-again">
+              {SINGING_CARD.findAgain}
+            </Button>
+          </EasyNotes>
+        ) : (
+          // Nothing is said while the profile is still being read: "we do not know" would flash up for a singer who has notes.
+          voice && (
+            <div className="flex flex-col items-start gap-2">
+              <p className="text-sm text-muted">{SINGING_CARD.none}</p>
+              <Button variant="primary" onClick={() => navigate('/range')} data-testid="singing-find">
+                {SINGING_CARD.find}
+              </Button>
+            </div>
+          )
+        )}
+        <div className="mt-4">
+          <Toggle checked={settings.voiceHeadphones} onChange={(v) => updateSettings({ voiceHeadphones: v })} label={SINGING_CARD.headphones} />
+          <p className="mt-1 text-xs text-muted" data-testid="singing-headphones-hint">
+            {settings.voiceHeadphones ? SINGING_CARD.headphonesOn : SINGING_CARD.headphonesOff}
+          </p>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 export function SettingsPage() {
   const settings = useSettings()
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
@@ -143,6 +195,7 @@ export function SettingsPage() {
             Headphones still score best.
           </p>
         </Card>
+        {voiceEnabled() && <SingingCard />}
         <Card>
           <h2 className="mb-3 font-semibold">Microphone</h2>
           <Field label="Input device" hint="Audio interface or microphone. Grant access once to see device names.">
@@ -252,7 +305,15 @@ export function SettingsPage() {
           <StorageRow />
         </Card>
       </div>
-      {calibrating && <CalibrationDialog deviceId={settings.inputDeviceId || undefined} onClose={closeCalibration} onResult={(ms) => updateSettings({ latencyMs: ms, calibratedAt: Date.now() })} />}
+      {calibrating && (
+        <CalibrationDialog
+          deviceId={settings.inputDeviceId || undefined}
+          // The words only: a singer is not asked to strum. The guitar's until the singing side is the one on screen.
+          instrument={activeInstrument(settings)}
+          onClose={closeCalibration}
+          onResult={(ms) => updateSettings({ latencyMs: ms, calibratedAt: Date.now() })}
+        />
+      )}
     </div>
   )
 }

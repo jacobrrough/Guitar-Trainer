@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { constantBeatGrid } from '../../../chart/timing'
 import { emptyChart, type Chart, type ChartNote, type VoiceChart, type VoiceCue } from '../../../chart/types'
 import { DEFAULT_RANGES } from '../../../music/keys'
+import { midiToFreq } from '../../../music/pitch'
+import { stringColor } from '../../../music/strings'
 import { arrange, songKey } from '../../../songs/vocal/arrange'
 import { VOCAL_SONGS } from '../../../songs/vocal'
 import { DEFAULT_TUNING } from '../../../training/exercises/builder'
@@ -20,9 +22,11 @@ import {
   barBox,
   barLabel,
   breaksLine,
+  callSounding,
   extendTrail,
   fillFraction,
   foldIntoWindow,
+  foldTarget,
   glidePairs,
   laneLayout,
   lanesVisibleSeconds,
@@ -36,7 +40,8 @@ import {
   type TrailPoint,
   type VoiceLanesState,
 } from './VoiceLanes'
-import type { NoteProgress } from './voiceTracker'
+import { VOICE } from './judge'
+import { VoiceTracker, type NoteProgress } from './voiceTracker'
 
 const voiceOf = (over: Partial<VoiceChart> = {}): VoiceChart => ({
   judge: { band: 80, minShare: 0.5 },
@@ -280,6 +285,82 @@ describe('pitch lanes: the octave the dot is drawn in', () => {
     expect(foldIntoWindow(60, win, 67)).toBe(win.top)
     // Nine under the note and off the bottom of the lanes: at the edge, on the side the voice is on.
     expect(foldIntoWindow(51, win, 60, 0)).toBe(win.bottom)
+  })
+})
+
+describe('pitch lanes: the note the dot is drawn by', () => {
+  // C for a beat, straight up to G for a beat, a rest of two beats, then D for two.
+  const notes = [note(0, 4, 1, 60), note(1, 5, 1, 67), note(2, 8, 2, 62)]
+
+  it('is the note that sounds', () => {
+    expect(foldTarget(notes, [], 4.5)).toBe(60)
+    expect(foldTarget(notes, [], 5.5)).toBe(67)
+    expect(foldTarget(notes, [], 9.9)).toBe(62)
+  })
+
+  it('changes at the moment the next note is due, not before', () => {
+    expect(foldTarget(notes, [], 4.999)).toBe(60)
+    expect(foldTarget(notes, [], 5.001)).toBe(67)
+  })
+
+  it('in a rest is the note nearer in time: the one just sung, then the one to come', () => {
+    // G ended at 6 and D is due at 8.
+    expect(foldTarget(notes, [], 6.4)).toBe(67)
+    expect(foldTarget(notes, [], 7.5)).toBe(62)
+  })
+
+  it('before the first note is the first, and after the last one the last', () => {
+    expect(foldTarget(notes, [], 0)).toBe(60)
+    expect(foldTarget(notes, [], 60)).toBe(62)
+  })
+
+  it('is the app’s own note while that sounds, and the first answer once that is nearer', () => {
+    const cues = [cue(0, 2, 55)]
+    expect(foldTarget(notes, cues, 1)).toBe(55)
+    expect(foldTarget(notes, cues, 2.5)).toBe(55)
+    expect(foldTarget(notes, cues, 3.5)).toBe(60)
+    // Cues in any order: the nearest one counts, not the first in the list.
+    expect(foldTarget(notes, [cue(12, 1, 50), cue(0, 2, 55)], 12.5)).toBe(50)
+  })
+
+  it('is there for a chart of one note, and missing for a chart of none', () => {
+    expect(foldTarget([note(0, 4, 1, 64)], [], 0)).toBe(64)
+    expect(foldTarget([note(0, 4, 1, 64)], [], 30)).toBe(64)
+    expect(foldTarget([], [cue(2, 1, 57)], 9)).toBe(57)
+    expect(foldTarget([], [], 3)).toBeUndefined()
+  })
+})
+
+describe('pitch lanes: when the app itself is singing', () => {
+  const cues = [cue(0, 1, 55), cue(1, 1, 57), cue(8, 2, 59)]
+
+  it('is from just before a note of the app to a moment after it, the stretch the tracker does not listen in', () => {
+    expect(callSounding(cues, 0.5)).toBe(true)
+    expect(callSounding(cues, 1.99)).toBe(true)
+    expect(callSounding(cues, 9)).toBe(true)
+    // What the speaker played is still in the room, and on its way through the microphone, a moment later.
+    expect(callSounding(cues, 2 + VOICE.cueAfter - 0.01)).toBe(true)
+    expect(callSounding(cues, 2 + VOICE.cueAfter + 0.01)).toBe(false)
+    expect(callSounding(cues, 8 - VOICE.cueBefore + 0.01)).toBe(true)
+    expect(callSounding(cues, 8 - VOICE.cueBefore - 0.01)).toBe(false)
+  })
+
+  it('is over by the time the singer answers', () => {
+    expect(callSounding(cues, 4)).toBe(false)
+    expect(callSounding(cues, 6.5)).toBe(false)
+    expect(callSounding(cues, 12)).toBe(false)
+  })
+
+  it('lasts longer by the delay of the sound: what is heard now was played that long ago', () => {
+    expect(callSounding(cues, 2.5, 0.27)).toBe(true)
+    expect(callSounding(cues, 2 + VOICE.cueAfter + 0.27 + 0.01, 0.27)).toBe(false)
+    // A delay never makes the stretch begin later: nothing of the call may slip through at its start.
+    expect(callSounding(cues, 0.01, 0.27)).toBe(true)
+  })
+
+  it('never is on a chart without a note from the app', () => {
+    expect(callSounding([], 0)).toBe(false)
+    expect(callSounding([], 5)).toBe(false)
   })
 })
 
@@ -551,6 +632,40 @@ describe('pitch lanes: drawing', () => {
     expect(drawn.filter((t) => t === 'Twin-')).toHaveLength(2)
   })
 
+  it('brings a caption in with its turn, holds it by the line while the turn lasts and takes it out with the last note', () => {
+    const { canvas, calls, clear } = stubCanvas()
+    const r = new VoiceLanesRenderer(canvas)
+    r.resize()
+    const chart = echoChart()
+    const l = laneLayout(r.width, r.height, chart.voice!, 6)
+    /** Where the caption was written at `t` (its left end), or null when it was not. */
+    const xOf = (text: string, t: number): number | null => {
+      clear()
+      r.draw(stateOf(chart, t))
+      const c = calls.find((x) => x.fn === 'fillText' && x.args[0] === text)
+      return c ? Number(c.args[1]) : null
+    }
+    // The stub measures seven pixels a letter.
+    const listen = 'Listen'.length * 7
+    // The call lasts from 0 to 2. A second before it: over its first note, on the way in.
+    expect(xOf('Listen', -1)).toBeCloseTo(l.lineX + l.pps, 6)
+    // While it sounds: by the line, where the eyes are.
+    expect(xOf('Listen', 0.5)).toBeCloseTo(l.lineX + 8, 6)
+    expect(xOf('Listen', 1.5)).toBeCloseTo(l.lineX + 8, 6)
+    // Its last moments: the word ends where the last note ends, and goes out with it.
+    expect(xOf('Listen', 1.95)).toBeCloseTo(l.lineX + 0.05 * l.pps - listen, 6)
+    expect(xOf('Listen', 6)).toBeNull()
+    // The answer runs from 4 to 8: "Your turn" is on its way while the app still sings, then waits by the line.
+    expect(xOf('Your turn', 1)).toBeCloseTo(l.lineX + 3 * l.pps, 6)
+    expect(xOf('Your turn', 5)).toBeCloseTo(l.lineX + 8, 6)
+    // The two never stand on each other: while both are on screen the first ends before the second begins.
+    for (let t = -2; t < 9; t += 0.1) {
+      const a = xOf('Listen', t)
+      const b = xOf('Your turn', t)
+      if (a !== null && b !== null) expect(a + listen, `at ${t.toFixed(1)}`).toBeLessThanOrEqual(b)
+    }
+  })
+
   it('writes no empty label for a carried syllable, and joins it to the note before', () => {
     const plain = stubCanvas()
     const carried = stubCanvas()
@@ -769,6 +884,68 @@ describe('pitch lanes: drawing', () => {
     expect(texts()).not.toContain('Twin-')
   })
 
+  /** The dots on the line and the strokes of the trail in one drawn frame. */
+  const voiceMarks = (calls: ReturnType<typeof stubCanvas>['calls'], x: number) => ({
+    dots: calls.filter((c) => c.fn === 'arc' && c.args[0] === x).length,
+    trail: calls.filter((c) => c.fn === 'lineTo' && c.strokeStyle === stringColor(1)).length,
+  })
+
+  it('does not draw the call of an echo by ear with the dot: what the microphone hears of the speaker is not shown', () => {
+    const { canvas, calls, clear } = stubCanvas()
+    const r = new VoiceLanesRenderer(canvas)
+    r.resize()
+    const chart = echoChart({ hideAnswers: true })
+    const l = laneLayout(r.width, r.height, chart.voice!, 6)
+    // The app sings 55, 55 from 0 to 2 and a bare phone hears it. Nothing of it may reach the screen,
+    // neither the dot nor the line it leaves behind: together they would write out the hidden tune.
+    for (let t = 0.1; t < 2.2; t += 0.05) {
+      clear()
+      r.draw(stateOf(chart, t, { detectedMidi: 55, playing: true }))
+      expect(voiceMarks(calls, l.lineX), `at ${t.toFixed(2)}`).toEqual({ dots: 0, trail: 0 })
+    }
+    // In the rest before the answer nothing is left behind the line either.
+    clear()
+    r.draw(stateOf(chart, 2.2 + VOICE.cueAfter, { detectedMidi: null, playing: true }))
+    expect(voiceMarks(calls, l.lineX)).toEqual({ dots: 0, trail: 0 })
+    // The singer's own turn: the dot is back, and its trail with it.
+    for (let t = 4; t < 4.5; t += 0.05) {
+      clear()
+      r.draw(stateOf(chart, t, { detectedMidi: 55, playing: true }))
+    }
+    expect(voiceMarks(calls, l.lineX).dots).toBe(1)
+    expect(voiceMarks(calls, l.lineX).trail).toBeGreaterThanOrEqual(5)
+  })
+
+  it('allows for the delay of the sound: the end of a call is heard that much later', () => {
+    const { canvas, calls, clear } = stubCanvas()
+    const r = new VoiceLanesRenderer(canvas)
+    r.resize()
+    const chart = echoChart({ hideAnswers: true })
+    const l = laneLayout(r.width, r.height, chart.voice!, 6)
+    const at = 2 + VOICE.cueAfter + 0.1
+    r.draw(stateOf(chart, at, { detectedMidi: 55, playing: true, lag: 0.27 }))
+    expect(voiceMarks(calls, l.lineX).dots).toBe(0)
+    clear()
+    r.draw(stateOf(chart, at, { detectedMidi: 55, playing: true, lag: 0 }))
+    expect(voiceMarks(calls, l.lineX).dots).toBe(1)
+  })
+
+  it('still shows the voice during a call when the notes are in plain sight, and whenever nothing is playing', () => {
+    const dotsAt = (chart: Chart, over: Partial<VoiceLanesState>) => {
+      const { canvas, calls } = stubCanvas()
+      const r = new VoiceLanesRenderer(canvas)
+      r.resize()
+      r.draw(stateOf(chart, 0.5, { detectedMidi: 55, ...over }))
+      return voiceMarks(calls, laneLayout(r.width, r.height, chart.voice!, 6).lineX).dots
+    }
+    // Nothing is hidden on this chart: a singer who hums along with the call sees where they are.
+    expect(dotsAt(echoChart(), { playing: true })).toBe(1)
+    // Before the start, in the count-in and in a pause the app is not singing: the dot shows that the microphone hears.
+    expect(dotsAt(echoChart({ hideAnswers: true }), { playing: false })).toBe(1)
+    // A screen that does not say whether the song is playing gets the careful answer.
+    expect(dotsAt(echoChart({ hideAnswers: true }), {})).toBe(0)
+  })
+
   it('draws a glide between the notes of a slide, and none on other charts', () => {
     const curves = (chart: Chart) => {
       const { canvas, calls } = stubCanvas()
@@ -971,5 +1148,87 @@ describe('pitch lanes: every sung chart the app makes', () => {
         expect(box.y + box.h, name).toBeLessThanOrEqual(l.bottom)
       }
     }
+  })
+})
+
+/**
+ * The lanes on what the voice tracker really hands them, not on progress written by hand: the two are
+ * built apart, and a share that was seconds, or cents with the other sign, would pass every test above.
+ */
+describe('pitch lanes: drawn from a real run', () => {
+  const SR = 44100
+  const HOP = 512 / SR
+  /** A frame reports the pitch of the middle of its window, which lies this far before its time stamp. */
+  const CENTRE = 1024 / SR
+  const voice = voiceOf({ low: 60, high: 64, tonic: 60, shift: 0, lineStarts: [1] })
+  const notes = [note(0, 1, 1, 60, 'la'), note(1, 3, 1, 64, 'la')]
+  const chart = emptyChart({ source: 'builtin', duration: 6, notes, beats: constantBeatGrid(60, 0, 6, 4), tempos: [{ time: 0, bpm: 60 }], voice })
+  interface Sung {
+    from: number
+    to: number
+    midi: number
+  }
+
+  function armed(): VoiceTracker {
+    const tracker = new VoiceTracker(chart, notes, { sampleRate: SR })
+    tracker.seek(0)
+    return tracker
+  }
+
+  /** Feeds the tracker what the detector would report up to song time `until`, as the player does; returns the last pitch for the screen. */
+  function hear(tracker: VoiceTracker, sung: Sung[], until: number): number | null {
+    let shown: number | null = null
+    for (let k = Math.round(-0.5 / HOP); k * HOP < until; k++) {
+      const time = k * HOP
+      const s = sung.find((x) => time - CENTRE >= x.from && time - CENTRE < x.to)
+      const frame = s ? { freq: midiToFreq(s.midi), clarity: 0.95, rms: 0.05, time } : { freq: 0, clarity: 0, rms: 0.001, time }
+      shown = tracker.frame(frame, time, { clarityThreshold: 0.85, a4: 440 }).midi
+      tracker.advance(time)
+    }
+    return shown
+  }
+
+  it('points the arrow to where the note is: up after singing under it, down after singing over it', () => {
+    const tracker = armed()
+    hear(tracker, [{ from: 1, to: 2, midi: 58.5 }, { from: 3, to: 4, midi: 65.5 }], 5)
+    tracker.advance(Number.POSITIVE_INFINITY)
+    expect(tracker.progressOf(0)).toMatchObject({ status: 'miss', reason: 'low' })
+    expect(missArrow(tracker.progressOf(0))).toBe('up')
+    expect(tracker.progressOf(1)).toMatchObject({ status: 'miss', reason: 'high' })
+    expect(missArrow(tracker.progressOf(1))).toBe('down')
+  })
+
+  it('fills a bar as it is sung, up to the line, and whole once the note has counted', () => {
+    const tracker = armed()
+    const sung = [{ from: 1, to: 2, midi: 60 }]
+    hear(tracker, sung, 1.5)
+    const half = fillFraction(notes[0], tracker.progressOf(0), 1.5)
+    // Half of the note has passed the line and all of that was in tune.
+    expect(half).toBeGreaterThan(0.3)
+    expect(half).toBeLessThanOrEqual(0.5)
+    hear(tracker, sung, 3)
+    expect(tracker.progressOf(0)).toMatchObject({ status: 'hit' })
+    expect(fillFraction(notes[0], tracker.progressOf(0), 3)).toBe(1)
+    // The note nobody sang stays empty, whatever it turns out as.
+    tracker.advance(Number.POSITIVE_INFINITY)
+    expect(fillFraction(notes[1], tracker.progressOf(1), 6)).toBe(0)
+  })
+
+  it('leaves a bar half full when only its first half was sung', () => {
+    const tracker = armed()
+    hear(tracker, [{ from: 1, to: 1.5, midi: 60 }], 3)
+    tracker.advance(Number.POSITIVE_INFINITY)
+    const filled = fillFraction(notes[0], tracker.progressOf(0), 3)
+    expect(filled).toBeGreaterThan(0.3)
+    expect(filled).toBeLessThan(0.7)
+  })
+
+  it('puts the dot of a low voice on the bar, a little over it when the voice is a little sharp', () => {
+    const tracker = armed()
+    const shown = hear(tracker, [{ from: 1, to: 2, midi: 48.3 }], 1.5)
+    expect(shown).not.toBeNull()
+    const near = foldTarget(notes, voice.cues, 1.5)
+    expect(near).toBe(60)
+    expect(foldIntoWindow(shown!, pitchWindow(voice), near)).toBeCloseTo(60.3, 1)
   })
 })

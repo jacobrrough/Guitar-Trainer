@@ -9,8 +9,10 @@ import { registerSW } from 'virtual:pwa-register'
 import './index.css'
 import { AppLayout } from './app/AppLayout'
 import { connectUpdates } from './app/appUpdate'
+import { voiceEnabled } from './app/features'
 import { audioEngine } from './audio/AudioEngine'
 import { metronome } from './audio/metronome/Metronome'
+import { VoiceCheckPage } from './features/dev/VoiceCheckPage'
 import { LibraryPage } from './features/library/LibraryPage'
 import { MetronomePage } from './features/metronome/MetronomePage'
 import { PlayPage } from './features/play/PlayPage'
@@ -41,6 +43,9 @@ const router = createHashRouter([
   { path: '/start', element: <StartHere /> },
   { path: '/lessons/:lessonId', element: <LessonPage /> },
   { path: '/today/block/:blockId', element: <BlockRunner /> },
+  // A hidden check of the singing side: one sung exercise in the real player. The address is only
+  // there while the voice side is switched on; otherwise it is an address that does not exist.
+  ...(voiceEnabled() ? [{ path: '/voice-check', element: <VoiceCheckPage /> }] : []),
 ])
 
 // Offline support + installability. A new version is switched to at launch or on request (see appUpdate).

@@ -170,7 +170,11 @@ export function Player({
   const guideRef = useRef(false)
   /** The detector was narrowed to a voice by this player and has to be set back when it goes. */
   const voiceDetectorRef = useRef(false)
-  /** A sung chart's guide track arrived while a run was under way: the switch is put where it starts once the sound may be swapped. */
+  /**
+   * The guide switch of a sung chart has to go back to where it starts (`guideStartsOn`) once the sound
+   * may be swapped: its track arrived while a run was under way, or the run heard the app's own sound
+   * and "I use headphones" was turned off because of it.
+   */
   const guideSyncDueRef = useRef(false)
   /** When this player last opened the microphone (performance.now()); null = it has not. */
   const micOpenedAtRef = useRef<number | null>(null)
@@ -265,6 +269,9 @@ export function Player({
   useEffect(() => {
     const tracker = createRunTracker(chart, notes, {
       octaveTolerance: settingsRef.current.octaveTolerance,
+      // The guitar's reference pitch, for a guitar chart only. A sung chart is read against the app's
+      // own A = 440 whatever this says: the factory does not hand it on, and the voice tracker reads
+      // neither this nor the settings that come with every frame (runTracker.test.ts holds both to it).
       a4: settingsRef.current.a4,
       // Asked only for a sung chart, when its first frame arrives: no audio context is made here.
       sampleRate: () => audioEngine.context.sampleRate,
@@ -397,8 +404,11 @@ export function Player({
     if (guideRef.current && !bleedRef.current && tracker.ownSoundHeard?.()) {
       bleedRef.current = true
       setNotice(labels.ownSoundNotice)
-      // No headphones after all: the next screen starts with the guide off.
+      // No headphones after all: the next screen starts with the guide off, and so does the next try
+      // on this one. The switch follows the setting now that the run is over (the effect on `phase`
+      // sees to it); left on, "Try again" would be lost the same way, run after run.
       updateSettings({ voiceHeadphones: false })
+      guideSyncDueRef.current = true
     }
     const p = propsRef.current
     const durationSec = startedAtRef.current ? (performance.now() - startedAtRef.current) / 1000 : (el?.currentTime ?? 0)
@@ -475,6 +485,10 @@ export function Player({
         visibleSeconds: c.voice ? lanesVisibleSeconds(chartBpm(c), renderer.width, st.visibleSeconds) : st.visibleSeconds * sp * widthFactor,
         showNoteNames: st.showNoteNames,
         paused: phaseRef.current === 'paused',
+        // For the pitch lanes: whether the song's sound is running, and how far behind the clock the
+        // microphone hears it. On an echo by ear they keep the app's own call off the screen with these.
+        playing,
+        lag: lagRef.current(),
       })
       if (playing && !lb && (el.ended || t >= duration + 0.5)) void finishRef.current()
     }
@@ -688,8 +702,13 @@ export function Player({
           bleedRef.current = true
           setNotice(words.bleedNotice)
           setNoticeAction(words.bleedAction)
-          // A singer whose phone hears its own clicks is not wearing headphones: the guide starts off from now on.
-          if (p.chart.voice) updateSettings({ voiceHeadphones: false })
+          // A singer whose phone hears its own clicks is not wearing headphones: the guide starts off
+          // from now on. This run goes on as it is (the sound must not be swapped under it); the switch
+          // of this player follows the setting when the run is over or called off.
+          if (p.chart.voice) {
+            updateSettings({ voiceHeadphones: false })
+            guideSyncDueRef.current = true
+          }
         }
       }
       try {
@@ -856,7 +875,11 @@ export function Player({
             variant={guide ? 'secondary' : 'ghost'}
             disabled={busy || starting}
             aria-pressed={guide}
-            onClick={() => setGuide((g) => !g)}
+            onClick={() => {
+              // A tap is the learner's own choice: nothing that was waiting to set the switch may undo it.
+              guideSyncDueRef.current = false
+              setGuide((g) => !g)
+            }}
             title={guide ? labels.guideOn : labels.guideOff}
             aria-label={labels.guideToggle}
             data-testid="guide-toggle"

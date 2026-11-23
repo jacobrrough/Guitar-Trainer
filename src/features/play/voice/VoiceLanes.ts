@@ -15,6 +15,7 @@ import type { Beat, Chart, ChartNote, VoiceChart, VoiceCue } from '../../../char
 import { clamp } from '../../../music/pitch'
 import { stringColor } from '../../../music/strings'
 import type { GroupStatus, ScoreSummary } from '../scoring'
+import { VOICE } from './judge'
 import type { NoteProgress } from './voiceTracker'
 
 /** Semitones of room shown under the lowest note of the chart and over the highest. */
@@ -213,6 +214,22 @@ export function answerShown(voice: Pick<VoiceChart, 'hideAnswers'>, status: Grou
 }
 
 /**
+ * Whether one of the app's own notes is sounding at `t`, as the microphone hears it: from just before
+ * a cue to a moment after it, the stretch in which the tracker gives no credit either (`VOICE.cueBefore`,
+ * `VOICE.cueAfter`).
+ *
+ * On an echo by ear the pitch that is heard is not drawn in that stretch (see `draw`). On a bare phone
+ * the microphone hears the call from the speaker, and the dot with its trail would write out, note by
+ * note, the tune whose bars are kept out of sight.
+ *
+ * `lag` is how far what is heard is behind the clock (the sound-delay setting, in song time): the end
+ * of a call reaches the screen that much later. The start is not moved: early is the safe side.
+ */
+export function callSounding(cues: readonly VoiceCue[], t: number, lag = 0): boolean {
+  return cues.some((c) => t >= c.time - VOICE.cueBefore && t <= c.time + c.duration + VOICE.cueAfter + Math.max(0, lag))
+}
+
+/**
  * What is written at a bar. A trailing hyphen stays (the word goes on with the next note). An empty
  * syllable is not "no word": it is the syllable before, still being sung on a new pitch, so the bar is
  * joined to the one before instead of getting a label.
@@ -352,6 +369,10 @@ export interface VoiceLanesState {
   paused: boolean
   /** How far each note is filled and what became of it (`RunTracker.progressOf`). */
   progressOf: (noteId: number) => NoteProgress | undefined
+  /** The song's sound is running (not before the start, in the count-in or in a pause). Taken as running when left out. */
+  playing?: boolean
+  /** Seconds of song time by which what the microphone hears is behind `songTime` (the sound-delay setting); none when left out. */
+  lag?: number
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -655,10 +676,13 @@ export class VoiceLanesRenderer {
     ctx.lineTo(l.lineX, l.bottom + 8)
     ctx.stroke()
 
-    // The voice: a dot on the line, and where it has been.
+    // The voice: a dot on the line, and where it has been. On an echo by ear nothing is drawn while
+    // the app sings its call: what a bare phone hears then is its own speaker (see `callSounding`).
+    const hushed = !!voice.hideAnswers && s.playing !== false && callSounding(cues, s.songTime, s.lag)
+    const heard = hushed ? null : s.detectedMidi
     const target = foldTarget(s.notes, cues, s.songTime) ?? (l.win.bottom + l.win.top) / 2
-    if (s.detectedMidi !== null) this.octave = octaveShift(s.detectedMidi, target, this.octave)
-    const sung = s.detectedMidi === null ? null : foldIntoWindow(s.detectedMidi, l.win, target, this.octave)
+    if (heard !== null) this.octave = octaveShift(heard, target, this.octave)
+    const sung = heard === null ? null : foldIntoWindow(heard, l.win, target, this.octave)
     extendTrail(this.trail, s.songTime, sung)
     ctx.strokeStyle = ACCENT
     ctx.lineWidth = 3

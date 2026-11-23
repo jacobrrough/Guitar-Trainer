@@ -787,6 +787,27 @@ describe('through a wireless headset\'s microphone, where a frame is two or thre
     }
   })
 
+  it('a singer steadily off the notes stays far from a pass, though at 16 kHz the long window lets a note through here and there', () => {
+    // The limit of the long window, kept here in sight. 128 ms of it smear the step from one note to the
+    // next into a glide, slower than a vibrato swings, and on its way a singer 60 cents off passes
+    // through the band of the note. On eighth notes that is enough for 4 notes in 18, all good, none
+    // perfect (1 or 2 in 18 while the rule was 60 cents a frame, which threw part of such a glide away
+    // along with the vibrato). From 24 kHz up it is none, as through a phone's own microphone.
+    const p = pieces().quick
+    for (const cents of whole ? [-60, 60] : [-60]) {
+      const r = score(p, take(p, 16000, { cents }), 16000)
+      expect(hits(r), `${cents} ${told(r, 16000)}`).toBeLessThanOrEqual(4)
+      expect(r.summary.perfects, `${cents} ${told(r, 16000)}`).toBe(0)
+      expect(coach(r), `${cents} ${told(r, 16000)}`).toBeLessThan(0.25)
+      // Heard, and heard off the note: a run that counts, as a weak one.
+      expect(verdict(r), `${cents} ${told(r, 16000)}`).toBe('counted')
+      expect(r.feedback.reasons[cents < 0 ? 'low' : 'high'], `${cents} ${told(r, 16000)}`).toBe(p.notes.length - hits(r))
+      if (!whole) continue
+      const finer = score(p, take(p, 24000, { cents }), 24000)
+      expect(hits(finer), `${cents} ${told(finer, 24000)}`).toBe(0)
+    }
+  })
+
   it('the click alone, soft or loud, is nobody singing: its kick drum is not taken for a voice, under a low voice\'s lanes either', () => {
     const all = pieces()
     // A plain run: the low voice's lanes, where the kick drum lies in the detector's range.

@@ -1,6 +1,6 @@
 import { Repeat, RotateCcw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, Navigate, useNavigate, useParams } from 'react-router'
 import { LEVELS, distinctLevels, generateLevels, suggestedLevel } from '../../chart/difficulty'
 import { chartBpm } from '../../chart/types'
 import { Button, Select, cx } from '../../components/ui'
@@ -13,6 +13,7 @@ import { NotCountedCard } from './NotCountedCard'
 import { runVerdict, type RunVerdict } from './runVerdict'
 import { useHeld } from './useHeld'
 import { recordSongPlay } from '../../training/coach'
+import { instrumentOf } from '../../training/instruments'
 import type { AttemptResult } from '../../training/types'
 import { Player, type PlayerHandle } from './Player'
 import type { ScoreSummary } from './scoring'
@@ -148,12 +149,21 @@ export function ResultsOverlay({
   )
 }
 
-/** Song play-along: level and speed controls around the shared Player engine. */
+/**
+ * The page of a stored song (`/play/:songId`). A song to sing is stored in the same table, but it has
+ * no guitar part and no audio of its own, so it goes to its own page before anything here reads its chart.
+ */
 export function PlayPage() {
   const { songId } = useParams()
   const id = Number(songId)
-  const navigate = useNavigate()
   const songQuery = useSong(Number.isFinite(id) ? id : null)
+  if (songQuery !== 'loading' && songQuery && instrumentOf(songQuery) === 'voice') return <Navigate to={`/sing/${songQuery.id}`} replace />
+  return <GuitarPlayPage songQuery={songQuery} />
+}
+
+/** Song play-along: level and speed controls around the shared Player engine. */
+function GuitarPlayPage({ songQuery }: { songQuery: SongRecord | null | 'loading' }) {
+  const navigate = useNavigate()
   const [inRun, setInRun] = useState(false)
   // The record is a live query: while a run is in progress keep the one it started with, so a
   // background update (a re-rendered sound, a corrected chart) cannot restart the score mid-song.

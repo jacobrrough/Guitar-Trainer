@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "test:e2e": "node e2e/smoke.mjs",
     "test:student": "node e2e/student.mjs",
+    "test:singer": "node e2e/singer.mjs",
     "icons": "node scripts/make-icons.mjs",
     "cap:sync": "npm run build && cap sync",
     "cap:ios": "npm run build && cap sync ios && cap open ios"

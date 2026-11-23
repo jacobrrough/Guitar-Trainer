@@ -1,16 +1,18 @@
 import { Award, Download, Trash2, TrendingUp, Upload } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
+import { voiceEnabled } from '../../app/features'
 import { isIOS } from '../../app/platform'
 import { useSettings } from '../../app/settings'
 import { Badge, Button, Card, PageHeader } from '../../components/ui'
-import { masteryBand, effectiveRating } from '../../training/learner'
-import { SKILLS } from '../../training/skills'
 import { updatePrefs } from '../../training/coach'
-import { exportTrainingData, importTrainingData, resetTrainingData } from '../../training/store'
+import { activeInstrument, courseFor, skillsFor } from '../../training/instruments'
+import { exportTrainingData, resetTrainingData } from '../../training/store'
 import { useLearnerModel, useMilestones, useRecentAttempts, useTests } from '../../training/useTraining'
+import { voiceMaxSteps } from '../../training/voicePlan'
 import { ImportConfirm } from '../settings/ImportConfirm'
-import { RESET_WARNING, importFlow, type ImportEvent, type ImportFlow } from '../settings/importConfirm'
-import { practiceStreakDays, ratingSeries, weeklyMinutes } from './progressStats'
+import { pickBackup, restoreBackup, type PickedBackup } from '../settings/dataSection'
+import { importFlow, resetDone, resetSide, resetWarning, type ImportEvent, type ImportFlow, type ResetScope } from '../settings/importConfirm'
+import { bandCounts, practiceStreakDays, ratingSeries, weeklyMinutes } from './progressStats'
 import { MilestoneList } from './MilestoneList'
 import { SkillMap } from './SkillMap'
 
@@ -62,43 +64,49 @@ function WeeklyChart({ data }: { data: { weekStart: string; minutes: number }[] 
   )
 }
 
+/** What the Reset button of this page is called for a screen reader: it resets the instrument on screen. */
+const RESET_ARIA: Record<ResetScope, string> = {
+  guitar: 'Reset guitar training data',
+  voice: 'Reset singing training data',
+  both: 'Reset all training data',
+}
+
+/**
+ * Progress of the instrument on screen (the guitar until the singing side is switched to): its skills,
+ * its practice time, its checks and its milestones. Nothing of the other instrument is counted or drawn.
+ */
 export function ProgressPage() {
-  const model = useLearnerModel()
-  const simple = useSettings().simpleFeedback
-  const attempts = useRecentAttempts(120)
-  const tests = useTests(10)
-  const milestones = useMilestones(12)
+  const settings = useSettings()
+  const simple = settings.simpleFeedback
+  const instrument = activeInstrument(settings)
+  const voiceOn = voiceEnabled()
+  const skills = skillsFor(instrument)
+  const model = useLearnerModel(instrument)
+  const attempts = useRecentAttempts(120, instrument)
+  const tests = useTests(10, instrument)
+  const milestones = useMilestones(12, instrument)
   const fileRef = useRef<HTMLInputElement>(null)
   const [message, setMessage] = useState<string | null>(null)
-  const [importing, setImporting] = useState<ImportFlow<File>>({ step: 'idle' })
+  const [importing, setImporting] = useState<ImportFlow<PickedBackup<File>>>({ step: 'idle' })
   const [busy, setBusy] = useState(false)
   const now = useMemo(() => Date.now(), [])
 
   const stats = useMemo(() => {
     if (!model || !attempts) return null
-    let mastered = 0
-    let solid = 0
-    for (const skill of SKILLS) {
-      const st = model.skills[skill.id]
-      const band = masteryBand(st ? effectiveRating(st, now) : 0)
-      if (band === 'mastered') mastered++
-      else if (band === 'solid') solid++
-    }
     const weeks = weeklyMinutes(attempts, now, 8)
     return {
-      mastered,
-      solid,
+      ...bandCounts(model, skills, now),
       weeks,
       streak: practiceStreakDays(attempts, now),
       thisWeek: weeks[weeks.length - 1]?.minutes ?? 0,
     }
-  }, [model, attempts, now])
+  }, [model, attempts, skills, now])
 
   const onPin = (skillId: string | undefined) => {
     if (!model) return
     // Through the Coach, which reads the stored profile first: saving the copy held by this page would
     // write back whatever has changed since it was loaded (a finished check, the mark of a one-time data fix).
-    void updatePrefs({ pinnedSkillId: skillId })
+    void updatePrefs({ pinnedSkillId: skillId }, instrument)
   }
 
   /** Resolves to whether a file was handed over (false when the share sheet was closed). */
@@ -132,7 +140,8 @@ export function ProgressPage() {
   const doImport = async (file: File) => {
     setBusy(true)
     try {
-      const res = await importTrainingData(await file.text())
+      // The same steps as in Settings: the import, then the songs to sing for a singer who has none yet.
+      const res = await restoreBackup(await file.text())
       setMessage(`Imported ${res.attempts} attempts and ${res.skills} skills.`)
     } catch (e) {
       setMessage(`Import failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -142,11 +151,14 @@ export function ProgressPage() {
   }
 
   // Same steps as Settings: a picked file only waits here, and the data is replaced on a yes.
-  const onImport = (event: ImportEvent<File>) => {
+  const onImport = (event: ImportEvent<PickedBackup<File>>) => {
     const next = importFlow(importing, event)
     setImporting(next.state)
-    if (next.importFile) void doImport(next.importFile)
+    if (next.importFile) void doImport(next.importFile.file)
   }
+
+  // With two instruments the question depends on what the file holds, so the file is looked at first.
+  const onPicked = async (file: File | undefined) => onImport({ type: 'picked', file: await pickBackup(file, voiceOn) })
 
   const backUpFirst = async () => {
     setBusy(true)
@@ -159,10 +171,13 @@ export function ProgressPage() {
     }
   }
 
+  // This page shows one instrument, and its Reset button resets that one. (Settings has all three resets.)
+  // A device without the singing side has one instrument and one reset, which clears everything as it always did.
+  const resetScope = voiceOn ? instrument : undefined
   const onReset = async () => {
-    if (!window.confirm(`${RESET_WARNING} Reset now?`)) return
-    await resetTrainingData()
-    setMessage('Training data reset.')
+    if (!window.confirm(`${resetWarning(resetScope)} Reset now?`)) return
+    await resetTrainingData(resetSide(resetScope))
+    setMessage(resetDone(resetScope))
   }
 
   const lastTest = tests?.[0]
@@ -179,7 +194,7 @@ export function ProgressPage() {
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Tile label="Streak" value={`${stats.streak} day${stats.streak === 1 ? '' : 's'}`} />
             <Tile label="This week" value={`${Math.round(stats.thisWeek)} min`} />
-            <Tile label="Skills" value={`${stats.mastered} / ${stats.solid} / ${SKILLS.length}`} sub={simple ? 'mastered / strong / total' : 'mastered / solid / total'} />
+            <Tile label="Skills" value={`${stats.mastered} / ${stats.solid} / ${stats.total}`} sub={simple ? 'mastered / strong / total' : 'mastered / solid / total'} />
             <Tile
               label={simple ? 'Last skill check' : 'Last test'}
               value={lastTest ? new Date(lastTest.at).toLocaleDateString() : 'None yet'}
@@ -241,6 +256,11 @@ export function ProgressPage() {
               pinnedSkillId={model.profile.pinnedSkillId}
               onPin={onPin}
               seriesFor={(id) => ratingSeries(attempts, id)}
+              skills={skills}
+              course={courseFor(instrument)}
+              scores={instrument === 'guitar' || !simple}
+              // A singer's step is named as far up its ladder as the easy notes of this moment have room for.
+              maxSteps={instrument === 'voice' ? voiceMaxSteps(model.profile.voice?.range) : undefined}
             />
           </section>
 
@@ -253,7 +273,7 @@ export function ProgressPage() {
               <Button onClick={() => fileRef.current?.click()} aria-label="Import training data from JSON file">
                 <Upload size={16} /> Import
               </Button>
-              <Button variant="danger" onClick={() => void onReset()} aria-label="Reset all training data">
+              <Button variant="danger" onClick={() => void onReset()} aria-label={RESET_ARIA[resetScope ?? 'both']}>
                 <Trash2 size={16} /> Reset
               </Button>
               <input
@@ -263,7 +283,7 @@ export function ProgressPage() {
                 className="hidden"
                 aria-label="Training data file"
                 onChange={(e) => {
-                  onImport({ type: 'picked', file: e.target.files?.[0] })
+                  void onPicked(e.target.files?.[0])
                   e.target.value = ''
                 }}
               />
@@ -271,7 +291,9 @@ export function ProgressPage() {
             {importing.step === 'confirm' && (
               <div className="mt-3">
                 <ImportConfirm
-                  fileName={importing.file.name}
+                  fileName={importing.file.file.name}
+                  backup={importing.file.backup}
+                  singerHere={importing.file.singerHere}
                   backedUp={importing.backedUp}
                   busy={busy}
                   onBackup={() => void backUpFirst()}
