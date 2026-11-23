@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
   applyAttempt,
@@ -12,8 +13,9 @@ import {
   updateTempoCeiling,
 } from './learner'
 import { attemptPerformance } from './performance'
-import { AT_TARGET_MIN_GAIN, BELOW_TARGET_RATING, RATING_HEADROOM, START_TEMPO_RATING, UNLOCK_RATING } from './constants'
-import type { Attempt, LearnerModel, SkillDef } from './types'
+import { AT_TARGET_MIN_GAIN, BELOW_TARGET_RATING, RATING_HEADROOM, START_TEMPO_RATING, STEP_DOWN_LOW_RUNS, STEP_UP_CLEAN_RUNS, UNLOCK_RATING } from './constants'
+import { itemDifficulty } from './difficulty'
+import type { Attempt, LearnerModel, SkillDef, SkillState } from './types'
 
 const DAY = 86400000
 const NOW = 1_700_000_000_000
@@ -386,5 +388,253 @@ describe('warm-ups and the tempo ceiling', () => {
     expect(st.tempoCeiling).toBe(100)
     // A rough round that is not a warm-up still brings the ceiling down.
     expect(applyAttempt(state, attempt({ playedTempo: 60, targetTempo: 60, accuracy: 0.5, performance: 0.5, at: NOW }), skill, [], NOW).tempoCeiling).toBeLessThan(60)
+  })
+})
+
+describe('guitar: a skill without steps is rated exactly as it was before singing', () => {
+  // Recorded from applyAttempt as it stood before it knew about steps (commit ad9a5de).
+  // A rating rule changed on purpose changes the digest: the failing case prints the new one.
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16)
+
+  it('four months of mixed rounds, warm-ups, recaps and checks leave the same trail of states', () => {
+    let seed = 7
+    const random = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32
+    const kinds = ['practice', 'practice', 'warmup', 'review', 'test'] as const
+    let s = newSkillState('alt-picking', 0)
+    const history: Attempt[] = []
+    const trail = []
+    for (let i = 0; i < 160; i++) {
+      const accuracy = Math.round((0.4 + 0.6 * random()) * 100) / 100
+      const tempo = 60 + Math.round(random() * 12) * 5
+      const run = attempt({
+        at: NOW + i * 18 * 3_600_000,
+        kind: kinds[Math.floor(random() * kinds.length)],
+        accuracy,
+        performance: Math.round(accuracy * 95) / 100,
+        playedTempo: tempo,
+        targetTempo: tempo,
+        difficulty: 20 + Math.round(random() * 40),
+        reliable: random() > 0.1,
+        bleed: random() > 0.95,
+      })
+      s = applyAttempt(s, run, skill, history.slice(0, 20), run.at)
+      history.unshift(run)
+      trail.push(s)
+    }
+    expect(trail.some((x) => 'step' in x)).toBe(false)
+    expect(digest(trail)).toBe('594db4e497ec1299')
+  })
+})
+
+describe('singing: a skill with steps is rated on its ladder, at one tempo', () => {
+  // A stand-in for "Match a note": first tier, one tempo, four steps.
+  const steps = [0, 12, 20, 28].map((bonus, i) => ({ label: `step ${i + 1}`, params: {}, bonus }))
+  const match: SkillDef = { ...skill, id: 'voice.pitch.match', tier: 0, refTempo: 60, startTempo: 60, targetTempo: 60, minTempo: 60, steps }
+  const MINUTE = 60_000
+  /** A round on a step as the app records it: at the skill's one tempo, with the difficulty of that step. */
+  const round = (step: number, accuracy: number, over: Partial<Attempt> = {}): Attempt =>
+    attempt({
+      playedTempo: 60,
+      targetTempo: 60,
+      accuracy,
+      performance: accuracy,
+      difficulty: itemDifficulty(match, { tempo: 60, bonus: steps[step].bonus }),
+      params: { tempo: 60, bars: 4, step },
+      ...over,
+    })
+  const on = (step: number | undefined, rating: number): SkillState => ({ ...confident, skillId: match.id, rating, ...(step === undefined ? {} : { step }) })
+  /** Applies rounds one after another, a minute apart, each with the ones before it as its history. */
+  const after = (start: SkillState, rounds: Attempt[]): SkillState => {
+    let s = start
+    const history: Attempt[] = []
+    rounds.forEach((r, i) => {
+      const run = { ...r, at: NOW + i * MINUTE }
+      s = applyAttempt(s, run, match, history.slice(0, 20), run.at)
+      history.unshift(run)
+    })
+    return s
+  }
+
+  it('clean rounds on a step lead to the stop of that step and no further: 50, 62 and 70 on the first three steps', () => {
+    const stops = [50, 62, 70]
+    stops.forEach((stop, step) => {
+      let s = on(step, 0)
+      for (let i = 0; i < 200; i++) s = applyAttempt(s, round(step, 1, { at: NOW + i * 1000 }), match)
+      expect(s.rating, `step ${step}`).toBeCloseTo(stop, 6)
+    })
+    // Each is under what clean rounds at the start tempo give a tempo skill: the ladder sets the stop, not the tempo.
+    expect(Math.max(...stops)).toBeLessThan(START_TEMPO_RATING)
+  })
+
+  it('reaches the top only by accurate rounds on the last step, a point or more a round', () => {
+    const start = on(3, 70)
+    expect(applyAttempt(start, round(3, 0.9), match).rating).toBeGreaterThanOrEqual(70 + AT_TARGET_MIN_GAIN)
+    let s = start
+    for (let i = 0; i < 30; i++) s = applyAttempt(s, round(3, 0.9, { at: NOW + i * 1000 }), match)
+    expect(s.rating).toBe(100)
+    // Not from the step below, however many clean rounds.
+    let below = start
+    for (let i = 0; i < 200; i++) below = applyAttempt(below, round(2, 1, { at: NOW + i * 1000 }), match)
+    expect(below.rating).toBeCloseTo(70, 6)
+    // Not by a round on the last step that was not accurate: it shows no more than the steps sung cleanly before.
+    let rough = on(3, 30)
+    for (let i = 0; i < 200; i++) rough = applyAttempt(rough, round(3, 0.8, { at: NOW + i * 1000, performance: 0.84 }), match)
+    expect(rough.rating).toBeLessThan(80)
+    // The tempo itself proves nothing here: the same clean rounds on step 0 stay at the first stop,
+    // although they are "at the target tempo" of a skill that has only one.
+    let slow = on(0, 0)
+    for (let i = 0; i < 200; i++) slow = applyAttempt(slow, round(0, 1, { at: NOW + i * 1000 }), match)
+    expect(slow.rating).toBeCloseTo(50, 6)
+  })
+
+  it('on a harder ladder the stops are "solid" and up: 75, 82, then the top, and a rough round proves only the steps sung cleanly before', () => {
+    // A stand-in for "A whole line on one breath": third tier of five, three steps.
+    const rungs = [0, 8, 16].map((bonus, i) => ({ label: `step ${i + 1}`, params: {}, bonus }))
+    const phrases: SkillDef = { ...match, id: 'voice.breath.phrases', tier: 2, refTempo: 72, startTempo: 72, targetTempo: 72, minTempo: 72, steps: rungs }
+    const line = (step: number, accuracy: number, at: number): Attempt =>
+      attempt({ at, playedTempo: 72, targetTempo: 72, accuracy, performance: accuracy, difficulty: itemDifficulty(phrases, { tempo: 72, bonus: rungs[step].bonus }), params: { tempo: 72, bars: 4, step } })
+    const reach = (step: number, accuracy: number, start: SkillState) => {
+      let s = start
+      for (let i = 0; i < 200; i++) s = applyAttempt(s, line(step, accuracy, NOW + i * 1000), phrases)
+      return s.rating
+    }
+    const fresh = (step: number, rating = 0): SkillState => ({ ...confident, skillId: phrases.id, rating, step })
+    expect(reach(0, 1, fresh(0))).toBeCloseTo(START_TEMPO_RATING, 6)
+    expect(reach(1, 1, fresh(1))).toBeCloseTo((START_TEMPO_RATING + BELOW_TARGET_RATING) / 2, 6)
+    expect(reach(2, 1, fresh(2))).toBe(100)
+    // 84 % on the second step, by someone who has sung only the first step cleanly: it shows the first
+    // step and no more, however often. Sung accurately, the same step leads on to its own stop.
+    expect(reach(1, 0.84, fresh(1, 60))).toBeCloseTo(START_TEMPO_RATING, 6)
+    expect(reach(1, 0.9, fresh(1, 60))).toBeCloseTo(82, 6)
+    // And 84 % on the last step is not the top either.
+    expect(reach(2, 0.84, fresh(2, 60))).toBeCloseTo(82, 6)
+  })
+
+  it('a voice that cannot hold the last steps finishes the skill on the highest step it can', () => {
+    // The block says how far this singer's range reaches: step 1 of 4.
+    const reach = { params: { tempo: 60, bars: 4, step: 1, maxStep: 1 } }
+    let s = on(1, 62)
+    for (let i = 0; i < 40; i++) s = applyAttempt(s, round(1, 0.9, { ...reach, at: NOW + i * 1000 }), match)
+    expect(s.rating).toBe(100)
+    // Without that limit the same rounds stop where step 1 stops.
+    let unlimited = on(1, 62)
+    for (let i = 0; i < 40; i++) unlimited = applyAttempt(unlimited, round(1, 0.9, { at: NOW + i * 1000 }), match)
+    expect(unlimited.rating).toBeCloseTo(62, 6)
+    // And the step practice starts from never passes what the range holds.
+    const capped = after(on(1, 62), [round(1, 0.9, reach), round(1, 0.9, reach), round(1, 0.9, reach)])
+    expect(capped.step).toBe(1)
+  })
+
+  it('the step practice starts from rises on the second clean round, one step at a time', () => {
+    expect(STEP_UP_CLEAN_RUNS).toBe(2)
+    expect(after(on(undefined, 30), [round(0, 0.9)]).step ?? 0).toBe(0)
+    expect(after(on(undefined, 30), [round(0, 0.9), round(0, 0.86)]).step).toBe(1)
+    // A third clean round on the same step proves no more about the next one.
+    expect(after(on(undefined, 30), [round(0, 0.9), round(0, 0.9), round(0, 0.9)]).step).toBe(1)
+    // A rough round in between does not undo the first clean one.
+    expect(after(on(undefined, 30), [round(0, 0.9), round(0, 0.7), round(0, 0.9)]).step).toBe(1)
+    // A clean round on the step above counts for the step below as well: two clean rounds, one on each.
+    expect(after(on(undefined, 30), [round(0, 0.9), round(1, 0.9)]).step).toBe(1)
+    expect(after(on(undefined, 30), [round(0, 0.9), round(1, 0.9), round(1, 0.9)]).step).toBe(2)
+    // Never past the last step.
+    expect(after(on(3, 80), [round(3, 0.9), round(3, 0.9), round(3, 0.9)]).step).toBe(3)
+    // And clean rounds on an easier step than the one already reached leave it where it is.
+    expect(after(on(2, 60), [round(0, 0.9), round(0, 0.9)]).step).toBe(2)
+  })
+
+  it('only rounds that count raise it: 85 % or better, heard well, recent, and not scored from the speaker', () => {
+    const first = round(0, 0.9)
+    expect(after(on(0, 30), [first, round(0, 0.84)]).step).toBe(0)
+    expect(after(on(0, 30), [first, round(0, 0.9, { reliable: false })]).step).toBe(0)
+    expect(after(on(0, 30), [round(0, 0.9, { reliable: false }), first]).step).toBe(0)
+    expect(after(on(0, 30), [first, round(0, 0.9, { bleed: true })]).step).toBe(0)
+    expect(after(on(0, 30), [round(0, 0.9, { bleed: true }), first]).step).toBe(0)
+    expect(after(on(0, 30), [round(0, 0.9, { partial: true }), first]).step).toBe(0)
+    // The first clean round was 31 days ago.
+    const old = { ...first, at: NOW - 31 * DAY }
+    expect(applyAttempt(on(0, 30), round(0, 0.9), match, [old], NOW).step ?? 0).toBe(0)
+    // Or it has dropped out of the last ten rounds (this one and the nine before it).
+    const since = Array.from({ length: 9 }, (_, i) => round(0, 0.8, { at: NOW - (i + 1) * MINUTE }))
+    expect(applyAttempt(on(0, 30), round(0, 0.9), match, [...since, { ...first, at: NOW - 11 * MINUTE }], NOW).step ?? 0).toBe(0)
+    expect(applyAttempt(on(0, 30), round(0, 0.9), match, [...since.slice(1), { ...first, at: NOW - 11 * MINUTE }], NOW).step).toBe(1)
+  })
+
+  it('falls one step after three rounds in a row under 60 %, and only then', () => {
+    expect(STEP_DOWN_LOW_RUNS).toBe(3)
+    const low = (step: number) => round(step, 0.5)
+    expect(after(on(2, 60), [low(2), low(2)]).step).toBe(2)
+    expect(after(on(2, 60), [low(2), low(2), low(2)]).step).toBe(1)
+    // 60 % is not under 60 %, and a better round in between starts the count again.
+    expect(after(on(2, 60), [low(2), round(2, 0.6), low(2)]).step).toBe(2)
+    expect(after(on(2, 60), [low(2), low(2), round(2, 0.8), low(2), low(2)]).step).toBe(2)
+    // Rounds that got easier on the way count: each was on the step reached or below it.
+    expect(after(on(2, 60), [low(2), low(1), low(0)]).step).toBe(1)
+    // A hard time on a step above the one reached says nothing against the one reached.
+    expect(after(on(1, 60), [low(2), low(2), low(2)]).step).toBe(1)
+    // Three more are needed for the next step down, and the first step is the floor.
+    expect(after(on(2, 60), [low(2), low(2), low(2), low(2), low(2)]).step).toBe(1)
+    expect(after(on(0, 60), [low(0), low(0), low(0)]).step ?? 0).toBe(0)
+  })
+
+  it('in a block that gets easier round by round, the step keeps falling for as long as the rounds stay under 60 %', () => {
+    // What the Coach does after a rough round is the step below (`nextRepStep`), so in a real block
+    // every low round is on the step reached or below it, and the last three are low from the third on.
+    const low = (step: number) => round(step, 0.5)
+    const trail = (rounds: Attempt[]) => rounds.map((_, i) => after(on(3, 70), rounds.slice(0, i + 1)).step)
+    expect(trail([low(3), low(2), low(1), low(0), low(0), low(0)])).toEqual([3, 3, 2, 1, 0, 0])
+    // It stops with the first round that is not low: 60 % on the easier step is enough.
+    expect(trail([low(3), low(2), low(1), round(0, 0.6), low(0), low(0)])).toEqual([3, 3, 2, 2, 2, 2])
+    expect(trail([low(3), low(2), low(1), round(0, 0.9), low(1), low(0)])).toEqual([3, 3, 2, 2, 2, 2])
+    // And it is won back as quickly: two clean rounds a step.
+    expect(after(on(0, 40), [round(0, 0.9), round(1, 0.9), round(1, 0.9)]).step).toBe(2)
+  })
+
+  it('a warm-up never lowers the step, however rough, and can raise it', () => {
+    const warm = (step: number, accuracy: number) => round(step, accuracy, { kind: 'warmup' })
+    expect(after(on(2, 60), [warm(1, 0.4), warm(1, 0.4), warm(1, 0.4)]).step).toBe(2)
+    // The same three rounds as practice do lower it.
+    expect(after(on(2, 60), [round(1, 0.4), round(1, 0.4), round(1, 0.4)]).step).toBe(1)
+    expect(after(on(1, 60), [warm(1, 0.9), warm(1, 0.9)]).step).toBe(2)
+    // A run that was not sung through is practice, not a result: it moves nothing, whatever came before it
+    // (here three rough warm-ups, which were waiting for one more rough round that counts).
+    const before = [0, 1, 2].map((i) => ({ ...warm(1, 0.4), at: NOW - (i + 1) * MINUTE }))
+    expect(applyAttempt(on(2, 60), round(1, 0.4, { partial: true }), match, before, NOW).step).toBe(2)
+    expect(applyAttempt(on(2, 60), round(1, 0.4), match, before, NOW).step).toBe(1)
+  })
+
+  it('a round that says nothing about its step counts as the first step, and bleed changes nothing at all', () => {
+    const bare = round(0, 0.9, { params: undefined })
+    expect(after(on(undefined, 30), [bare, bare]).step).toBe(1)
+    const state = on(2, 60)
+    expect(applyAttempt(state, round(2, 0.2, { bleed: true }), match, [round(2, 0.2), round(2, 0.2)], NOW)).toEqual(state)
+  })
+
+  it('a stored step that is no step is read as one on the ladder, in the state and in a round, and nothing breaks', () => {
+    const before = round(0, 0.9, { at: NOW - MINUTE })
+    for (const odd of [1.7, Number.NaN, -3, Number.POSITIVE_INFINITY, '2' as unknown as number]) {
+      const fromState = applyAttempt(on(odd, 30), round(0, 0.9), match, [before], NOW)
+      expect(Number.isInteger(fromState.step), `state ${odd}`).toBe(true)
+      expect(fromState.step, `state ${odd}`).toBeGreaterThanOrEqual(1)
+      expect(fromState.step, `state ${odd}`).toBeLessThanOrEqual(3)
+      expect(Number.isFinite(fromState.rating)).toBe(true)
+      const fromRound = applyAttempt(on(0, 30), round(0, 0.9, { params: { tempo: 60, bars: 4, step: odd, maxStep: odd } }), match, [before], NOW)
+      expect([0, 1, 2, 3], `round ${odd}`).toContain(fromRound.step)
+      expect(Number.isFinite(fromRound.rating)).toBe(true)
+    }
+    // A ladder of one step: that step is the top, so an accurate round there can finish the skill.
+    const single: SkillDef = { ...match, steps: steps.slice(0, 1) }
+    let s = on(undefined, 40)
+    for (let i = 0; i < 80; i++) s = applyAttempt(s, round(0, 0.9, { at: NOW + i * 1000 }), single)
+    expect(s.rating).toBe(100)
+    expect(s.step).toBe(0)
+    // An empty ladder is no ladder: the skill is rated by its tempos and gets no step.
+    const none: SkillDef = { ...match, steps: [] }
+    expect('step' in applyAttempt(on(undefined, 40), round(0, 0.9), none)).toBe(false)
+  })
+
+  it('a skill without steps never gets a step, and its tempo ceiling is kept as before for a step skill', () => {
+    const plain = applyAttempt(confident, attempt({ params: { tempo: 100, bars: 4, step: 2 } }), skill, [attempt({ at: NOW - 1000 })])
+    expect('step' in plain).toBe(false)
+    expect(after(on(0, 30), [round(0, 0.9)]).tempoCeiling).toBe(60)
   })
 })

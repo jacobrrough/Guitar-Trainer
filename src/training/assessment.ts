@@ -12,10 +12,11 @@ import {
   PLACEMENT_STOP_AFTER_FAILS,
   TEST_PASS,
   UNLOCK_RATING,
+  VOICE_TEST_PASS,
 } from './constants'
 import { itemDifficulty } from './difficulty'
 import { exerciseParams } from './exercises'
-import { tempoProgressRating } from './learner'
+import { stepWithin, tempoProgressRating } from './learner'
 import { prerequisitesSolid } from './skills'
 import type {
   Attempt,
@@ -51,7 +52,8 @@ function barsFor(tempo: number): number {
   return Math.max(2, Math.round(bars / 2) * 2)
 }
 
-interface LadderSpec {
+/** One task of a placement or monthly check, as it is written down: what is played, and which skills it is evidence for. */
+export interface LadderSpec {
   title: string
   instructions: string
   skillIds: string[]
@@ -61,6 +63,7 @@ interface LadderSpec {
   bonus?: number
 }
 
+/** The guitar's ten tasks: the list every placement and monthly check is built from unless another is given. */
 const LADDER: LadderSpec[] = [
   {
     title: 'Single-string melody',
@@ -145,9 +148,9 @@ function primarySkill(skills: SkillDef[], id: string | undefined): Pick<SkillDef
   return s ?? { tier: 1, refTempo: 80 }
 }
 
-/** The 10-task placement ladder (docs §7). */
-export function placementLadder(skills: SkillDef[]): TestTask[] {
-  return LADDER.map((spec, i) => {
+/** The 10-task placement ladder (docs §7), or the tasks of the list given in `specs`. */
+export function placementLadder(skills: SkillDef[], specs: LadderSpec[] = LADDER): TestTask[] {
+  return specs.map((spec, i) => {
     const tempo = spec.params.tempo
     const asked: ExerciseParams = { ...spec.params, bars: barsFor(tempo) }
     // What the task does not say comes from the drill of the skill it tests (its key, its place on the neck).
@@ -214,6 +217,34 @@ function dayNumber(now: number): number {
   return Math.floor(now / DAY_MS)
 }
 
+/**
+ * What differs between instruments in a weekly check. Every field is optional and its default is what
+ * the guitar check has always done.
+ */
+export interface CheckpointOptions {
+  /** What passes a task, on every task of the check. Default TEST_PASS. */
+  criteria?: PassCriteria
+  /** The word every instruction begins with. Default "Play". */
+  verb?: string
+  /**
+   * More generator params for a skill's task: what the caller knows about this learner and the skill
+   * does not (a singer's range as `low`, `high`, `easy`; the highest step it can hold as `maxStep`).
+   */
+  paramsFor?: (skill: SkillDef, state: SkillState | undefined) => Partial<ExerciseParams>
+  /** The longest a task may be, in bars. Default: as many bars as fill about 35 seconds. */
+  maxBars?: number
+  /** The slowest a skill may be asked for. Default: the skill's own floor (`SkillDef.minTempo`), if it has one. */
+  minTempoOf?: (skill: SkillDef) => number | undefined
+  /** false where a song has a single speed: the song task then does not ask for "full speed". Default true. */
+  songsHaveSpeeds?: boolean
+}
+
+/**
+ * The weekly check of a singer (docs/SINGING.md §6 and §12.14). The Coach adds `paramsFor` with the
+ * singer's range and reachable steps.
+ */
+export const VOICE_CHECK_OPTIONS: CheckpointOptions = { criteria: VOICE_TEST_PASS, verb: 'Sing', maxBars: 8, songsHaveSpeeds: false }
+
 /** Checkpoint tasks (docs §7): focus skill, retention task, stretch song. */
 export function checkpointTasks(
   model: LearnerModel,
@@ -221,24 +252,54 @@ export function checkpointTasks(
   library: SongSummary[],
   now: number,
   focusSkillId: string,
+  options: CheckpointOptions = {},
 ): TestTask[] {
   const tasks: TestTask[] = []
+  const criteria = options.criteria ?? TEST_PASS
+  const verb = options.verb ?? 'Play'
   const skillTask = (id: string, skill: SkillDef, label: string): TestTask => {
-    // Never faster than the skill aims for (a tempo stored by an earlier version can be above it).
-    const tempo = Math.min(skill.targetTempo, model.skills[skill.id]?.tempoCeiling || skill.startTempo)
+    const state = model.skills[skill.id]
+    const extra = options.paramsFor?.(skill, state) ?? {}
+    const steps = skill.steps ?? []
     const generatorId = skill.generators[0] ?? 'melody'
+    // Never faster than the skill aims for (a tempo stored by an earlier version can be above it)...
+    let tempo = Math.min(skill.targetTempo, state?.tempoCeiling || skill.startTempo)
+    // ...and never under its floor (a ceiling after rough rounds is eight tenths of what was asked).
+    const floor = options.minTempoOf ? options.minTempoOf(skill) : skill.minTempo
+    if (floor !== undefined) tempo = Math.max(tempo, floor)
+    const asked: Partial<ExerciseParams> = { ...extra }
+    let stepDifficulty: number | undefined
+    let instructions = `${verb} ${skill.name} at ${tempo} bpm.`
+    if (steps.length > 0) {
+      // A step skill is checked as it is practised: at its one tempo, on the step the learner has
+      // reached, as far as this learner can go. The limit travels with the task because the rating needs it.
+      tempo = skill.startTempo
+      const last = steps.length - 1
+      const maxStep = stepWithin(extra.maxStep, last, last)
+      const step = Math.min(stepWithin(state?.step, last, 0), maxStep)
+      asked.step = step
+      // Only a real limit is kept, as in a planned block: without one the ladder ends at its last step.
+      if (maxStep < last) asked.maxStep = maxStep
+      else delete asked.maxStep
+      // A step is one item wherever it is sung: rated as its exercise is in practice, by the step alone
+      // (docs/SINGING.md §6), not by the note values its drill happens to be written in.
+      stepDifficulty = itemDifficulty(skill, { tempo: skill.refTempo, bonus: steps[step].bonus })
+      // The step is named in the learner's words. The tempo is not theirs to change, so it is not named.
+      instructions = `${verb} ${skill.name}: ${steps[step].label}.`
+    }
+    const bars = Math.min(barsFor(tempo), options.maxBars ?? Infinity)
     // The check plays the drill the skill is practised with (its note values, hand position and technique),
-    // only longer, and is rated for those note values.
-    const params = exerciseParams(skill, generatorId, tempo, { bars: barsFor(tempo) })
+    // only longer, and is rated for those note values (on a ladder: for the step).
+    const params = exerciseParams(skill, generatorId, tempo, { ...asked, bars })
     return {
       id,
       title: `${label}: ${skill.name}`,
-      instructions: `Play ${skill.name} at ${tempo} bpm.`,
+      instructions,
       skillIds: [skill.id],
       generatorId,
       params,
-      difficulty: itemDifficulty(skill, { tempo, noteValue: params.noteValue }),
-      passCriteria: { ...TEST_PASS },
+      difficulty: stepDifficulty ?? itemDifficulty(skill, { tempo, noteValue: params.noteValue }),
+      passCriteria: { ...criteria },
     }
   }
 
@@ -259,12 +320,12 @@ export function checkpointTasks(
     tasks.push({
       id: 'checkpoint-03',
       title: `Stretch: ${stretch.song.title} (Level ${stretch.level + 1})`,
-      instructions: `Play ${stretch.song.title} at Level ${stretch.level + 1}, full speed.`,
+      instructions: `${verb} ${stretch.song.title} at Level ${stretch.level + 1}${options.songsHaveSpeeds === false ? '' : ', full speed'}.`,
       skillIds: [],
       generatorId: 'song',
       params: { tempo: stretch.song.bpm, bars: 0, songId: stretch.song.id, level: stretch.level },
       difficulty: 30 + 10 * stretch.level,
-      passCriteria: { ...TEST_PASS },
+      passCriteria: { ...criteria },
     })
   }
   return tasks
@@ -290,10 +351,10 @@ function stretchSong(model: LearnerModel, library: SongSummary[]): { song: SongS
   return { song: best.song, level: next }
 }
 
-/** Monthly test: placement ladder from one tier below the current tier upward. */
-export function monthlyTasks(model: LearnerModel, skills: SkillDef[]): TestTask[] {
+/** Monthly test: placement ladder (or the list given in `specs`) from one tier below the current tier upward. */
+export function monthlyTasks(model: LearnerModel, skills: SkillDef[], specs: LadderSpec[] = LADDER): TestTask[] {
   const fromTier = Math.max(1, playerTier(model, skills) - 1)
-  return placementLadder(skills).filter((t) => primarySkill(skills, t.skillIds[0]).tier >= fromTier)
+  return placementLadder(skills, specs).filter((t) => primarySkill(skills, t.skillIds[0]).tier >= fromTier)
 }
 
 /** Which skill check is due now, if any (docs §7). */

@@ -4,6 +4,7 @@ import { planSession } from './planner'
 import { SKILLS, SKILLS_BY_ID } from './skills'
 import type { LearnerModel, SkillState } from './types'
 import { COURSE } from '../lessons/course'
+import type { Lesson } from '../lessons/types'
 import { missingPrerequisites, openContextOf, skillOpener, taughtSkillIds } from './unlock'
 
 const NOW = new Date(2026, 5, 15, 10, 0, 0).getTime()
@@ -87,5 +88,30 @@ describe('one rule for "is this skill open"', () => {
     expect(names).toEqual(['chord.open'])
     const none = missingPrerequisites(SKILLS_BY_ID['chord.barre'], {}, SKILLS).map((s) => s.id)
     expect(none).toEqual(['chord.changes-open', 'chord.open', 'fret.cross-string', 'fret.single-string'])
+  })
+})
+
+describe('what the lessons taught, for a course that is given', () => {
+  // Stand-ins for three singing lessons: one runs a tool and drills nothing.
+  const lesson = (id: string, skillId?: string): Lesson =>
+    ({ id, drill: skillId ? { skillId } : null }) as unknown as Lesson
+  const course = [lesson('v01-voice'), lesson('v03-match', 'voice.pitch.match'), lesson('v04-steps', 'voice.pitch.steps'), lesson('v10-song', 'voice.pitch.match')]
+  const rows = [
+    { id: 'v01-voice', status: 'done' },
+    { id: 'v03-match', status: 'done' },
+    { id: 'v04-steps', status: 'available' },
+    { id: 'v10-song', status: 'done' },
+    { id: 'l01-hold', status: 'done' },
+  ]
+
+  it('reads the finished lessons of that course only: its drills, in its order, each skill once', () => {
+    expect(taughtSkillIds(rows, course)).toEqual(['voice.pitch.match'])
+    expect(taughtSkillIds(rows.map((r) => ({ ...r, status: 'done' })), course)).toEqual(['voice.pitch.match', 'voice.pitch.steps'])
+    expect(taughtSkillIds([], course)).toEqual([])
+  })
+
+  it('without a course it is the guitar course, as before: lesson rows of another course teach it nothing', () => {
+    expect(taughtSkillIds(rows)).toEqual(['basics.open-strings'])
+    expect(taughtSkillIds(rows)).toEqual(taughtSkillIds(rows, COURSE))
   })
 })

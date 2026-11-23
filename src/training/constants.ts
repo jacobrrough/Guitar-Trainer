@@ -134,6 +134,15 @@ export const REP_UP_ACCURACY = CEILING_MIN_ACCURACY
 export const REP_DOWN_ACCURACY = 0.75
 export const REP_FALLBACK_ACCURACY = 0.6
 
+/**
+ * Step skills (a skill with `steps`: one tempo, harder content step by step). The step practice starts
+ * from is to them what the tempo ceiling is to the others, and it moves on the same evidence:
+ * this many clean runs (CEILING_MIN_ACCURACY) among the recent ones, on a step or above it, open the next step...
+ */
+export const STEP_UP_CLEAN_RUNS = 2
+/** ...and this many runs in a row under REP_FALLBACK_ACCURACY, on the step reached or below it, go back one. */
+export const STEP_DOWN_LOW_RUNS = 3
+
 /** Focus selection (docs §6.3). */
 export const GOAL_WEIGHT_MATCH = 1.5
 export const GOAL_WEIGHT_OTHER = 0.6
@@ -157,6 +166,14 @@ export const CHECKPOINT_MIN_DAYS = 6
 export const CHECKPOINT_MIN_SESSIONS = 3
 export const MONTHLY_MIN_DAYS = 28
 export const TEST_PASS: { minAccuracy: number; maxMedianMs: number; maxStdevMs: number } = { minAccuracy: 0.85, maxMedianMs: 30, maxStdevMs: 60 }
+/**
+ * What passes a sung check (docs/SINGING.md §12.10). A note that is hit was sung in tune for most of its
+ * length. A singer who is inside the band on every note, but only just, earns "good" on each (0.8 a
+ * note): that is a pass, so the mark is 0.8 and not the 0.85 of a clean round.
+ * The two timing limits are set out of reach on purpose: when a sung note begins is measured, but it is
+ * no part of the verdict, so timing never fails a voice check.
+ */
+export const VOICE_TEST_PASS: { minAccuracy: number; maxMedianMs: number; maxStdevMs: number } = { minAccuracy: 0.8, maxMedianMs: 10000, maxStdevMs: 10000 }
 export const PLACEMENT_STOP_AFTER_FAILS = 2
 export const PLACEMENT_PASS_OFFSET = 10
 export const PLACEMENT_INHERIT_OFFSET = 15

@@ -3,6 +3,7 @@
  * milestones and the skill map, so the plan, the announcements and the picture never disagree.
  */
 import { COURSE } from '../lessons/course'
+import type { Lesson } from '../lessons/types'
 import { BEGINNER_MAX_RATING, UNLOCK_RATING } from './constants'
 import { effectiveRating } from './learner'
 import { prerequisitesSolid } from './skills'
@@ -44,10 +45,14 @@ export function skillOpener(skills: SkillDef[], ctx: OpenContext): (skill: Skill
   }
 }
 
-/** Skills the finished lessons of the First steps course drilled, in course order, read from the lesson rows. */
-export function taughtSkillIds(progress: { id: string; status: string }[]): string[] {
+/**
+ * Skills the finished lessons of the First steps course drilled, in course order, read from the lesson rows.
+ * `course` is the course to read them for (the guitar course unless another is given): the lesson
+ * table holds the rows of every course, and a row of another course teaches this one nothing.
+ */
+export function taughtSkillIds(progress: { id: string; status: string }[], course: Pick<Lesson, 'id' | 'drill'>[] = COURSE): string[] {
   const done = new Set(progress.filter((p) => p.status === 'done').map((p) => p.id))
-  return [...new Set(COURSE.filter((l) => done.has(l.id)).flatMap((l) => (l.drill ? [l.drill.skillId] : [])))]
+  return [...new Set(course.filter((l) => done.has(l.id)).flatMap((l) => (l.drill ? [l.drill.skillId] : [])))]
 }
 
 /** The numbers `skillOpener` needs, read from a learner model at a point in time. */

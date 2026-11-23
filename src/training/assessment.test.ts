@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  VOICE_CHECK_OPTIONS,
   applyPlacement,
   applyTestResults,
   checkpointTasks,
@@ -10,7 +12,9 @@ import {
   placementLadder,
   shouldStopPlacement,
 } from './assessment'
-import { UNLOCK_RATING } from './constants'
+import type { LadderSpec } from './assessment'
+import { TEST_PASS, UNLOCK_RATING, VOICE_TEST_PASS } from './constants'
+import { itemDifficulty } from './difficulty'
 import { DEFAULT_TUNING } from './exercises/builder'
 import { exerciseParams, generateExercise } from './exercises'
 import { SKILLS, SKILLS_BY_ID } from './skills'
@@ -450,5 +454,185 @@ describe('checks and the target tempo (real skill list)', () => {
     const task = tasks.find((t) => t.skillIds.includes(skill.id))!
     expect(task.params?.tempo).toBe(skill.targetTempo)
     expect(task.instructions).toContain(`${skill.targetTempo} bpm`)
+  })
+})
+
+describe('guitar: checks built with no options are the checks they were before singing', () => {
+  // Recorded from the task builders as they stood before they took any option (commit ad9a5de), on the real skill list.
+  // A task changed on purpose (a tempo, a drill, a sentence) changes a digest: the failing case prints the new one.
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16)
+  const library: SongSummary[] = [{ id: 7, title: 'Song', artist: 'X', duration: 100, bpm: 96, levelNoteCounts: [1, 2, 3, 4, 5, 6] }]
+  const learner: LearnerModel = {
+    ...model({ placementDoneAt: 1 }, [
+      state('fret.single-string', 82, { tempoCeiling: 92 }),
+      state('fret.chromatic', 76, { tempoCeiling: 200 }),
+      state('chord.open', 55, { tempoCeiling: 0 }),
+      state('pick.alternate-8', 61, { tempoCeiling: 84 }),
+      state('lead.vibrato', 90, { tempoCeiling: 80 }),
+    ]),
+    songItems: { '7:2': { key: '7:2', songId: 7, level: 2, bestAccuracy: 0.9, lastAt: 5, ease: 2.3, intervalDays: 1, weakBars: [] } },
+  }
+
+  it('placement, monthly and weekly tasks are unchanged', () => {
+    const weekly = ['chord.open', 'pick.alternate-8', 'lead.vibrato', 'no.such.skill'].flatMap((focus) => [3, 4, 5].map((day) => checkpointTasks(learner, SKILLS, library, day * DAY, focus)))
+    expect({
+      placement: digest(placementLadder(SKILLS)),
+      monthly: digest([monthlyTasks(learner, SKILLS), monthlyTasks(model(), SKILLS)]),
+      weekly: digest(weekly),
+    }).toEqual({ placement: '949e8577017d38a4', monthly: '55cf307786640c51', weekly: 'a280d5d000bbb265' })
+  })
+})
+
+describe('checks for another instrument: the options set the pace, the length, the pass mark and the words', () => {
+  // Stand-ins for two singing skills: one that climbs a ladder of steps at one tempo, one with a tempo floor.
+  const rungs: [string, number][] = [
+    ['4 beats', 0],
+    ['6 beats', 8],
+    ['8 beats', 16],
+    ['8 beats, closer', 24],
+  ]
+  const hold: SkillDef = {
+    ...def('voice.pitch.hold', 1),
+    name: 'Hold a note steady',
+    refTempo: 60,
+    startTempo: 60,
+    targetTempo: 60,
+    minTempo: 60,
+    steps: rungs.map(([label, bonus]) => ({ label, params: {}, bonus })),
+  }
+  const stepwise: SkillDef = { ...def('voice.pitch.steps', 1), name: 'Step up and down', refTempo: 66, startTempo: 60, targetTempo: 88, minTempo: 54 }
+  const voice = [hold, stepwise]
+  const tune: SongSummary = { id: 4, title: 'Hot Cross Buns', artist: '', duration: 30, bpm: 80, levelNoteCounts: [9, 9, 9, 9, 9, 9] }
+  const singer = (states: SkillState[]): LearnerModel => ({
+    ...model({}, states),
+    songItems: { '4:1': { key: '4:1', songId: 4, level: 1, bestAccuracy: 0.9, lastAt: 5, ease: 2.3, intervalDays: 0, weakBars: [] } },
+  })
+  const NOW = 20 * DAY
+  const focusTask = (states: SkillState[], focus: SkillDef, options?: Parameters<typeof checkpointTasks>[5], list = voice) => checkpointTasks(singer(states), list, [], NOW, focus.id, options)[0]
+
+  it('never asks for a tempo skill under its floor, and still never above its target', () => {
+    // A ceiling of 48 is what rough rounds at 60 leave behind (eight tenths).
+    const slow = focusTask([state('voice.pitch.steps', 50, { tempoCeiling: 48 })], stepwise)
+    expect(slow.params.tempo).toBe(54)
+    expect(slow.instructions).toBe('Play Step up and down at 54 bpm.')
+    expect(slow.difficulty).toBe(itemDifficulty(stepwise, { tempo: 54, noteValue: slow.params.noteValue }))
+    expect(focusTask([state('voice.pitch.steps', 50, { tempoCeiling: 200 })], stepwise).params.tempo).toBe(88)
+    // A skill that names no floor keeps the stored tempo, unless the caller knows of one.
+    const plain: SkillDef = { ...stepwise, minTempo: undefined }
+    expect(focusTask([state('voice.pitch.steps', 50, { tempoCeiling: 48 })], plain, undefined, [plain]).params.tempo).toBe(48)
+    expect(focusTask([state('voice.pitch.steps', 50, { tempoCeiling: 48 })], plain, { minTempoOf: () => 58 }, [plain]).params.tempo).toBe(58)
+    // And a floor given from outside wins over the skill's own.
+    expect(focusTask([state('voice.pitch.steps', 50, { tempoCeiling: 48 })], stepwise, { minTempoOf: () => 50 }).params.tempo).toBe(50)
+  })
+
+  it('asks for a step skill at its one tempo, on the step the learner has reached, and rates it for that step', () => {
+    const task = focusTask([state('voice.pitch.hold', 50, { step: 2, tempoCeiling: 48 })], hold, VOICE_CHECK_OPTIONS)
+    expect(task.params).toMatchObject({ tempo: 60, step: 2 })
+    expect('maxStep' in task.params).toBe(false)
+    // Tier base 20 and the 16 of the third step: what the same step is rated in practice.
+    expect(task.difficulty).toBe(36)
+    // The step is named in the learner's words; a tempo they cannot change is not.
+    expect(task.instructions).toBe('Sing Hold a note steady: 8 beats.')
+    // A ceiling above the one tempo changes nothing either, and a skill never sung starts on the first step.
+    expect(focusTask([state('voice.pitch.hold', 50, { step: 2, tempoCeiling: 90 })], hold, VOICE_CHECK_OPTIONS).params.tempo).toBe(60)
+    // It is the ladder that fixes the tempo, not the floor: a step skill that names no floor is not slowed down either.
+    const bare: SkillDef = { ...hold, minTempo: undefined }
+    expect(focusTask([state('voice.pitch.hold', 50, { step: 2, tempoCeiling: 48 })], bare, VOICE_CHECK_OPTIONS, [bare]).params).toMatchObject({ tempo: 60, step: 2 })
+    const first = focusTask([], hold, VOICE_CHECK_OPTIONS)
+    expect(first.params).toMatchObject({ tempo: 60, step: 0 })
+    expect(first.instructions).toBe('Sing Hold a note steady: 4 beats.')
+    expect(first.difficulty).toBe(20)
+  })
+
+  it('rates a step task by its step alone, whatever note values the drill is written in; a tempo task still counts them', () => {
+    // In practice a step is rated `tier base + bonus of the step` (docs/SINGING.md §6). A check of the
+    // same step must be the same item, or a pass in a check and a clean round would not mean the same.
+    const inWholeNotes = { ...VOICE_CHECK_OPTIONS, paramsFor: () => ({ noteValue: 'whole' as const }) }
+    const inSixteenths = { ...VOICE_CHECK_OPTIONS, paramsFor: () => ({ noteValue: 'sixteenth' as const }) }
+    const states = [state('voice.pitch.hold', 50, { step: 2 }), state('voice.pitch.steps', 50, { tempoCeiling: 66 })]
+    expect(focusTask(states, hold, inWholeNotes).params.noteValue).toBe('whole')
+    expect(focusTask(states, hold, inWholeNotes).difficulty).toBe(36)
+    expect(focusTask(states, hold, inSixteenths).difficulty).toBe(36)
+    // The tempo skill at its reference tempo: 20, less 10 for whole notes, plus 16 for sixteenths.
+    expect(focusTask(states, stepwise, inWholeNotes).difficulty).toBe(10)
+    expect(focusTask(states, stepwise, inSixteenths).difficulty).toBe(36)
+    // Rated at the reference tempo of the skill, as the exercise is, also where a ladder names another start.
+    const odd: SkillDef = { ...hold, refTempo: 60, startTempo: 66, targetTempo: 66, minTempo: 66 }
+    const task = focusTask([state('voice.pitch.hold', 50, { step: 1 })], odd, VOICE_CHECK_OPTIONS, [odd])
+    expect(task.params.tempo).toBe(66)
+    expect(task.difficulty).toBe(28)
+  })
+
+  it('adds what the caller knows about the learner to a task: the range, and the highest step it can hold', () => {
+    const paramsFor = (s: SkillDef) => (s.id === hold.id ? { maxStep: 1, low: 48, high: 55, easy: 52 } : {})
+    const capped = focusTask([state('voice.pitch.hold', 50, { step: 2 })], hold, { ...VOICE_CHECK_OPTIONS, paramsFor })
+    expect(capped.params).toMatchObject({ tempo: 60, step: 1, maxStep: 1, low: 48, high: 55, easy: 52 })
+    expect(capped.instructions).toBe('Sing Hold a note steady: 6 beats.')
+    expect(capped.difficulty).toBe(28)
+    // Below the limit the learner's own step stands; the limit still travels with the task, for the rating.
+    expect(focusTask([state('voice.pitch.hold', 50, { step: 0 })], hold, { ...VOICE_CHECK_OPTIONS, paramsFor }).params).toMatchObject({ step: 0, maxStep: 1 })
+    // The function is told whose task it is.
+    const seen: [string, number | undefined][] = []
+    focusTask([state('voice.pitch.hold', 50, { step: 2 })], hold, { paramsFor: (s, st) => (seen.push([s.id, st?.step]), {}) })
+    expect(seen).toEqual([['voice.pitch.hold', 2]])
+  })
+
+  it('caps the length of a task in bars', () => {
+    const fast = [state('voice.pitch.steps', 50, { tempoCeiling: 88 })]
+    expect(focusTask(fast, stepwise).params.bars).toBe(12)
+    expect(focusTask(fast, stepwise, { maxBars: 8 }).params.bars).toBe(8)
+    // A task that is shorter than the cap keeps its length.
+    expect(focusTask(fast, stepwise, { maxBars: 16 }).params.bars).toBe(12)
+    expect(focusTask([state('voice.pitch.hold', 50, { step: 1 })], hold, VOICE_CHECK_OPTIONS).params.bars).toBeLessThanOrEqual(8)
+  })
+
+  it('puts the pass mark on every task, the song included, and words every task for a singer', () => {
+    const states = [state('voice.pitch.hold', 80, { step: 1 }), state('voice.pitch.steps', 50, { tempoCeiling: 70 })]
+    const tasks = checkpointTasks(singer(states), voice, [tune], NOW, 'voice.pitch.steps', VOICE_CHECK_OPTIONS)
+    expect(tasks.map((t) => t.id)).toEqual(['checkpoint-01', 'checkpoint-02', 'checkpoint-03'])
+    for (const t of tasks) expect(t.passCriteria).toEqual({ minAccuracy: 0.8, maxMedianMs: 10000, maxStdevMs: 10000 })
+    expect(VOICE_CHECK_OPTIONS.criteria).toEqual(VOICE_TEST_PASS)
+    // A tempo skill may name its tempo; a step skill names its step; a song has one speed, so none is named.
+    expect(tasks.map((t) => t.instructions)).toEqual(['Sing Step up and down at 70 bpm.', 'Sing Hold a note steady: 6 beats.', 'Sing Hot Cross Buns at Level 3.'])
+    for (const t of tasks) expect(`${t.title} ${t.instructions}`).not.toMatch(/\b(play|played|guitar|strings?|speed|wrong|failed)\b/i)
+    // The pass marks are copies: changing one task does not change the options or the next task.
+    tasks[0].passCriteria.minAccuracy = 0
+    expect(VOICE_TEST_PASS.minAccuracy).toBe(0.8)
+    expect(tasks[1].passCriteria.minAccuracy).toBe(0.8)
+  })
+
+  it('with no options, or with the built-in ones named, the tasks are the guitar tasks', () => {
+    const library = [tune]
+    const m = singer([state('fret.single-string', 50, { tempoCeiling: 90 }), state('chord.open', 80, { tempoCeiling: 70 })])
+    const plain = checkpointTasks(m, skills, library, NOW, 'fret.single-string')
+    expect(plain).toHaveLength(3)
+    expect(plain.map((t) => t.instructions)).toEqual(['Play fret.single-string at 90 bpm.', 'Play chord.open at 70 bpm.', 'Play Hot Cross Buns at Level 3, full speed.'])
+    for (const t of plain) expect(t.passCriteria).toEqual(TEST_PASS)
+    expect(checkpointTasks(m, skills, library, NOW, 'fret.single-string', {})).toEqual(plain)
+    expect(checkpointTasks(m, skills, library, NOW, 'fret.single-string', { criteria: TEST_PASS, verb: 'Play', songsHaveSpeeds: true })).toEqual(plain)
+  })
+})
+
+describe('placement and monthly checks from a list the caller brings', () => {
+  const specs: LadderSpec[] = [
+    { title: 'One', instructions: 'Do one.', skillIds: ['fret.single-string'], generatorId: 'melody', params: { tempo: 60, noteValue: 'quarter' } },
+    { title: 'Two', instructions: 'Do two.', skillIds: ['lead.pent-boxes'], generatorId: 'melody', params: { tempo: 90, noteValue: 'eighth' }, bonus: 10 },
+  ]
+
+  it('builds the tasks of that list, numbered and rated like the built-in ones', () => {
+    const tasks = placementLadder(skills, specs)
+    expect(tasks.map((t) => [t.id, t.title, t.instructions, t.params.tempo, t.skillIds])).toEqual([
+      ['placement-01', 'One', 'Do one.', 60, ['fret.single-string']],
+      ['placement-02', 'Two', 'Do two.', 90, ['lead.pent-boxes']],
+    ])
+    expect(tasks[1].difficulty).toBe(itemDifficulty({ tier: 3, refTempo: 80 }, { tempo: 90, noteValue: 'eighth', bonus: 10 }))
+    // Without a list it is the ten guitar tasks, as before.
+    expect(placementLadder(skills)).toHaveLength(10)
+  })
+
+  it('the monthly check takes its tasks from the same list, from one tier below the player upwards', () => {
+    expect(monthlyTasks(model(), skills, specs).map((t) => t.title)).toEqual(['One', 'Two'])
+    expect(monthlyTasks(model({}, [state('lead.root', 70)]), skills, specs).map((t) => t.title)).toEqual(['Two'])
+    expect(monthlyTasks(model(), skills)).toHaveLength(10)
   })
 })

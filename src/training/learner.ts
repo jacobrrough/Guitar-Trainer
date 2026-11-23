@@ -13,12 +13,15 @@ import {
   LOW_CONFIDENCE_MULTIPLIER,
   RATING_GAIN,
   RATING_HEADROOM,
+  REP_FALLBACK_ACCURACY,
   START_TEMPO_RATING,
   REVIEW_START_EASE,
   RUST_GRACE_DAYS,
   RUST_MAX_POINTS,
   RUST_POINTS_PER_WEEK,
   SONG_FULL_SPEED,
+  STEP_DOWN_LOW_RUNS,
+  STEP_UP_CLEAN_RUNS,
   UNRELIABLE_K_DIVISOR,
 } from './constants'
 import type { Attempt, LearnerModel, MasteryBand, SkillDef, SkillState } from './types'
@@ -149,10 +152,90 @@ export function updateTempoCeiling(attempts: Attempt[], now = Date.now()): numbe
   return 0.8 * Math.min(...window.map((a) => a.playedTempo))
 }
 
+/** The last step of a skill's ladder; -1 for a skill without steps. */
+function lastStepOf(skill: SkillDef): number {
+  return (skill.steps?.length ?? 0) - 1
+}
+
+/**
+ * A step of a ladder read from a stored value (a state, the params of a block or of a run): a whole
+ * number from 0 to `top`, or `fallback` when the value is not a number. Stored steps are read through
+ * this everywhere, so a ladder that was shortened, or a row from an old backup, never points past its end.
+ */
+export function stepWithin(value: unknown, top: number, fallback: number): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback
+  return Math.min(top, Math.max(0, n))
+}
+
+/** The step a run of a step skill was on. A run that does not say counts as the first step: it proves the least. */
+function stepOfRun(attempt: Pick<Attempt, 'params'>, lastStep: number): number {
+  return stepWithin(attempt.params?.step, lastStep, 0)
+}
+
+/**
+ * Rating change for a run of a step skill (a skill with `steps`: one tempo, harder content step by
+ * step). It is `ratingDelta`, unchanged, with the ladder where the tempos are: the step of the run is
+ * the tempo played, the step below the one practice starts from is the ceiling (the highest step
+ * already shown), and the ladder runs from 0 to the highest step this learner can reach. So a gain stops
+ * RATING_HEADROOM above the difficulty of the step, no step below the top leads further than "solid"
+ * to just under "mastered", and only an accurate run on the top step carries the rating all the way.
+ *
+ * The top is the last step, or the limit the run carries (`params.maxStep`: a small voice range does
+ * not hold every step). Without that a singer with a small range could never finish the skill.
+ *
+ * Why not the tempos: a step skill has one tempo, its start and its target, so by the tempo rule every
+ * accurate run would be "at the target" and the easiest step would carry the rating to the top.
+ */
+function stepRatingDelta(state: SkillState, attempt: Attempt, lastStep: number): number {
+  const top = stepWithin(attempt.params?.maxStep, lastStep, lastStep)
+  const shown = Math.max(0, stepWithin(state.step, lastStep, 0) - 1)
+  return ratingDelta({ ...state, tempoCeiling: shown }, { ...attempt, playedTempo: stepOfRun(attempt, lastStep) }, { start: 0, target: top })
+}
+
+/**
+ * The step practice starts from, after this run: to a step skill what the tempo ceiling is to the others.
+ * Looked at are the CEILING_WINDOW_ATTEMPTS most recent runs of the last CEILING_WINDOW_DAYS that count
+ * (not scored from the speaker, not partial), this one included.
+ * - Up: this run was clean (CEILING_MIN_ACCURACY, and heard well enough to be relied on) and with it
+ *   there are STEP_UP_CLEAN_RUNS such runs on a step or above it: the step after that one is open.
+ *   A clean run on a step counts for the steps below it too. One step at a time, never past the top
+ *   (the last step, or the limit the run carries), and never down by this rule.
+ * - Down: the last STEP_DOWN_LOW_RUNS runs were all under REP_FALLBACK_ACCURACY, each on the step
+ *   reached or below it: one step back. Runs on a step above the one reached say nothing against it.
+ *   In a block the Coach follows a rough round with the step below, so those runs are on ever easier
+ *   steps and each further low one takes another step back: a learner under 60 % all the way down the
+ *   ladder starts from its first step next time. The first round that is not low stops it.
+ * A warm-up is sung cold and one step easier on purpose: it can raise the step, never lower it.
+ */
+function nextStep(state: SkillState, attempt: Attempt, lastStep: number, recentAttempts: Attempt[], now: number): number {
+  const current = stepWithin(state.step, lastStep, 0)
+  if (attempt.partial) return current
+  const cutoff = now - CEILING_WINDOW_DAYS * DAY_MS
+  const window = [...recentAttempts, attempt]
+    .filter((a) => !a.bleed && !a.partial && a.at >= cutoff && a.at <= now)
+    .sort((a, b) => b.at - a.at)
+    .slice(0, CEILING_WINDOW_ATTEMPTS)
+  const clean = (a: Attempt) => a.reliable && a.accuracy >= CEILING_MIN_ACCURACY
+  if (clean(attempt)) {
+    const top = stepWithin(attempt.params?.maxStep, lastStep, lastStep)
+    const cleanSteps = window.filter(clean).map((a) => stepOfRun(a, lastStep))
+    for (let s = stepOfRun(attempt, lastStep); s >= 0; s--) {
+      if (cleanSteps.filter((step) => step >= s).length >= STEP_UP_CLEAN_RUNS) return Math.max(current, Math.min(s + 1, top))
+    }
+    return current
+  }
+  if (attempt.kind === 'warmup') return current
+  const latest = window.slice(0, STEP_DOWN_LOW_RUNS)
+  const low = latest.length === STEP_DOWN_LOW_RUNS && latest.every((a) => a.accuracy < REP_FALLBACK_ACCURACY && stepOfRun(a, lastStep) <= current)
+  return low ? Math.max(0, current - 1) : current
+}
+
 /**
  * Returns a new state with the attempt applied. Confidence uses the incremental form of the
  * recency-weighted attempt count: c' = c * exp(-daysSinceLastPractice / 30) + 1.
  * A bleed attempt (the microphone heard the app's own guitar part) is no evidence, so the state comes back as it was.
+ * A skill with steps is rated on its ladder (`stepRatingDelta`) and keeps the step practice starts from
+ * (`nextStep`); for every other skill nothing here has changed, and its state never gets a `step`.
  */
 export function applyAttempt(
   state: SkillState,
@@ -162,7 +245,9 @@ export function applyAttempt(
   now = attempt.at,
 ): SkillState {
   if (attempt.bleed) return state
-  const rating = Math.min(100, Math.max(0, state.rating + ratingDelta(state, attempt, { start: skill.startTempo, target: skill.targetTempo })))
+  const lastStep = lastStepOf(skill)
+  const delta = lastStep >= 0 ? stepRatingDelta(state, attempt, lastStep) : ratingDelta(state, attempt, { start: skill.startTempo, target: skill.targetTempo })
+  const rating = Math.min(100, Math.max(0, state.rating + delta))
   const days = state.lastPracticedAt === undefined ? 0 : Math.max(0, (now - state.lastPracticedAt) / DAY_MS)
   const measured = updateTempoCeiling([...recentAttempts, attempt], now)
   // A warm-up is played cold and below the ceiling on purpose: it says nothing against the ceiling, so it
@@ -179,6 +264,7 @@ export function applyAttempt(
     lastPracticedAt: now,
     tempoCeiling: warmup ? Math.max(state.tempoCeiling, measured) : measured,
   }
+  if (lastStep >= 0) next.step = nextStep(state, attempt, lastStep, recentAttempts, now)
   if (attempt.kind === 'test') next.lastTestedAt = now
   return next
 }

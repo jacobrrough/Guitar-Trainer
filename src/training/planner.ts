@@ -1,11 +1,16 @@
 /**
  * Daily session planner (docs §6, §8). Pure functions over plain data: everything the planner needs
  * (skills, library, effective-rating function) is injected through PlannerInput.
+ *
+ * The planner plans for two instruments. Whatever is different for singing arrives as an optional
+ * field of PlannerInput, or an optional argument, whose default is what the guitar has always had: a
+ * guitar plan is the same down to the byte whether or not the other instrument exists (docs/SINGING.md §6).
  */
 import type {
   Attempt,
   Block,
   ExerciseBlock,
+  ExerciseParams,
   Goal,
   LearnerModel,
   Performance,
@@ -19,6 +24,7 @@ import type {
   SongSummary,
   TestBlock,
   TestType,
+  VoiceRange,
 } from './types'
 import {
   BEGINNER_MAX_RATING,
@@ -52,6 +58,7 @@ import {
   UNLOCK_RATING,
   WARMUP_COMFORT_RATING,
 } from './constants'
+import { stepWithin } from './learner'
 import { songLowStreak } from './review'
 import { prerequisitesSolid } from './skills'
 import { skillOpener } from './unlock'
@@ -82,6 +89,160 @@ export interface PlannerInput {
   quick?: boolean
   /** Effective-rating function (rust rule) injected from the learner module. */
   effectiveRating?: (state: SkillState, now: number) => number
+  /** Put before every block id, so two instruments can each have a plan for the same day. Default none. */
+  idPrefix?: string
+  /**
+   * Areas a warm-up may come from, most suitable first: the order decides between two skills that are
+   * otherwise alike. Default DEFAULT_WARMUP_CATEGORIES (picking, fretting, timing).
+   */
+  warmupCategories?: SkillCategory[]
+  /** The longest an exercise is written out, in bars (see `fitRounds`). Default 32. */
+  maxBars?: number
+  /** Minutes per block for each daily time; the day lasts what its template adds up to. Default SESSION_TEMPLATES. */
+  templates?: Record<Prefs['dailyMinutes'], SessionTemplate>
+  /** Speeds a song may be asked for, slowest first. Default SONG_SPEED_STEPS; with a single speed no song is ever slowed down. */
+  songSpeeds?: number[]
+  /** Areas left out of the whole day: warm-up, main and second exercise, recap, also a pinned skill. Default none. */
+  excludeCategories?: SkillCategory[]
+  /** Sentences that name the instrument or a speed. What is left out is the guitar's (GUITAR_PLANNER_COPY). */
+  copy?: PlannerCopyOverrides
+  /**
+   * Step skills: for each skill id, the highest step this learner can reach (see `maxStepFor`). A skill
+   * that is not named can reach its last step.
+   */
+  maxSteps?: Record<string, number>
+  /**
+   * What "never the very same drill twice in one session" compares. By 'generator' (default) two skills
+   * written by the same generator count as one drill; by 'skill' they do not, for an instrument whose
+   * skills share a few generators. By 'skill' the rule also holds beyond the second exercise: the
+   * warm-up moves to another skill when the main exercise is its skill, and the recaps of a comeback
+   * day leave the warm-up skill out, each where another skill will do.
+   */
+  sameDrillBy?: 'generator' | 'skill'
+  /** false: song blocks carry no loop of the bars that went badly. Default true. */
+  loopWeakBars?: boolean
+}
+
+/** Minutes per block of one session length. */
+export interface SessionTemplate {
+  warmup: number
+  focus: number
+  second: number
+  song: number
+  review: number
+  ear?: number
+}
+
+/** The sentences of a song block's reason. Levels are numbered as the learner sees them (1 = the easiest). */
+export interface SongCopy {
+  movedUp: (level: number) => string
+  wentBack: (level: number, to: number) => string
+  hardLastTime: (level: number) => string
+  wellBelowFullSpeed: (level: number) => string
+  cleared: (level: number) => string
+  morePractice: (level: number) => string
+  firstSong: string
+  newSong: string
+  mediumLevel: string
+  /** Added to any of the above on a day that is one level easier. */
+  easierToday: string
+  /** Added when the song is below full speed and the sentence before it does not say so. */
+  belowFullSpeed: string
+  weakBars: (first: number, last: number) => string
+}
+
+/**
+ * Every sentence of a plan that names the instrument, the hands, or a speed. The other sentences
+ * ("Your main exercise today", "A recap of something you already know") are the same for any instrument.
+ */
+export interface PlannerCopy {
+  /** Explanation line of a beginner's plan. */
+  firstSteps: string
+  /** How the reason of a second exercise begins. */
+  secondLead: string
+  /** Reason of the warm-up block. */
+  warmup: string
+  /** How the reason of an ear-training block begins. */
+  ear: (skillName: string) => string
+  /** Explanation line of a quick session after a break. */
+  comebackQuick: string
+  /** Explanation line of a comeback day; `percent` is how much slower tempos are. */
+  comebackDay: (percent: number) => string
+  severalSongs: (count: number) => string
+  song: SongCopy
+}
+
+export type PlannerCopyOverrides = Partial<Omit<PlannerCopy, 'song'>> & { song?: Partial<SongCopy> }
+
+/**
+ * The words every plan had before there was a second instrument, moved here unchanged. They are the
+ * default, so a guitar plan reads as it always did (the planner tests hold recorded plans against them).
+ */
+export const GUITAR_PLANNER_COPY: PlannerCopy = {
+  firstSteps: 'First steps: open strings and the first frets before anything faster.',
+  secondLead: 'Another exercise, to use your hands in a new way',
+  warmup: 'An easy first exercise to get your fingers used to the strings',
+  ear: (skillName) => `Ear training: ${skillName}. Listen, then find the note on your guitar`,
+  comebackQuick: 'Welcome back after a break: everything starts a little slower.',
+  comebackDay: (percent) => `Everything is ${percent} % slower and there are no skill checks today.`,
+  severalSongs: (count) => `${count} songs today, so you do not play one song over and over.`,
+  song: {
+    movedUp: (level) => `You played level ${level} well at full speed, so we are moving up a level`,
+    wentBack: (level, to) => `Level ${level} was too hard twice in a row, so we are going back to level ${to}`,
+    hardLastTime: (level) => `Level ${level} was hard last time, so we are taking it slower`,
+    wellBelowFullSpeed: (level) => `You played level ${level} well at a slower speed, so today it is a little faster`,
+    cleared: (level) => `You cleared level ${level}`,
+    morePractice: (level) => `Level ${level} still needs a bit more practice`,
+    firstSong: 'A song at an easy level, played slowly',
+    newSong: 'A song you have not played yet, at the level of your other songs',
+    mediumLevel: 'A song at a medium level',
+    easierToday: ' (one level easier today)',
+    belowFullSpeed: '; played a bit slower',
+    weakBars: (first, last) => ` We practise the tricky bars (${first}-${last}) first.`,
+  },
+}
+
+/**
+ * The same sentences for a singer. Nothing is "played", there are no hands, strings or frets, and a
+ * song has one speed, so no sentence promises a slower or a faster one: an easier day is "easier"
+ * (tempo skills slow down a little, step skills go one step back; "easier" is true of both).
+ */
+export const VOICE_PLANNER_COPY: PlannerCopy = {
+  firstSteps: 'First steps: easy notes in the middle of your voice before anything else.',
+  secondLead: 'Another exercise, to use your voice in a new way',
+  warmup: 'An easy first exercise to wake your voice up gently',
+  ear: (skillName) => `Listening: ${skillName}. Listen, then sing the note back`,
+  comebackQuick: 'Welcome back after a break: everything starts a little easier.',
+  comebackDay: () => 'Everything is a little easier and there are no skill checks today.',
+  severalSongs: (count) => `${count} songs today, so you do not sing one song over and over.`,
+  song: {
+    movedUp: (level) => `You sang level ${level} well, so we are moving up a level`,
+    wentBack: (level, to) => `Level ${level} was too hard twice in a row, so we are going back to level ${to}`,
+    hardLastTime: (level) => `Level ${level} was hard last time, so we are taking it once more`,
+    wellBelowFullSpeed: (level) => `You sang level ${level} well, so here it is once more`,
+    cleared: (level) => `You cleared level ${level}`,
+    morePractice: (level) => `Level ${level} still needs a bit more practice`,
+    firstSong: 'A song at an easy level, one line at a time',
+    newSong: 'A song you have not sung yet, at the level of your other songs',
+    mediumLevel: 'A song at a medium level',
+    easierToday: ' (one level easier today)',
+    belowFullSpeed: '; at an easier pace',
+    weakBars: (first, last) => ` We practise the tricky bars (${first}-${last}) first.`,
+  },
+}
+
+/** `given` on top of `defaults`; an entry given as undefined is an entry not given. */
+function withDefaults<T extends object>(defaults: T, given: Partial<T> | undefined): T {
+  const out = { ...defaults }
+  for (const [key, value] of Object.entries(given ?? {})) {
+    if (value !== undefined) (out as Record<string, unknown>)[key] = value
+  }
+  return out
+}
+
+function plannerCopy(given: PlannerCopyOverrides | undefined): PlannerCopy {
+  const { song, ...sentences } = given ?? {}
+  return { ...withDefaults<Omit<PlannerCopy, 'song'>>(GUITAR_PLANNER_COPY, sentences), song: withDefaults(GUITAR_PLANNER_COPY.song, song) }
 }
 
 const DAY_MS = 86_400_000
@@ -99,8 +260,17 @@ const READINESS_MIN = 0.6
 const READINESS_MAX = 1.0
 /** A recap does not come back while it was offered in one of this many sessions before today. */
 const RECAP_ROTATION_SESSIONS = 3
-/** Tie-break for the warm-up fallback: open-string picking is gentler than first fretting. */
-const WARMUP_CATEGORY_ORDER: SkillCategory[] = ['picking', 'fretting', 'timing']
+/**
+ * A first-steps skill that other skills build on is the warm-up again after this many days without
+ * practice: half the time a skill may rest before it starts to go rusty (RUST_GRACE_DAYS), so a learner
+ * who practises only now and then still meets it in time.
+ */
+const BASICS_REFRESH_DAYS = 7
+/**
+ * The areas a guitar warm-up comes from, and the tie-break for the warm-up fallback: open-string
+ * picking is gentler than first fretting.
+ */
+export const DEFAULT_WARMUP_CATEGORIES: SkillCategory[] = ['picking', 'fretting', 'timing']
 const BEATS_PER_BAR = 4
 /** The click counts this many beats before every round and every song pass. */
 const COUNT_IN_BEATS = 4
@@ -108,6 +278,8 @@ const COUNT_IN_BEATS = 4
 const ROUND_TAIL_SECONDS = 1
 /** An exercise is written out over this many bars: longer before it is repeated more often. */
 const ROUND_BARS = [4, 8, 16, 32]
+/** The longest an exercise is written out when the caller sets no limit. */
+const DEFAULT_MAX_BARS = 32
 /** Most rounds of one exercise in a block: past this a teacher would change the exercise, not repeat it. */
 export const MAX_ROUNDS = 6
 /** Ear training plays and waits for a fixed number of notes: about this long per round. */
@@ -178,8 +350,11 @@ export function focusPriority(
  * Tempo for the next rep (docs §6.4). `maxTempo` is the tempo the skill aims for: an exercise is never
  * asked for faster than that. Played cleanly there, the skill is done and the time belongs to the next one.
  * `heldBefore`: the round before this one was at the same tempo and in the in-between band as well.
+ * `minTempo` is the floor of the skill (`SkillDef.minTempo`) where it has one: a rough round at the
+ * floor is repeated at the floor. For a step skill floor, target and tempo are one number, so the
+ * tempo stays where it is whatever the round was like (its step moves instead: `nextRepStep`).
  */
-export function nextRepTempo(currentTempo: number, accuracy: number, sessionStartTempo: number, maxTempo = Infinity, heldBefore = false): number {
+export function nextRepTempo(currentTempo: number, accuracy: number, sessionStartTempo: number, maxTempo = Infinity, heldBefore = false, minTempo = MIN_TEMPO): number {
   let t = currentTempo
   if (accuracy >= REP_UP_ACCURACY) {
     const cap = sessionStartTempo * (1 + MAX_SESSION_TEMPO_GAIN)
@@ -189,7 +364,45 @@ export function nextRepTempo(currentTempo: number, accuracy: number, sessionStar
   } else if (heldBefore) {
     t = currentTempo * (1 - REP_TEMPO_EASE)
   }
-  return Math.max(MIN_TEMPO, Math.round(Math.min(t, maxTempo)))
+  return Math.max(minTempo, Math.round(Math.min(t, maxTempo)))
+}
+
+/**
+ * Step for the next rep of a step skill, the same rule as `nextRepTempo` on the ladder: a clean round
+ * is followed by the next step, at most one above the step the block started on (as the tempo gains at
+ * most 15 % in a session); a rough round by the step below, easier and never slower. `maxStep` is the
+ * highest step this learner can reach: the last of the ladder, or less where the voice's range is small.
+ * `heldBefore`: the round before this one was on the same step and in the in-between band as well. Then
+ * this one is followed by the step below, as the tempo eases after two such rounds: a learner who is
+ * clean on one step and nearly there on the next would otherwise spend every round of every block on the
+ * harder one, with no clean round at all. A caller that does not say gets the same step again.
+ */
+export function nextRepStep(currentStep: number, accuracy: number, startStep: number, maxStep = Infinity, heldBefore = false): number {
+  let step = currentStep
+  if (accuracy >= REP_UP_ACCURACY) step = Math.min(currentStep + 1, Math.max(startStep + 1, currentStep))
+  else if (accuracy < REP_DOWN_ACCURACY || heldBefore) step = currentStep - 1
+  return Math.max(0, Math.min(step, maxStep))
+}
+
+/**
+ * The highest step of a skill that a voice range can hold. Each step may say how many semitones it
+ * needs (`SkillStep.span`; a step that says nothing fits any range), and both ends of a range are notes
+ * that may be asked for, so a range holds a step when high - low is at least that span. A ladder is
+ * climbed one step at a time: nothing above the first step that does not fit can be reached. The first
+ * step is always within reach (it is built to fit the smallest range the app stores). Without a range
+ * every step is. A skill without steps has none: 0.
+ */
+export function maxStepFor(skill: SkillDef, range?: Pick<VoiceRange, 'low' | 'high'>): number {
+  const steps = skill.steps ?? []
+  if (steps.length === 0) return 0
+  if (!range) return steps.length - 1
+  const room = range.high - range.low
+  let reach = 0
+  for (let i = 1; i < steps.length; i++) {
+    if ((steps[i].span ?? 0) > room) break
+    reach = i
+  }
+  return reach
 }
 
 /** True for a round that was neither clean nor rough: the tempo neither rises nor falls after it. */
@@ -202,6 +415,18 @@ function maxTempoOf(block: ExerciseBlock): number {
   return typeof block.params.maxTempo === 'number' && block.params.maxTempo > 0 ? block.params.maxTempo : Infinity
 }
 
+/** The slowest an exercise block may be asked for, where its skill has a floor (stored with the block). */
+function minTempoOf(block: ExerciseBlock): number | undefined {
+  return typeof block.params.minTempo === 'number' && block.params.minTempo > 0 ? block.params.minTempo : undefined
+}
+
+/** Where a block of a step skill stands on its ladder; undefined for any other block. */
+function ladderOf(block: ExerciseBlock): { step: number; startStep: number; maxStep?: number } | undefined {
+  const { step, startStep, maxStep } = block.params
+  if (typeof step !== 'number') return undefined
+  return { step, startStep: typeof startStep === 'number' ? startStep : step, maxStep: typeof maxStep === 'number' ? maxStep : undefined }
+}
+
 /** Seconds one round of an exercise takes: the count-in, the bars, and the silence after them. */
 export function roundSeconds(tempo: number, bars: number): number {
   return ((bars * BEATS_PER_BAR + COUNT_IN_BEATS) * 60) / Math.max(1, tempo) + ROUND_TAIL_SECONDS
@@ -210,14 +435,19 @@ export function roundSeconds(tempo: number, bars: number): number {
 /**
  * Bars and rounds that fill `minutes` at `tempo`, so a block lasts about as long as it says.
  * The exercise gets longer before it gets more rounds, and never more than MAX_ROUNDS.
+ * `maxBars` is the longest one round may be: a voice needs its rests, so a sung round stops at 8 bars
+ * and a long block repeats it up to the round limit (the block is then shorter than its minutes).
  */
-export function fitRounds(minutes: number, tempo: number): { bars: number; reps: number } {
+export function fitRounds(minutes: number, tempo: number, maxBars = DEFAULT_MAX_BARS): { bars: number; reps: number } {
   const seconds = minutes * 60
-  for (const bars of ROUND_BARS) {
+  const fitting = ROUND_BARS.filter((bars) => bars <= maxBars)
+  // A limit under the shortest exercise there is still gets the shortest one.
+  const lengths = fitting.length > 0 ? fitting : [ROUND_BARS[0]]
+  for (const bars of lengths) {
     const reps = Math.round(seconds / roundSeconds(tempo, bars))
     if (reps <= MAX_ROUNDS) return { bars, reps: Math.max(1, reps) }
   }
-  return { bars: ROUND_BARS[ROUND_BARS.length - 1], reps: MAX_ROUNDS }
+  return { bars: lengths[lengths.length - 1], reps: MAX_ROUNDS }
 }
 
 /** Seconds one pass through a song takes at a speed, with its count-in. */
@@ -229,6 +459,15 @@ export function songPassSeconds(song: Pick<SongSummary, 'duration' | 'bpm'>, spe
 /** How often a song is played through in a block of `minutes`: at least once, at most MAX_SONG_PASSES. */
 export function fitSongPasses(minutes: number, song: Pick<SongSummary, 'duration' | 'bpm'>, speed: number): number {
   return clamp(Math.round((minutes * 60) / songPassSeconds(song, speed)), 1, MAX_SONG_PASSES)
+}
+
+/**
+ * The song as long as one pass of a level lasts. Where the levels of a song differ in length (a level
+ * that echoes each line lasts about twice the tune) the summary says so; otherwise it is the song's own length.
+ */
+function atLevel(song: SongSummary, level: number): Pick<SongSummary, 'duration' | 'bpm'> {
+  const seconds = song.levelDurations?.[level]
+  return { duration: typeof seconds === 'number' && seconds > 0 ? seconds : song.duration, bpm: song.bpm }
 }
 
 /** True for an ear-training exercise, in the ear block or as any other exercise: its rounds are questions, not bars. */
@@ -246,20 +485,20 @@ export function planPlayingMinutes(plan: Pick<SessionPlan, 'blocks'>, library: S
     if (b.kind === 'test') seconds += b.minutes * 60
     else if (b.kind === 'song') {
       const song = library.find((x) => x.id === b.songId)
-      seconds += song ? (b.passes ?? 1) * songPassSeconds(song, b.speed) : b.minutes * 60
+      seconds += song ? (b.passes ?? 1) * songPassSeconds(atLevel(song, b.level), b.speed) : b.minutes * 60
     } else if (isEarExercise(b, skills)) seconds += b.reps * EAR_ROUND_SECONDS
     else seconds += b.reps * roundSeconds(b.tempo, typeof b.params.bars === 'number' ? b.params.bars : EXERCISE_BARS)
   }
   return seconds / 60
 }
 
-/** The ladder speed at or just below `speed`, moved `steps` places (negative = slower). */
-function songSpeedStep(speed: number, steps: number): number {
+/** The ladder speed at or just below `speed`, moved `steps` places (negative = slower). With one speed on the ladder it is always that speed. */
+function songSpeedStep(speed: number, steps: number, ladder: number[] = SONG_SPEED_STEPS): number {
   let index = 0
-  SONG_SPEED_STEPS.forEach((step, i) => {
+  ladder.forEach((step, i) => {
     if (step <= speed + 1e-6) index = i
   })
-  return SONG_SPEED_STEPS[clamp(index + steps, 0, SONG_SPEED_STEPS.length - 1)]
+  return ladder[clamp(index + steps, 0, ladder.length - 1)]
 }
 
 /** What the most recent play of a level says. Items stored before speeds were tracked only know their best result. */
@@ -268,16 +507,31 @@ function lastSongPlay(item: SongItemState): { accuracy: number; speed: number; m
 }
 
 /** Speed for another go at a level: slower after a hard run, faster after a good one, otherwise the same. */
-function nextSongSpeed(item: SongItemState): number {
+function nextSongSpeed(item: SongItemState, ladder: number[] = SONG_SPEED_STEPS): number {
   const last = lastSongPlay(item)
-  if (last.accuracy < SONG_SLOW_DOWN_ACCURACY) return songSpeedStep(last.speed, -1)
-  if (last.accuracy >= SONG_TARGET_ACCURACY) return songSpeedStep(last.speed, 1)
-  return songSpeedStep(last.speed, 0)
+  if (last.accuracy < SONG_SLOW_DOWN_ACCURACY) return songSpeedStep(last.speed, -1, ladder)
+  if (last.accuracy >= SONG_TARGET_ACCURACY) return songSpeedStep(last.speed, 1, ladder)
+  return songSpeedStep(last.speed, 0, ladder)
 }
 
 /** When a song was last played at any level; -1 when never. */
 function lastPlayedAt(songItems: Record<string, SongItemState>, songId: number): number {
   return Object.values(songItems).reduce((m, i) => (i.songId === songId ? Math.max(m, i.lastAt ?? -1) : m), -1)
+}
+
+export interface SongBlockOptions {
+  /** Nothing played yet and new to the instrument: the first song starts at the sparsest level, at the gentlest speed. */
+  beginner?: boolean
+  /** The song of the block; without it the block carries on with the song played most recently. */
+  song?: SongSummary
+  /** Where a song that has never been played starts for a learner who has played others. */
+  startLevel?: number
+  /** Speeds a song may be asked for, slowest first. Default SONG_SPEED_STEPS. */
+  speeds?: number[]
+  /** Words of the reason; what is left out is the guitar's. */
+  copy?: Partial<SongCopy>
+  /** false: no loop of the bars that went badly, and no sentence about one. Default true. */
+  loopWeakBars?: boolean
 }
 
 export interface SongChoice {
@@ -326,15 +580,23 @@ export function pickSongs(library: SongSummary[], songItems: Record<string, Song
  * a good run at reduced speed makes it faster, a good run at full speed moves up a level,
  * a hard run slows it down, and two hard runs in a row go back one level. Plays below a level
  * that is cleared at full speed are left out, so replaying an easy version changes nothing.
+ *
+ * `options.speeds` are the speeds a song may be asked for; with a single speed the same rules move the
+ * level only, on a first day and on a comeback day too. `options.copy` words the reason, and
+ * `options.loopWeakBars: false` leaves out the loop of the bars that went badly. The passes are fitted
+ * to the level about to be played, where the levels of a song differ in length.
  */
 export function pickSongBlock(
   library: SongSummary[],
   songItems: Record<string, SongItemState>,
   minutes: number,
   levelOffset = 0,
-  options: { beginner?: boolean; song?: SongSummary; startLevel?: number } = {},
+  options: SongBlockOptions = {},
 ): SongBlock | null {
   if (library.length === 0) return null
+  const ladder = options.speeds && options.speeds.length > 0 ? options.speeds : SONG_SPEED_STEPS
+  const fullSpeedOf = ladder[ladder.length - 1]
+  const copy = withDefaults(GUITAR_PLANNER_COPY.song, options.copy)
   const itemsOf = (songId: number): SongItemState[] => Object.values(songItems).filter((i) => i.songId === songId)
   const lastActivity = (songId: number): number => lastPlayedAt(songItems, songId)
 
@@ -363,49 +625,56 @@ export function pickSongBlock(
 
   let level: number
   let why: string
-  let speed = 1
+  let speed = fullSpeedOf
   let firstSong = false
+  // The sentence already says what the speed is doing, so nothing about it is added after it.
+  let saysSpeed = false
   if (current) {
     const last = lastSongPlay(current)
     const here = current.level
     const fullSpeed = last.speed >= SONG_FULL_SPEED
     if (last.accuracy >= SONG_LEVEL_UP_ACCURACY && fullSpeed && here < maxLevel) {
       level = here + 1
-      why = `You played level ${here + 1} well at full speed, so we are moving up a level`
+      why = copy.movedUp(here + 1)
       const above = byLevel.get(level)
-      speed = above ? nextSongSpeed(above) : 1
+      speed = above ? nextSongSpeed(above, ladder) : fullSpeedOf
     } else if (last.accuracy < SONG_SLOW_DOWN_ACCURACY && last.misses >= SONG_LEVEL_DOWN_MISSES && here > 0) {
       level = here - 1
-      why = `Level ${here + 1} was too hard twice in a row, so we are going back to level ${here}`
+      why = copy.wentBack(here + 1, here)
       // Only the level changes: the speed stays where it was.
-      speed = songSpeedStep(last.speed, 0)
+      speed = songSpeedStep(last.speed, 0, ladder)
     } else {
       level = here
-      speed = nextSongSpeed(current)
-      if (last.accuracy < SONG_SLOW_DOWN_ACCURACY) why = `Level ${here + 1} was hard last time, so we are taking it slower`
-      else if (last.accuracy >= SONG_TARGET_ACCURACY && !fullSpeed) why = `You played level ${here + 1} well at a slower speed, so today it is a little faster`
-      else if (last.accuracy >= SONG_TARGET_ACCURACY) why = `You cleared level ${here + 1}`
-      else why = `Level ${here + 1} still needs a bit more practice`
+      speed = nextSongSpeed(current, ladder)
+      if (last.accuracy < SONG_SLOW_DOWN_ACCURACY) {
+        why = copy.hardLastTime(here + 1)
+        saysSpeed = true
+      } else if (last.accuracy >= SONG_TARGET_ACCURACY && !fullSpeed) {
+        why = copy.wellBelowFullSpeed(here + 1)
+        saysSpeed = true
+      } else if (last.accuracy >= SONG_TARGET_ACCURACY) why = copy.cleared(here + 1)
+      else why = copy.morePractice(here + 1)
     }
   } else if (options.beginner) {
     level = 0
-    why = 'A song at an easy level, played slowly'
-    speed = BEGINNER_SONG_SPEED
+    why = copy.firstSong
+    // The gentlest speed there is for a first song: three quarters, or the only speed of a one-speed ladder.
+    speed = songSpeedStep(BEGINNER_SONG_SPEED, 0, ladder)
     firstSong = true
   } else if (options.startLevel !== undefined) {
     level = clamp(options.startLevel, 0, maxLevel)
-    why = 'A song you have not played yet, at the level of your other songs'
+    why = copy.newSong
   } else {
     level = DEFAULT_SONG_LEVEL
-    why = 'A song at a medium level'
+    why = copy.mediumLevel
   }
   const shifted = clamp(level + levelOffset, 0, maxLevel)
   if (shifted !== level) {
     level = shifted
     const easier = byLevel.get(level)
-    if (easier && easier.bestAccuracy !== null) speed = Math.min(speed, nextSongSpeed(easier))
+    if (easier && easier.bestAccuracy !== null) speed = Math.min(speed, nextSongSpeed(easier, ladder))
   }
-  if (levelOffset < 0 && !firstSong) why += ' (one level easier today)'
+  if (levelOffset < 0 && !firstSong) why += copy.easierToday
 
   const item = byLevel.get(level)
   const block: SongBlock = {
@@ -416,12 +685,12 @@ export function pickSongBlock(
     songId: song.id,
     level,
     speed,
-    passes: fitSongPasses(minutes, song, speed),
-    reason: `${song.title}: ${why}${speed < 1 && !firstSong && !/slower|faster/.test(why) ? '; played a bit slower' : ''}.`,
+    passes: fitSongPasses(minutes, atLevel(song, level), speed),
+    reason: `${song.title}: ${why}${speed < 1 && !firstSong && !saysSpeed ? copy.belowFullSpeed : ''}.`,
   }
-  if (item && item.weakBars.length > 0) {
+  if (options.loopWeakBars !== false && item && item.weakBars.length > 0) {
     block.loopBars = [Math.min(...item.weakBars), Math.max(...item.weakBars)]
-    block.reason += ` We practise the tricky bars (${block.loopBars[0]}-${block.loopBars[1]}) first.`
+    block.reason += copy.weakBars(block.loopBars[0], block.loopBars[1])
   }
   return block
 }
@@ -430,15 +699,40 @@ function startTempoOf(skill: SkillDef, state: SkillState | undefined): number {
   return state && state.tempoCeiling > 0 ? state.tempoCeiling * START_TEMPO_FACTOR : skill.startTempo
 }
 
+/** Where a block of a step skill starts, and how far up its ladder this learner can go. */
+interface LadderStart {
+  step: number
+  maxStep: number
+  lastStep: number
+}
+
+/**
+ * `tempo` is what the rule that called asks for (a start tempo, nine tenths of it for a warm-up or
+ * after a break, a stored tempo for a recap). Every one of them ends here, so the limits of the skill
+ * hold whichever rule it was: never above the target, never under the floor, and for a step skill
+ * (`ladder`) the one tempo it has, because slower is not easier there. The step makes it easier instead.
+ */
 function makeExercise(
   kind: ExerciseKind,
   skill: SkillDef,
   minutes: number,
   tempo: number,
   reason: string,
+  ladder?: LadderStart,
 ): ExerciseBlock {
+  if (ladder) tempo = skill.startTempo
   // Never faster than the skill aims for, whatever an old ceiling says.
   tempo = Math.min(tempo, skill.targetTempo)
+  if (skill.minTempo !== undefined) tempo = Math.max(tempo, skill.minTempo)
+  const params: ExerciseParams = { tempo, bars: EXERCISE_BARS, startTempo: tempo, maxTempo: skill.targetTempo }
+  // The floor and the step are stored only for a skill that has them: every other block is as it always was.
+  if (skill.minTempo !== undefined) params.minTempo = skill.minTempo
+  if (ladder) {
+    params.step = ladder.step
+    params.startStep = ladder.step
+    // Only a real limit is stored: without one the ladder ends at its last step.
+    if (ladder.maxStep < ladder.lastStep) params.maxStep = ladder.maxStep
+  }
   return {
     id: '',
     kind,
@@ -446,7 +740,7 @@ function makeExercise(
     minutes,
     skillId: skill.id,
     generatorId: skill.generators[0] ?? '',
-    params: { tempo, bars: EXERCISE_BARS, startTempo: tempo, maxTempo: skill.targetTempo },
+    params,
     tempo,
     reps: 1,
     reason,
@@ -454,9 +748,9 @@ function makeExercise(
 }
 
 /** Sets the rounds, and the length of the exercise, from the block's minutes and tempo. */
-function withRounds(b: ExerciseBlock, ear: boolean): ExerciseBlock {
+function withRounds(b: ExerciseBlock, ear: boolean, maxBars?: number): ExerciseBlock {
   if (ear) return { ...b, reps: clamp(Math.round((b.minutes * 60) / EAR_ROUND_SECONDS), 1, MAX_ROUNDS) }
-  const { bars, reps } = fitRounds(b.minutes, b.tempo)
+  const { bars, reps } = fitRounds(b.minutes, b.tempo, maxBars)
   return { ...b, reps, params: { ...b.params, bars } }
 }
 
@@ -468,9 +762,11 @@ function reviewTempo(skill: SkillDef, state: SkillState | undefined, dayFactor: 
 /**
  * Warm-up skill that respects ability: the easiest comfortable (rated at least WARMUP_COMFORT_RATING) tier 0-1
  * fretting, picking or timing skill, otherwise the gentlest skill without prerequisites.
+ * `categories` names other areas to warm up in, most suitable first (the order breaks a tie between two
+ * skills that are otherwise alike).
  */
-export function pickWarmupSkill(skills: SkillDef[], ratings: Record<string, number>): SkillDef | undefined {
-  const pool = skills.filter((s) => s.category === 'fretting' || s.category === 'picking' || s.category === 'timing')
+export function pickWarmupSkill(skills: SkillDef[], ratings: Record<string, number>, categories: SkillCategory[] = DEFAULT_WARMUP_CATEGORIES): SkillDef | undefined {
+  const pool = skills.filter((s) => categories.includes(s.category))
   const rated = (s: SkillDef) => ratings[s.id] ?? 0
   const comfortable = pool
     .filter((s) => s.tier <= 1 && rated(s) >= WARMUP_COMFORT_RATING)
@@ -482,7 +778,7 @@ export function pickWarmupSkill(skills: SkillDef[], ratings: Record<string, numb
       (a, b) =>
         a.tier - b.tier ||
         a.startTempo - b.startTempo ||
-        WARMUP_CATEGORY_ORDER.indexOf(a.category) - WARMUP_CATEGORY_ORDER.indexOf(b.category) ||
+        categories.indexOf(a.category) - categories.indexOf(b.category) ||
         a.id.localeCompare(b.id),
     )
   return gentle[0] ?? skills.find((s) => s.tier <= 1)
@@ -513,7 +809,23 @@ export function planSession(input: PlannerInput): SessionPlan {
   const date = localDate(now)
   const comeback = input.daysSinceLastSession !== undefined && input.daysSinceLastSession >= COMEBACK_AFTER_DAYS
   const dayFactor = comeback ? COMEBACK_TEMPO_FACTOR : 1
+  // A day that slows tempo skills down takes step skills one step back: for them slower is not easier.
+  const dayStepsEasier = dayFactor < 1 ? 1 : 0
   const explanation: string[] = []
+  const idPrefix = input.idPrefix ?? ''
+  const copy = plannerCopy(input.copy)
+  const songOptions: SongBlockOptions = { speeds: input.songSpeeds, copy: copy.song, loopWeakBars: input.loopWeakBars }
+  const warmupCategories = input.warmupCategories ?? DEFAULT_WARMUP_CATEGORIES
+  // "The same drill" is the same skill, not the same generator (see `PlannerInput.sameDrillBy`).
+  const bySkill = input.sameDrillBy === 'skill'
+  const excluded = new Set(input.excludeCategories ?? [])
+  const allowed = (s: SkillDef) => !excluded.has(s.category)
+  // A table that lacks the learner's daily time falls back to the built-in one for it.
+  const tpl: SessionTemplate = input.templates?.[prefs.dailyMinutes] ?? SESSION_TEMPLATES[prefs.dailyMinutes]
+  const earMinutes = tpl.ear ?? 0
+  // The day lasts what its template adds up to. For the built-in templates that is the daily time the
+  // learner chose; an instrument that does not offer every length maps the others to one it does.
+  const dayMinutes = tpl.warmup + tpl.focus + tpl.second + tpl.song + tpl.review + earMinutes
 
   const finish = (blocks: Block[], factor: number): SessionPlan => {
     // Rounds and song passes are set last, from the minutes each block ended up with.
@@ -522,12 +834,12 @@ export function planSession(input: PlannerInput): SessionPlan {
       if (b.kind !== 'song') {
         // The same variation of a drill all day (and at every tempo), the next one the next day the skill comes up.
         const seeded = { ...b, params: { ...b.params, seed: input.practiceDays?.[b.skillId] ?? 0 } }
-        return withRounds(seeded, isEarExercise(b, skills))
+        return withRounds(seeded, isEarExercise(b, skills), input.maxBars)
       }
       const song = library.find((x) => x.id === b.songId)
-      return song ? { ...b, passes: fitSongPasses(b.minutes, song, b.speed) } : b
+      return song ? { ...b, passes: fitSongPasses(b.minutes, atLevel(song, b.level), b.speed) } : b
     }
-    const out = blocks.map((b, i) => ({ ...timed(b), id: `${date}-${i}-${b.kind}` }) as Block)
+    const out = blocks.map((b, i) => ({ ...timed(b), id: `${idPrefix}${date}-${i}-${b.kind}` }) as Block)
     return { date, minutes: out.reduce((s, b) => s + b.minutes, 0), dayFactor: factor, blocks: out, explanation: explanation.slice(0, 6) }
   }
 
@@ -547,6 +859,18 @@ export function planSession(input: PlannerInput): SessionPlan {
   }
 
   const stateOf = (id: string): SkillState | undefined => model.skills[id]
+  /**
+   * Where a block of a step skill starts: the step the learner has reached, as far as this learner can
+   * go (`maxSteps`: a small range does not hold every step), `easier` steps back and never under the
+   * first. Undefined for a skill without steps.
+   */
+  const ladderStart = (skill: SkillDef, easier: number): LadderStart | undefined => {
+    const lastStep = (skill.steps?.length ?? 0) - 1
+    if (lastStep < 0) return undefined
+    const maxStep = stepWithin(input.maxSteps?.[skill.id], lastStep, lastStep)
+    const reached = stepWithin(stateOf(skill.id)?.step, lastStep, 0)
+    return { step: Math.max(0, Math.min(reached, maxStep) - easier), maxStep, lastStep }
+  }
   const ratings: Record<string, number> = {}
   const rawRatings: Record<string, number> = {}
   for (const s of skills) {
@@ -576,11 +900,13 @@ export function planSession(input: PlannerInput): SessionPlan {
     (s) => inScope(s) && known(s) && ratings[s.id] < UNLOCK_RATING && attemptsOf(s.id) < FAMILIAR_ATTEMPTS,
   ).length
   const roomForNew = beingLearned < MAX_SKILLS_BEING_LEARNED
-  const open = unlockedSkills.filter((s) => inScope(s) && ratings[s.id] < MASTERED_RATING)
+  // An area that is left out today is left out of every choice below (and of the warm-up, the recap and the pin).
+  const choosable = unlockedSkills.filter(allowed)
+  const open = choosable.filter((s) => inScope(s) && ratings[s.id] < MASTERED_RATING)
   let candidates = open.filter((s) => roomForNew || known(s))
   if (candidates.length === 0) candidates = open
-  if (candidates.length === 0) candidates = unlockedSkills.filter(inScope)
-  if (candidates.length === 0) candidates = unlockedSkills
+  if (candidates.length === 0) candidates = choosable.filter(inScope)
+  if (candidates.length === 0) candidates = choosable
   // Prerequisites hold a skill back only while some of them are still shaky: not once the learner is practising it,
   // and not once everything under it is solid. Otherwise a first skill the player has just passed in a check
   // outranks the next thing to learn.
@@ -588,7 +914,7 @@ export function planSession(input: PlannerInput): SessionPlan {
   // Beginners do the tier 0 basics first, until they have had a fair amount of practice on them.
   const basicsFirst = (s: SkillDef) => (beginner && s.tier === 0 && attemptsOf(s.id) < FAMILIAR_ATTEMPTS ? 0 : 1)
   const ranked = [...candidates].sort((a, b) => basicsFirst(a) - basicsFirst(b) || priority(b) - priority(a))
-  const firstSteps = 'First steps: open strings and the first frets before anything faster.'
+  const firstSteps = copy.firstSteps
 
   // Focus selection
   const recent = input.recentFocusSkillIds ?? []
@@ -597,34 +923,61 @@ export function planSession(input: PlannerInput): SessionPlan {
   const pinned = prefs.pinnedSkillId ? skillById.get(prefs.pinnedSkillId) : undefined
   // The warm-up skill is chosen first so the focus and second blocks never repeat it.
   // Past beginner mode a comfortable tier 1 skill makes a better warm-up than the very first basics.
+  // The areas a warm-up comes from, and the areas left out today, hold in both places a warm-up is looked for.
+  const warmupPool = skills.filter(allowed)
   const comfortable = beginner
     ? []
-    : skills.filter((s) => s.tier === 1 && WARMUP_CATEGORY_ORDER.includes(s.category) && ratings[s.id] >= WARMUP_COMFORT_RATING)
-  const warmSkill = (comfortable.length > 0 ? pickWarmupSkill(comfortable, ratings) : undefined) ?? pickWarmupSkill(skills, ratings)
-  const sessionHasWarmup = !input.quick && SESSION_TEMPLATES[prefs.dailyMinutes].warmup > 0
+    : warmupPool.filter((s) => s.tier === 1 && warmupCategories.includes(s.category) && ratings[s.id] >= WARMUP_COMFORT_RATING)
+  // A first-steps skill that other skills build on is behind the learner as a main exercise, and it is
+  // no longer the warm-up once a skill one tier up is comfortable. Left alone it goes rusty, and a rusty
+  // prerequisite closes everything built on it (unlock.ts) with nothing in the plan to bring it back: a
+  // short day has no recap, and on a long one the recap goes to a review that is due first. So when it
+  // has not been practised for a week it is the warm-up of the day, well before any rust sets in.
+  // No first-steps skill of the guitar has anything built on it, so nothing changes there.
+  const builtOn = new Set(skills.flatMap((s) => s.prerequisites))
+  // Never practised (rated by a check, or in the set-up) is not "long ago": nothing has had time to fade.
+  const restingSince = (s: SkillDef) => stateOf(s.id)?.lastPracticedAt ?? Infinity
+  const fading = warmupPool
+    .filter((s) => s.tier === 0 && builtOn.has(s.id) && warmupCategories.includes(s.category) && nowMs - restingSince(s) > BASICS_REFRESH_DAYS * DAY_MS)
+    .sort((a, b) => restingSince(a) - restingSince(b))[0]
+  let warmSkill = fading ?? (comfortable.length > 0 ? pickWarmupSkill(comfortable, ratings, warmupCategories) : undefined) ?? pickWarmupSkill(warmupPool, ratings, warmupCategories)
+  const sessionHasWarmup = !input.quick && tpl.warmup > 0
   const notWarmup = (s: SkillDef) => !sessionHasWarmup || s.id !== warmSkill?.id
   // The longest session has a block of its own for ear training, so it does not also take the main or second exercise.
-  const sessionHasEar = !input.quick && SESSION_TEMPLATES[prefs.dailyMinutes].ear > 0
+  const sessionHasEar = !input.quick && earMinutes > 0
   const mainExercise = (s: SkillDef) => notWarmup(s) && !(sessionHasEar && s.category === 'ear')
   let focus: SkillDef | undefined
   let focusNote = ''
-  if (pinned && unlocked(pinned)) {
+  if (pinned && unlocked(pinned) && allowed(pinned)) {
     focus = pinned
     focusNote = 'You pinned it'
   } else {
     focus = ranked.find((s) => mainExercise(s) && !repeated(s.id)) ?? ranked.find(mainExercise) ?? ranked.find(notWarmup) ?? ranked[0]
     focusNote = ranked[0] && focus && ranked[0].id !== focus.id ? 'Next in line, so your practice stays varied' : 'It is the best fit for your goals'
   }
+  // Where "the same drill" means the same skill, the main exercise may still be the skill of the
+  // warm-up: it is pinned, or it is all that is in line (a day that leaves an area out, a learner with
+  // one skill past the basics). Then the warm-up moves to another skill, if one will do: one the
+  // learner is comfortable with, or one that builds on nothing. Only those: the last resort of
+  // `pickWarmupSkill` could name a skill that is not open yet.
+  if (bySkill && sessionHasWarmup && focus && focus.id === warmSkill?.id) {
+    const main = focus.id
+    const others = warmupPool.filter(
+      (s) => s.id !== main && s.tier <= 1 && warmupCategories.includes(s.category) && (ratings[s.id] >= WARMUP_COMFORT_RATING || s.prerequisites.length === 0),
+    )
+    const upper = beginner ? [] : others.filter((s) => s.tier === 1 && ratings[s.id] >= WARMUP_COMFORT_RATING)
+    warmSkill = pickWarmupSkill(upper.length > 0 ? upper : others, ratings, warmupCategories) ?? warmSkill
+  }
 
   const focusReason = (kind: 'focus' | 'second', skill: SkillDef, note: string): string => {
     const st = stateOf(skill.id)
-    const lead = kind === 'focus' ? 'Your main exercise today' : 'Another exercise, to use your hands in a new way'
+    const lead = kind === 'focus' ? 'Your main exercise today' : copy.secondLead
     return `${lead}; ${daysAgoText(st, nowMs)}. ${note}.`
   }
 
   const mkFocusLike = (kind: 'focus' | 'second', skill: SkillDef, minutes: number, note: string): ExerciseBlock => {
     const tempo = Math.max(MIN_TEMPO, Math.round(startTempoOf(skill, stateOf(skill.id)) * dayFactor))
-    return makeExercise(kind, skill, minutes, tempo, focusReason(kind, skill, note))
+    return makeExercise(kind, skill, minutes, tempo, focusReason(kind, skill, note), ladderStart(skill, dayStepsEasier))
   }
 
   // Songs: the time is shared between up to MAX_SONGS_PER_SESSION songs, each played a few times.
@@ -643,7 +996,7 @@ export function planSession(input: PlannerInput): SessionPlan {
     const chosen = pickSongs(library, model.songItems, count, songChoice)
     return chosen.flatMap((s, i) => {
       const share = Math.floor(minutes / chosen.length) + (i < minutes % chosen.length ? 1 : 0)
-      const block = pickSongBlock(library, model.songItems, share, 0, { beginner, song: s, startLevel })
+      const block = pickSongBlock(library, model.songItems, share, 0, { ...songOptions, beginner, song: s, startLevel })
       return block ? [block] : []
     })
   }
@@ -654,17 +1007,17 @@ export function planSession(input: PlannerInput): SessionPlan {
     if (!focus) return finish([], dayFactor)
     explanation.push(`Main exercise: ${focus.name}. ${focusNote}.`)
     if (beginner) explanation.push(firstSteps)
-    if (comeback) explanation.push('Welcome back after a break: everything starts a little slower.')
+    if (comeback) explanation.push(copy.comebackQuick)
     return finish([mkFocusLike('focus', focus, QUICK_MINUTES, focusNote)], dayFactor)
   }
 
-  const tpl = SESSION_TEMPLATES[prefs.dailyMinutes]
   const mkWarmup = (minutes: number): ExerciseBlock | null => {
     if (!warmSkill) return null
     const st = stateOf(warmSkill.id)
     const base = st && st.tempoCeiling > 0 ? st.tempoCeiling : warmSkill.startTempo
     const tempo = Math.max(WARMUP_MIN_TEMPO, Math.round(WARMUP_TEMPO_FACTOR * base))
-    return makeExercise('warmup', warmSkill, minutes, tempo, 'An easy first exercise to get your fingers used to the strings')
+    // A step skill warms up one step easier, on a comeback day as on any other: it is eased once, as the tempo is.
+    return makeExercise('warmup', warmSkill, minutes, tempo, copy.warmup, ladderStart(warmSkill, 1))
   }
 
   // Comeback session
@@ -672,12 +1025,13 @@ export function planSession(input: PlannerInput): SessionPlan {
     const drafts: Block[] = []
     const w = mkWarmup(tpl.warmup || 1)
     if (w) drafts.push(w)
-    const strongest = [...skills]
-      .filter((s) => stateOf(s.id) && inScope(s))
-      .sort((a, b) => ratings[b.id] - ratings[a.id] || a.tier - b.tier)
-      .slice(0, 2)
-    const total = prefs.dailyMinutes
-    const song = pickSongBlock(library, model.songItems, tpl.song, -1, { beginner })
+    const best = [...skills].filter((s) => stateOf(s.id) && inScope(s) && allowed(s)).sort((a, b) => ratings[b.id] - ratings[a.id] || a.tier - b.tier)
+    // Where "the same drill" means the same skill, the warm-up skill is not recapped as well while
+    // the learner knows two others: it would be the same exercise twice in a row.
+    const apart = bySkill && w ? best.filter((s) => s.id !== w.skillId) : best
+    const strongest = (apart.length >= 2 ? apart : best).slice(0, 2)
+    const total = dayMinutes
+    const song = pickSongBlock(library, model.songItems, tpl.song, -1, { ...songOptions, beginner })
     const songMin = song ? tpl.song : 0
     const pool = Math.max(strongest.length, total - (w ? w.minutes : 0) - songMin)
     strongest.forEach((s, i) => {
@@ -690,12 +1044,13 @@ export function planSession(input: PlannerInput): SessionPlan {
           share,
           reviewTempo(s, st, dayFactor),
           `A recap of something you are good at; ${daysAgoText(st, nowMs)}.`,
+          ladderStart(s, dayStepsEasier),
         ),
       )
     })
     if (song) drafts.push(song)
     explanation.push(`Welcome back after ${input.daysSinceLastSession} days away: an easy day to get back into it.`)
-    explanation.push(`Everything is ${Math.round((1 - COMEBACK_TEMPO_FACTOR) * 100)} % slower and there are no skill checks today.`)
+    explanation.push(copy.comebackDay(Math.round((1 - COMEBACK_TEMPO_FACTOR) * 100)))
     if (strongest.length > 0) explanation.push(`Recapping what you are best at: ${strongest.map((s) => s.name).join(', ')}.`)
     if (beginner) explanation.push(firstSteps)
     if (song) explanation.push(`A song one level easier than usual (level ${song.level + 1}).`)
@@ -716,8 +1071,9 @@ export function planSession(input: PlannerInput): SessionPlan {
   let second: SkillDef | undefined
   if (tpl.second > 0 && focus) {
     const others = ranked.filter((s) => s.id !== focus.id && mainExercise(s))
-    // A different area, and never the very same drill twice in one session.
-    const otherDrill = (s: SkillDef) => s.generators[0] !== focus.generators[0]
+    // A different area, and never the very same drill twice in one session. Where many skills are
+    // written by one generator, another skill is another drill (`others` never holds the main skill).
+    const otherDrill = (s: SkillDef) => input.sameDrillBy === 'skill' || s.generators[0] !== focus.generators[0]
     second = others.find((s) => s.category !== focus.category && otherDrill(s)) ?? others.find(otherDrill) ?? others[0]
   }
   if (tpl.second > 0 && !second) extra += tpl.second
@@ -729,9 +1085,9 @@ export function planSession(input: PlannerInput): SessionPlan {
   if (tpl.song > 0 && !song) extra += tpl.song
 
   let ear: SkillDef | undefined
-  if (tpl.ear > 0) {
-    ear = unlockedSkills.find((s) => s.category === 'ear' && !inPlan.has(s.id))
-    if (!ear) extra += tpl.ear
+  if (earMinutes > 0) {
+    ear = choosable.find((s) => s.category === 'ear' && !inPlan.has(s.id))
+    if (!ear) extra += earMinutes
     // It has its own block: not the recap of the same day as well.
     else inPlan.add(ear.id)
   }
@@ -762,8 +1118,12 @@ export function planSession(input: PlannerInput): SessionPlan {
   const needReview = reviewMinutes > 0 && !(checkpoint && !second)
   if (needReview) {
     // Anything the learner has practised can come back as a recap, also a harder skill met in a lesson.
-    const recapScope = (s: SkillDef) => inScope(s) || (beginner && attemptsOf(s.id) > 0 && unlocked(s))
-    const all = skills.filter((s) => stateOf(s.id) && !inPlan.has(s.id) && recapScope(s))
+    // So can a first-steps skill that other skills build on, although it is behind the learner as a main
+    // exercise: the warm-up keeps it from going rusty (see `fading` above), and a recap now and then, at
+    // full length and on the step the learner has reached, is how it is finished like any other skill.
+    // No first-steps skill of the guitar has anything built on it, so nothing changes there.
+    const recapScope = (s: SkillDef) => inScope(s) || (beginner && attemptsOf(s.id) > 0 && unlocked(s)) || (s.tier === 0 && builtOn.has(s.id))
+    const all = skills.filter((s) => stateOf(s.id) && !inPlan.has(s.id) && recapScope(s) && allowed(s))
     // A recap that was offered in the last few sessions waits its turn, also when it was skipped:
     // skipping leaves no trace in the practice dates, so they alone would offer it again and again.
     const offered = new Set((input.recentRecapSkillIds ?? []).slice(0, RECAP_ROTATION_SESSIONS))
@@ -791,7 +1151,7 @@ export function planSession(input: PlannerInput): SessionPlan {
           : 'A recap of something you already know'
       // A skill rated by the first check has no practice date yet, so there is nothing to add.
       const reason = st?.lastPracticedAt ? `${why}; ${daysAgoText(st, nowMs)}.` : `${why}.`
-      push('review', reviewMinutes, makeExercise('review', pick, reviewMinutes, reviewTempo(pick, st, dayFactor), reason))
+      push('review', reviewMinutes, makeExercise('review', pick, reviewMinutes, reviewTempo(pick, st, dayFactor), reason, ladderStart(pick, dayStepsEasier)))
     } else {
       const sink = drafts.find((d) => d.kind === 'focus')
       if (sink) sink.minutes += reviewMinutes
@@ -802,15 +1162,14 @@ export function planSession(input: PlannerInput): SessionPlan {
   }
   if (ear) {
     const st = stateOf(ear.id)
-    const reason = `Ear training: ${ear.name}. Listen, then find the note on your guitar; ${daysAgoText(st, nowMs)}.`
-    push('ear', tpl.ear, makeExercise('ear', ear, tpl.ear, reviewTempo(ear, st, dayFactor), reason))
+    const reason = `${copy.ear(ear.name)}; ${daysAgoText(st, nowMs)}.`
+    push('ear', earMinutes, makeExercise('ear', ear, earMinutes, reviewTempo(ear, st, dayFactor), reason, ladderStart(ear, dayStepsEasier)))
   }
   if (checkpoint && !drafts.some((d) => d.kind === 'test')) {
     push('test', CHECKPOINT_MINUTES, testBlock('checkpoint', CHECKPOINT_MINUTES))
   }
 
-  const target = prefs.dailyMinutes
-  rebalance(drafts, target)
+  rebalance(drafts, dayMinutes)
   const blocks = drafts.map((d) => ({ ...(d.block as Block), minutes: d.minutes }) as Block)
 
   if (monthly) explanation.push('Monthly skill check today: it replaces the main and second exercises.')
@@ -819,7 +1178,7 @@ export function planSession(input: PlannerInput): SessionPlan {
   if (second && !checkpoint && !monthly) explanation.push(`Another exercise: ${second.name}, from a different area.`)
   if (song) explanation.push(song.reason)
   else explanation.push('No songs in your library yet, so that time goes to exercises.')
-  if (songs.length > 1) explanation.push(`${songs.length} songs today, so you do not play one song over and over.`)
+  if (songs.length > 1) explanation.push(copy.severalSongs(songs.length))
   if (checkpoint) explanation.push('A quick weekly skill check is part of today.')
   if (input.daysSinceLastSession === undefined) explanation.push('First session: starting gently.')
   return finish(blocks, dayFactor)
@@ -837,8 +1196,25 @@ function withTempo(b: ExerciseBlock, tempo: number, startTempo: number): Exercis
   return { ...b, tempo, params: { ...b.params, tempo, startTempo } }
 }
 
-/** Marks a block done and adapts the remaining pending blocks (docs §6.4). Returns a new plan. */
-export function adaptAfterBlock(plan: SessionPlan, blockId: string, attempt: Attempt, performance: Performance): SessionPlan {
+function withStep(b: ExerciseBlock, step: number, startStep: number): ExerciseBlock {
+  return { ...b, params: { ...b.params, step, startStep } }
+}
+
+/**
+ * Marks a block done and adapts the remaining pending blocks (docs §6.4). Returns a new plan.
+ *
+ * Tempo blocks follow the day factor and the result of an earlier block of the same skill, as before,
+ * and now stop at the floor of their skill as they stop at its target. Step blocks never change tempo:
+ * - after a rough warm-up (under REP_DOWN_ACCURACY) on a day that was not planned easier already, they
+ *   start one step easier. A warm-up that was only in between slows tempos by a few bpm; a whole step
+ *   would be too much for that, and a clean warm-up after a break does not put a step back either: the
+ *   first clean round does (`nextRepStep`);
+ * - after a block of the same skill they move as the next round would. A step is raised only up to a
+ *   limit that is known: the one stored with the block (`params.maxStep`), else the last step of the
+ *   skill found in `skills`. With neither, a clean block leaves the step where it is, so no block is
+ *   ever asked for a step its ladder does not have.
+ */
+export function adaptAfterBlock(plan: SessionPlan, blockId: string, attempt: Attempt, performance: Performance, skills: SkillDef[] = []): SessionPlan {
   void attempt
   const done = plan.blocks.find((b) => b.id === blockId)
   if (!done) return { ...plan, blocks: plan.blocks.map((b) => ({ ...b })), explanation: [...plan.explanation] }
@@ -847,17 +1223,30 @@ export function adaptAfterBlock(plan: SessionPlan, blockId: string, attempt: Att
   const isWarmup = done.kind === 'warmup'
   if (isWarmup) dayFactor = dayFactorFor(performance.acc)
   const ratio = plan.dayFactor > 0 ? dayFactor / plan.dayFactor : 1
+  const stepsEasier = isWarmup && ratio < 1 && performance.acc < REP_DOWN_ACCURACY ? 1 : 0
 
   const blocks = plan.blocks.map((b): Block => {
     if (b.id === blockId) return { ...b, status: 'done' }
     if (!isExercise(b) || b.status !== 'pending') return { ...b }
+    const ladder = ladderOf(b)
+    if (ladder) {
+      if (isWarmup) return stepsEasier > 0 ? withStep(b, Math.max(0, ladder.step - stepsEasier), Math.max(0, ladder.startStep - stepsEasier)) : { ...b }
+      if (isExercise(done) && b.skillId === done.skillId) {
+        const steps = skills.find((s) => s.id === b.skillId)?.steps
+        const top = ladder.maxStep ?? (steps && steps.length > 0 ? steps.length - 1 : ladder.step)
+        return withStep(b, nextRepStep(ladder.step, performance.acc, ladder.startStep, top), ladder.startStep)
+      }
+      return { ...b }
+    }
     const start = typeof b.params.startTempo === 'number' ? b.params.startTempo : b.tempo
     if (isWarmup) {
       const max = maxTempoOf(b)
-      return withTempo(b, Math.min(max, Math.round(b.tempo * ratio)), Math.min(max, Math.round(start * ratio)))
+      // No floor stored = no floor here, as before (the general floor is applied where a tempo is first set).
+      const min = minTempoOf(b) ?? -Infinity
+      return withTempo(b, Math.max(min, Math.min(max, Math.round(b.tempo * ratio))), Math.max(min, Math.min(max, Math.round(start * ratio))))
     }
     if (isExercise(done) && b.skillId === done.skillId) {
-      return withTempo(b, nextRepTempo(b.tempo, performance.acc, start, maxTempoOf(b)), start)
+      return withTempo(b, nextRepTempo(b.tempo, performance.acc, start, maxTempoOf(b), false, minTempoOf(b)), start)
     }
     return { ...b }
   })
