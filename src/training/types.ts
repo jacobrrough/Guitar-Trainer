@@ -6,10 +6,32 @@
  */
 import type { Chart } from '../chart/types'
 
-export type SkillCategory = 'fretting' | 'picking' | 'chords' | 'lead' | 'timing' | 'ear'
+/**
+ * Which side of the app a stored row belongs to. Rows stored before singing existed carry no stamp and
+ * read as guitar: always go through `instrumentOf` (src/training/instruments.ts), never compare the field.
+ */
+export type InstrumentId = 'guitar' | 'voice'
+
+/** The last three are the singing categories ("Staying in tune", "Higher and lower", "Breath"). */
+export type SkillCategory = 'fretting' | 'picking' | 'chords' | 'lead' | 'timing' | 'ear' | 'pitch' | 'range' | 'breath'
 export type NoteValue = 'whole' | 'half' | 'quarter' | 'eighth' | 'sixteenth' | 'triplet'
 export type Goal = 'songs' | 'rhythm' | 'lead' | 'technique' | 'all-round'
 export type MasteryBand = 'new' | 'learning' | 'developing' | 'solid' | 'mastered'
+
+/**
+ * One rung of a step ladder. Where slower is not easier (a held note, a slide, a longer line), a skill
+ * keeps one tempo and its content gets harder step by step instead.
+ */
+export interface SkillStep {
+  /** What this step asks for, in the learner's words (e.g. "6 beats"); shown on round cards and milestones. */
+  label: string
+  /** Generator params that make this step. */
+  params: Record<string, unknown>
+  /** Added to the item difficulty at this step. */
+  bonus: number
+  /** Semitones of range the step needs; absent = fits any stored range. */
+  span?: number
+}
 
 export interface SkillDef {
   id: string
@@ -28,6 +50,10 @@ export interface SkillDef {
   tips: string[]
   /** Exercise generator ids usable for this skill; the first is the default. */
   generators: string[]
+  /** The Coach never asks for this skill under this tempo; absent = the planner's general floor. */
+  minTempo?: number
+  /** Step ladder, easiest first. A skill with steps is practised at one fixed tempo (ref = start = target). */
+  steps?: SkillStep[]
 }
 
 export interface SkillState {
@@ -48,6 +74,11 @@ export interface SkillState {
   plateauStep: number
   pinned?: boolean
   attempts: number
+  /**
+   * Skills with a step ladder: the step practice starts from (index into `SkillDef.steps`), which is to
+   * them what the tempo ceiling is to the others. Absent = 0.
+   */
+  step?: number
 }
 
 export type AttemptKind = 'warmup' | 'practice' | 'song' | 'review' | 'test'
@@ -87,6 +118,13 @@ export interface AttemptResult {
    * speed on the way, or the microphone was off or silent for a stretch. Practice, not a result.
    */
   partial?: boolean
+  /**
+   * Sung runs only. `medianCents`: median distance from the written notes in cents, octave folded
+   * (negative = under the note); null when there was nothing to measure. `topMissed`: missed notes among
+   * the top three semitones of the piece that came out low or were not heard, the sign that the key
+   * sits too high.
+   */
+  voice?: { medianCents: number | null; topMissed: number }
 }
 
 export interface Performance {
@@ -120,6 +158,8 @@ export interface Attempt extends AttemptResult {
   sessionId?: number
   /** Skill rating after this attempt was applied (for progress charts and plateau detection). */
   ratingAfter?: number
+  /** Absent = guitar. */
+  instrument?: InstrumentId
 }
 
 export interface ExerciseParams {
@@ -189,6 +229,8 @@ export interface SongItemState {
   lastSpeed?: number
   /** How many plays in a row, up to the most recent, scored under the slow-down accuracy. */
   lowStreak?: number
+  /** Absent = guitar. */
+  instrument?: InstrumentId
 }
 
 export interface SongSummary {
@@ -202,6 +244,10 @@ export interface SongSummary {
   /** Bundled songs: its id, and the lesson after which a beginner can play it (1 = after lesson 1). */
   builtinId?: string
   lessonLevel?: number
+  /** Seconds one pass lasts at each level index, where levels differ in length (an echo level lasts about twice the tune); absent = `duration`. */
+  levelDurations?: number[]
+  /** Absent = guitar. */
+  instrument?: InstrumentId
 }
 
 export interface Prefs {
@@ -210,8 +256,39 @@ export interface Prefs {
   pinnedSkillId?: string
 }
 
+/**
+ * A singer's comfortable notes, as MIDI numbers. `low` and `high` are both inclusive: every note the app
+ * asks for satisfies low <= midi <= high. The headroom is already taken off, so nothing is added or
+ * subtracted when a song or an exercise is placed.
+ */
+export interface VoiceRange {
+  /** Lowest note asked for (inclusive MIDI number). */
+  low: number
+  /** Highest note asked for (inclusive MIDI number). */
+  high: number
+  /** The note that feels easiest; exercises start around it. */
+  easy: number
+  /** The edges the range finder heard, before the headroom was taken off. */
+  measuredLow?: number
+  measuredHigh?: number
+  /** 'measured' by the range finder, 'default' = a starting range the app chose instead, 'manual' = moved by hand ("a bit lower", "a bit higher"). */
+  source: 'measured' | 'default' | 'manual'
+  /** When it was set, ms since epoch. */
+  at: number
+}
+
+/** What only the singing profile (row 2) carries. It lives here, not in the settings, because backups do not carry settings. */
+export interface VoiceProfile {
+  range?: VoiceRange
+  /** Semitones a song is moved away from its chosen key, by bundled song id (-3 to +3). */
+  keyNudge?: Record<string, number>
+  /** The local date (YYYY-MM-DD) on which the singer said "My voice is tired". */
+  tiredOn?: string
+}
+
 export interface Profile {
-  id: 1
+  /** Row 1 is the guitar profile, row 2 the singing profile (see `profileIdFor`). */
+  id: 1 | 2
   goals: Goal[]
   dailyMinutes: 10 | 20 | 30 | 45
   startedAt: number
@@ -231,6 +308,10 @@ export interface Profile {
   goalSongId?: string
   /** Revision of the drills the stored tempos were earned on (see migrate.ts); missing = before revisions. */
   drillRev?: number
+  /** Absent = guitar. */
+  instrument?: InstrumentId
+  /** Singing profile only: range, key choices and the tired mark. */
+  voice?: VoiceProfile
 }
 
 export interface LearnerModel {
@@ -301,6 +382,12 @@ export interface SessionRecord {
   completedBlockIds: string[]
   startedAt: number
   finishedAt?: number
+  /**
+   * One session per instrument and day (unique index `[instrument+date]`). `saveSession` stamps every row
+   * it stores. A row without the stamp sits outside that index: write a session through `saveSession`, or
+   * with the stamp already on it.
+   */
+  instrument?: InstrumentId
 }
 
 export type TestType = 'placement' | 'checkpoint' | 'monthly'
@@ -337,6 +424,8 @@ export interface TestRecord {
   tasks: TestTask[]
   results: TestTaskResult[]
   report: TestReport
+  /** Absent = guitar. */
+  instrument?: InstrumentId
 }
 
 export interface TestReport {
@@ -382,4 +471,6 @@ export interface Milestone {
   value?: number
   /** Dedupe key (unique index): the same milestone is stored once, e.g. `band:fret.chromatic:2`. */
   key: string
+  /** Absent = guitar. */
+  instrument?: InstrumentId
 }

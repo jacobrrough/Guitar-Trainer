@@ -459,6 +459,9 @@ export const CATEGORY_LABELS: Record<SkillCategory, string> = {
   lead: 'Lead',
   timing: 'Timing',
   ear: 'Ear',
+  pitch: 'Staying in tune',
+  range: 'Higher and lower',
+  breath: 'Breath',
 }
 
 export function getSkill(id: string): SkillDef {

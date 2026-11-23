@@ -3,8 +3,9 @@ import { COURSE } from '../lessons/course'
 import { initialiseCourse } from '../lessons/store'
 import type { LessonProgress } from '../lessons/types'
 import { DRILL_REV } from './constants'
+import { instrumentOfBlockId } from './instruments'
 import { migrateStoredTempos } from './migrate'
-import type { Attempt, LearnerModel, Milestone, Profile, SessionRecord, SkillState, SongItemState, TestRecord } from './types'
+import type { Attempt, InstrumentId, LearnerModel, Milestone, Profile, SessionRecord, SkillState, SongItemState, TestRecord } from './types'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 // Lesson progress belongs here too: the profile says whether the course is running, and the two must be reset, saved and restored together.
@@ -137,8 +138,36 @@ export function getSession(date: string): Promise<SessionRecord | undefined> {
   return db.sessions.where('date').equals(date).first()
 }
 
+/**
+ * The instrument a session belongs to: what the record says, else what the ids of its blocks say (singing
+ * blocks carry a prefix; a plan without blocks is a guitar plan). The two have to agree. A record stamped
+ * for one instrument with the other's blocks was put together wrongly, and saving it would show a plan
+ * to the wrong side of the app.
+ */
+function sessionInstrument(record: SessionRecord): InstrumentId {
+  const first = record.plan.blocks[0]
+  const fromBlocks = first ? instrumentOfBlockId(first.id) : undefined
+  if (record.instrument !== undefined && fromBlocks !== undefined && record.instrument !== fromBlocks) {
+    throw new Error(`Session of ${record.date} is stamped ${record.instrument} but holds ${fromBlocks} blocks`)
+  }
+  return record.instrument ?? fromBlocks ?? 'guitar'
+}
+
+/**
+ * Every saved session says which instrument it belongs to: the index that keeps one plan per instrument
+ * and day only sees rows that do, so an unstamped row would let a second plan for the same day in.
+ * The stamp is written onto the record itself, the way Dexie writes a new id onto it, so the record the
+ * caller goes on with and the stored row stay the same. A record that cannot be written on (a frozen one)
+ * is stored as a stamped copy instead: saving one worked before sessions were stamped, and still has to.
+ */
 export async function saveSession(record: SessionRecord): Promise<number> {
-  return (await db.sessions.put(record)) as number
+  const instrument = sessionInstrument(record)
+  let row = record
+  if (record.instrument !== instrument) {
+    if (Object.isExtensible(record)) record.instrument = instrument
+    else row = { ...record, instrument }
+  }
+  return (await db.sessions.put(row)) as number
 }
 
 async function updateBlock(

@@ -12,6 +12,14 @@ export type IllustrationId =
   | 'phone-placement'
   | `chord:${string}`
   | `spot:${number}:${number}`
+  // The singing course. None of these depends on which hand strums.
+  | 'voice-posture'
+  | 'voice-breath'
+  | 'voice-phone'
+  | 'voice-mouth'
+  | 'pitch-ladder'
+  | 'voice-lanes'
+  | 'voice-slide'
 
 export interface LessonCard {
   title: string
@@ -71,6 +79,11 @@ export interface Lesson {
   unlocks: string[]
   /** One encouraging sentence shown on completion. */
   done: string
+  /**
+   * A lesson with no drill may run a tool as its middle step instead: the tuner, the range finder, or
+   * "meet the note" (hear a note, slide the voice until it matches). Nothing in a tool is scored.
+   */
+  tool?: 'tuner' | 'range' | 'match'
 }
 
 export interface LessonProgress {

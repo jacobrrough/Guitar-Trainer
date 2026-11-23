@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import type { InstrumentId } from '../training/types'
 
 export type OctaveTolerance = 'chords' | 'all' | 'none'
 
@@ -35,6 +36,14 @@ export interface AppSettings {
   /** Plain feedback ("6 of 8 notes") with technical details folded away. */
   simpleFeedback: boolean
   metronome: MetronomePrefs
+  /**
+   * Which side of the app this device is showing. A view choice only: what is stored belongs to an
+   * instrument by its own id or stamp. Read it through `activeInstrument`, which answers guitar until
+   * the voice side is switched on.
+   */
+  instrument: InstrumentId
+  /** The singer wears headphones, so the guide voice may play while the microphone scores. */
+  voiceHeadphones: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -53,6 +62,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showFingerNumbers: true,
   simpleFeedback: true,
   metronome: { bpm: 100, beatsPerBar: 4, subdivision: 1, accentFirst: true, volume: 0.8 },
+  instrument: 'guitar',
+  voiceHeadphones: false,
 }
 
 const STORAGE_KEY = 'guitar-trainer.settings.v1'

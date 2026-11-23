@@ -1,7 +1,7 @@
 import Dexie, { type EntityTable } from 'dexie'
 import type { Chart, ChartSource } from '../chart/types'
 import type { LessonProgress } from '../lessons/types'
-import type { Attempt, Profile, SessionRecord, SkillState, SongItemState, TestRecord, Milestone } from '../training/types'
+import type { Attempt, InstrumentId, Profile, SessionRecord, SkillState, SongItemState, TestRecord, Milestone } from '../training/types'
 
 export interface ScoreRecord {
   level: number
@@ -46,6 +46,8 @@ export interface SongRecord {
   lastLevel: number | null
   lastSpeed: number
   playCount: number
+  /** Absent = guitar. A song to sing is stored without audio: it is arranged for the singer's range when opened. */
+  instrument?: InstrumentId
 }
 
 export type NewSong = Pick<SongRecord, 'title' | 'artist' | 'audioType' | 'audioName' | 'duration' | 'chart' | 'source' | 'bpm'> & { audio: Blob; builtinId?: string; builtinRev?: string }
@@ -107,6 +109,36 @@ db.version(4).stores({
   milestones: '++id, &key, at, type, skillId',
   lessons: 'id, status',
 })
+
+// Singing: one session a day per instrument. Only the sessions line differs from version 4. The plain
+// date index stays (the coach orders sessions by date) but is no longer unique; the compound index is.
+// A row without `instrument` sits outside the compound index, so the upgrade stamps every stored session
+// as guitar and `saveSession` stamps every new one. Rows without it can still arrive afterwards (an old
+// backup, or a copy of the app still running the code of version 4, which Dexie lets open this database),
+// so a reader of the compound index must not take "not found there" for "no session that day".
+// No other table is touched: the other rows read as guitar through `instrumentOf`, and song rows with
+// their audio bytes are never rewritten.
+// If a browser ever needs a different shape, that is version 6: a released version is never redefined.
+db.version(5)
+  .stores({
+    songs: '++id, title, artist, createdAt, updatedAt, builtinId',
+    skillStates: 'skillId, rating, nextReviewAt',
+    attempts: '++id, at, kind, skillId, songId, sessionId',
+    sessions: '++id, date, &[instrument+date]',
+    tests: '++id, at, type',
+    songItems: 'key, songId, nextReviewAt',
+    profile: 'id',
+    milestones: '++id, &key, at, type, skillId',
+    lessons: 'id, status',
+  })
+  .upgrade((tx) =>
+    tx
+      .table('sessions')
+      .toCollection()
+      .modify((session: { instrument?: InstrumentId }) => {
+        if (session.instrument === undefined) session.instrument = 'guitar'
+      }),
+  )
 
 export async function addSong(input: NewSong): Promise<number> {
   const now = Date.now()
