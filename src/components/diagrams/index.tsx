@@ -11,6 +11,7 @@ import {
   StringNames,
   TuningPegs,
 } from './scenes'
+import { PitchLadder, VoiceBreath, VoiceLanes, VoiceMouth, VoicePhone, VoicePosture, VoiceSlide } from './voiceScenes'
 
 export type { Handedness, IllustrationProps, ChordBoxProps, FretboardSpotProps } from './types'
 export { ChordBox } from './ChordBox'
@@ -46,6 +47,21 @@ export function Illustration({ id, handedness = 'right', className }: Illustrati
       return <StrumDown handedness={handedness} className={className} />
     case 'phone-placement':
       return <PhonePlacement className={className} />
+    // The singing course: the same picture whichever hand strums, so handedness is not passed on.
+    case 'voice-posture':
+      return <VoicePosture className={className} />
+    case 'voice-breath':
+      return <VoiceBreath className={className} />
+    case 'voice-phone':
+      return <VoicePhone className={className} />
+    case 'voice-mouth':
+      return <VoiceMouth className={className} />
+    case 'pitch-ladder':
+      return <PitchLadder className={className} />
+    case 'voice-lanes':
+      return <VoiceLanes className={className} />
+    case 'voice-slide':
+      return <VoiceSlide className={className} />
   }
   const chord = /^chord:(.+)$/.exec(id)
   if (chord) return <ChordBox name={chord[1]} handedness={handedness} className={className} />

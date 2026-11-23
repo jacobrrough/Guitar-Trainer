@@ -1,4 +1,5 @@
 import { db } from '../db/db'
+import { instrumentOfLessonId, profileIdFor } from '../training/instruments'
 import type { LessonProgress } from './types'
 
 /**
@@ -14,8 +15,13 @@ import type { LessonProgress } from './types'
  * - if lessons remain but none is open, the first one not yet done is opened;
  * - if every lesson is done while the profile still says the course is running, the course is marked finished.
  * A course that is already fine is not written to.
+ *
+ * The table holds the lessons of both courses, guitar and singing. Only the rows of the given lessons are
+ * looked at, so an open lesson of the other course never counts as this one's. The course is ended on one
+ * profile row, `profileId`. Left out, it is the row the lessons belong to (see `profileOfLessons`), so
+ * that finished singing lessons can never end the guitar course.
  */
-export async function initialiseCourse(lessonIds: string[], now = Date.now()): Promise<void> {
+export async function initialiseCourse(lessonIds: string[], now = Date.now(), profileId: 1 | 2 = profileOfLessons(lessonIds)): Promise<void> {
   await db.transaction('rw', db.lessons, db.profile, async () => {
     const stored = new Map((await db.lessons.toArray()).map((r) => [r.id, r]))
     const rows: LessonProgress[] = lessonIds.map((id) => stored.get(id) ?? { id, status: 'locked' })
@@ -25,22 +31,37 @@ export async function initialiseCourse(lessonIds: string[], now = Date.now()): P
     if (next) writes.push({ ...next, status: 'available' })
     if (writes.length > 0) await db.lessons.bulkPut(writes)
     if (rows.length > 0 && !open && !next) {
-      const profile = await db.profile.get(1)
+      const profile = await db.profile.get(profileId)
       if (profile?.firstStepsStartedAt && !profile.firstStepsDoneAt) await db.profile.put({ ...profile, firstStepsDoneAt: now })
     }
   })
 }
 
-/** Throws away all lesson progress and starts the course again: lesson 1 open, the rest locked. */
+/** The profile row a course belongs to: row 2 for singing lessons, row 1 for guitar lessons (and for no lessons at all). */
+function profileOfLessons(lessonIds: string[]): 1 | 2 {
+  return profileIdFor(lessonIds.length > 0 ? instrumentOfLessonId(lessonIds[0]) : 'guitar')
+}
+
+/**
+ * Throws away the progress of one course and starts it again: lesson 1 open, the rest locked.
+ * Every row of the course the lessons belong to goes, also the row of a lesson that course no longer has
+ * (as when the whole table was cleared). The rows of the other course stay exactly as they are.
+ */
 export async function restartCourse(lessonIds: string[]): Promise<void> {
+  const courses = new Set(lessonIds.map(instrumentOfLessonId))
   await db.transaction('rw', db.lessons, async () => {
-    await db.lessons.clear()
+    await db.lessons.filter((row) => courses.has(instrumentOfLessonId(row.id))).delete()
     await db.lessons.bulkPut(lessonIds.map((id, i): LessonProgress => ({ id, status: i === 0 ? 'available' : 'locked' })))
   })
 }
 
-export function courseProgress(): Promise<LessonProgress[]> {
-  return db.lessons.toArray()
+/**
+ * The progress rows of the given lessons, in the order given (a lesson with no row yet is left out).
+ * Without lessons: every row, of both courses.
+ */
+export async function courseProgress(lessonIds?: string[]): Promise<LessonProgress[]> {
+  if (!lessonIds) return db.lessons.toArray()
+  return (await db.lessons.bulkGet(lessonIds)).filter((row): row is LessonProgress => row !== undefined)
 }
 
 export async function saveLessonProgress(progress: LessonProgress): Promise<void> {

@@ -459,3 +459,18 @@ A review of this design against the code found gaps. The three that would have s
 17. Update to this version while a second tab or the installed copy still has the app open.
 18. Phone volume at zero: no starting note can be heard, and the app cannot know.
 19. iOS microphone modes (Voice Isolation, Wide Spectrum) during a sung run.
+
+## 13. Decisions taken while building
+
+These settle questions the packages raised. They win over the sections above.
+
+1. **One held note.** Twenty-six of the fifty-one notes of the Jingle Bells chorus are the same note, so "one hummed note scores under half" cannot hold for every song. The rule is: one held pitch through a whole song is never a clean round (Coach accuracy under 0.75 on every song and level) and stays under 0.5 on every song except Jingle Bells.
+2. **Lines are placed by beats.** A line starts at the sum of the beats before it (lines of 7, 9, 15 and 17 beats exist). On echo levels the answer starts a whole number of bars after its call.
+3. **Intro.** When the intro bar cannot hold a one-beat starting note and a silent beat before the pickup (When the Saints), the arrangement has two intro bars.
+4. **Breaths.** A line that already ends with a written rest of 0.4 s or more keeps its last note whole.
+5. **Carried syllables.** A `''` syllable is a scored note of its own that carries the syllable before it, and is drawn as a continuation.
+6. **Songs held back.** `needs` on a song holds it back from the Coach's own picks only. The library lists every song that fits the range.
+7. **Which side a row is on.** Skill states go by `instrumentOfSkillId`, lessons by `instrumentOfLessonId`, everything else by its stamp; a session without a stamp goes by its block ids. `restartCourse(ids)` clears the course the ids belong to. `initialiseCourse(ids, now)` ends the course on the profile row the ids belong to.
+8. **Saving a range.** `saveVoiceRange` moves an easy note that falls outside the range onto its nearest edge, refuses a span under 7 semitones, and keeps today's plan when something was sung in it or the day was ended with "My voice is tired".
+9. **Not set up.** The "not set up yet" test reads fields of the singing profile (`experience`, `placementDoneAt`), never whether row 2 exists.
+10. **Sources.** No score library could be reached from the build machine. Every melody was written from memory by one engineer, derived again from memory by a second before reading the first, and compared with the guitar bundle where the tune is shared.

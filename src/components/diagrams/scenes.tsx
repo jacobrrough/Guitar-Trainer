@@ -17,7 +17,7 @@ interface SceneProps {
 }
 
 /** Root svg; when `flip` is set the drawing is mirrored but T keeps text upright. */
-function Scene({ label, w, h, flip = false, className, children }: SceneProps) {
+export function Scene({ label, w, h, flip = false, className, children }: SceneProps) {
   return (
     <svg viewBox={`0 0 ${w} ${h}`} width="100%" role="img" aria-label={label} className={className}>
       <FlipCtx.Provider value={flip}>
@@ -39,7 +39,7 @@ interface TProps {
 }
 
 /** Upright text. Anchor is in picture terms and is swapped inside a flipped scene. */
-function T({ x, y, anchor = 'start', size = 12, weight, fill = 'currentColor', opacity, children }: TProps) {
+export function T({ x, y, anchor = 'start', size = 12, weight, fill = 'currentColor', opacity, children }: TProps) {
   const flip = useContext(FlipCtx)
   const a = flip ? (anchor === 'start' ? 'end' : anchor === 'end' ? 'start' : 'middle') : anchor
   return (
@@ -58,7 +58,7 @@ function T({ x, y, anchor = 'start', size = 12, weight, fill = 'currentColor', o
   )
 }
 
-function Leader({ x1, y1, x2, y2 }: { x1: number; y1: number; x2: number; y2: number }) {
+export function Leader({ x1, y1, x2, y2 }: { x1: number; y1: number; x2: number; y2: number }) {
   return <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="currentColor" strokeWidth={1} opacity={0.6} />
 }
 
@@ -71,6 +71,16 @@ export const ILLUSTRATION_LABELS = {
   'tuning-pegs': 'Guitar headstock with arrows showing which way to turn the tuning pegs: tighten raises the pitch',
   'strum-down': 'Hand holding a pick with a downward arrow sweeping across the strings from thickest to thinnest',
   'phone-placement': 'Phone propped up at arm length facing the guitar, with headphones on so the phone speaker is far from the microphone',
+  // The singing course (drawn in voiceScenes.tsx). Each label repeats every word drawn in its picture, because
+  // role="img" hides those words from a screen reader. No quote or apostrophe in a label: the tests read it
+  // back from the markup, where those are escaped.
+  'voice-posture': 'A person standing to sing, seen from the front: stand tall, shoulders loose, arms hanging by the sides and feet apart',
+  'voice-breath': 'A body seen from the front. On the breath in, the low ribs and belly widen and the shoulders stay still',
+  'voice-phone': 'A person standing about a forearm away from a phone that leans on a stand on a table, facing them',
+  'voice-mouth': 'Two faces side by side: one with the mouth closed, humming mm, and one with the mouth open and relaxed, singing ah',
+  'pitch-ladder': 'A ladder of notes, higher towards the top and lower towards the bottom. A shaded band marks your easy notes, and a dot for your voice sits just under the note you are aiming for',
+  'voice-lanes': 'Bars for notes move from right to left towards a line. Higher bars are higher notes and longer bars are longer notes. A dot on the line is your voice, and a bar fills in while you sing it',
+  'voice-slide': 'A smooth line that slides up from a low note to a high note and back down again, like a quiet siren',
 } as const
 
 export type StaticIllustrationId = keyof typeof ILLUSTRATION_LABELS
@@ -265,7 +275,7 @@ export function StringNames({ className }: { className?: string }) {
   )
 }
 
-function Arrow({ d, head }: { d: string; head: string }) {
+export function Arrow({ d, head }: { d: string; head: string }) {
   return (
     <g>
       <path d={d} fill="none" stroke={ACCENT} strokeWidth={3} strokeLinecap="round" />

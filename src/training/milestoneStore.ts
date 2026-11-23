@@ -1,5 +1,6 @@
 import { db } from '../db/db'
-import type { Milestone } from './types'
+import { instrumentOf } from './instruments'
+import type { InstrumentId, Milestone } from './types'
 
 /** Stores milestones whose key is not stored yet (one transaction); returns the newly stored ones with ids. */
 export async function recordMilestones(ms: Milestone[]): Promise<Milestone[]> {
@@ -20,12 +21,22 @@ export async function recordMilestones(ms: Milestone[]): Promise<Milestone[]> {
   })
 }
 
-/** Newest-first milestones. */
-export function listMilestones(limit = 20): Promise<Milestone[]> {
-  return db.milestones.orderBy('at').reverse().limit(limit).toArray()
+/** Newest-first milestones of one instrument. The other side's are left out before the limit is applied. */
+export function listMilestones(limit = 20, instrument: InstrumentId = 'guitar'): Promise<Milestone[]> {
+  return db.milestones
+    .orderBy('at')
+    .reverse()
+    .filter((m) => instrumentOf(m) === instrument)
+    .limit(limit)
+    .toArray()
 }
 
-/** Milestones earned strictly after `ts`, newest first. */
-export function milestonesSince(ts: number): Promise<Milestone[]> {
-  return db.milestones.where('at').above(ts).reverse().sortBy('at')
+/** Milestones of one instrument earned strictly after `ts`, newest first. */
+export function milestonesSince(ts: number, instrument: InstrumentId = 'guitar'): Promise<Milestone[]> {
+  return db.milestones
+    .where('at')
+    .above(ts)
+    .filter((m) => instrumentOf(m) === instrument)
+    .reverse()
+    .sortBy('at')
 }
