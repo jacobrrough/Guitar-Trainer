@@ -17,7 +17,7 @@ const SR = 44100
 function loopPerformance(c: SimCase, from: number, to: number, passes: number, stall = 0): { notes: ChartNote[]; inLoop: number } {
   const inLoop = c.notes.filter((n) => n.time >= from - 1e-6 && n.time < to - 1e-6)
   const notes: ChartNote[] = []
-  for (let p = 0; p < passes; p++) for (const n of inLoop) notes.push({ ...n, id: notes.length, chordId: n.chordId === undefined ? undefined : n.chordId + p * 100000, time: n.time - from + p * (to - from + stall) })
+  for (let p = 0; p < passes; p++) for (const n of inLoop) notes.push({ ...n, id: notes.length, chordId: n.chordId + p * 100000, time: n.time - from + p * (to - from + stall) })
   return { notes, inLoop: new Set(inLoop.map((n) => n.chordId ?? `n${n.id}`)).size }
 }
 

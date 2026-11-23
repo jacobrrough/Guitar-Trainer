@@ -2,6 +2,7 @@ import type { Chart } from '../chart/types'
 import { addSong, db, type NewSong, type SongRecord } from '../db/db'
 import { guitarVoice, recordingsOrTimeout, renderChartVoiced } from '../audio/guitar'
 import { SYNTH_SAMPLE_RATE, encodeWav, isStaleRender, renderDrums, synthAudioName } from '../audio/synth'
+import { instrumentOf } from '../training/instruments'
 import { amazingGrace } from './tunes/amazingGrace'
 import { dAGroove } from './tunes/dAGroove'
 import { emAmGroove } from './tunes/emAmGroove'
@@ -122,7 +123,10 @@ export async function installBuiltInSongs(): Promise<void> {
  * older renderer, or from the string model while the recorded guitar is available now. Call after
  * `loadGuitar()` has settled.
  */
-export function hasStaleAudio(record: Pick<SongRecord, 'builtinId' | 'audioName' | 'builtinRev'>): boolean {
+export function hasStaleAudio(record: Pick<SongRecord, 'builtinId' | 'audioName' | 'builtinRev' | 'instrument'>): boolean {
+  // A song to sing is stored without audio and arranged when it is opened: there is nothing to make again.
+  // Without this it would fall through to the check of the audio name below and look stale at every launch.
+  if (instrumentOf(record) === 'voice') return false
   if (!record.builtinId) return false
   const song = builtInSong(record.builtinId)
   if (song && record.builtinRev !== builtInRevision(song)) return true

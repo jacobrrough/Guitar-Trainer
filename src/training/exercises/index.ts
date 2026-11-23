@@ -14,6 +14,10 @@ import { stringSkippingGenerator } from './stringSkipping'
 import { strumPatternGenerator } from './strumPattern'
 import { subdivisionSwitchGenerator } from './subdivisionSwitch'
 import { tuneByEarGenerator } from './tuneByEar'
+import { voiceEchoGenerator } from './voice/voiceEcho'
+import { voiceHoldGenerator } from './voice/voiceHold'
+import { voicePatternGenerator } from './voice/voicePattern'
+import { voiceSlideGenerator } from './voice/voiceSlide'
 
 export const GENERATORS: Record<string, ExerciseGenerator> = {
   chromatic: chromaticGenerator,
@@ -31,6 +35,11 @@ export const GENERATORS: Record<string, ExerciseGenerator> = {
   tuneByEar: tuneByEarGenerator,
   openStrings: openStringsGenerator,
   firstFrets: firstFretsGenerator,
+  // Sung exercises (docs/SINGING.md §6). Their ids all start with "voice".
+  voiceEcho: voiceEchoGenerator,
+  voiceHold: voiceHoldGenerator,
+  voicePattern: voicePatternGenerator,
+  voiceSlide: voiceSlideGenerator,
 }
 
 /**
@@ -40,8 +49,15 @@ export const GENERATORS: Record<string, ExerciseGenerator> = {
  */
 export const GENERATOR_ALIASES: Record<string, string> = {}
 
+/**
+ * The generator that stands behind an id. A guitar id without one falls back to the plain melody.
+ * A sung id (one that starts with "voice") never does: a singer handed a guitar melody would be asked
+ * for notes far outside their range, so an unknown sung exercise is an error.
+ */
 export function resolveGeneratorId(id: string): string {
-  return GENERATORS[id] ? id : (GENERATOR_ALIASES[id] ?? 'melody')
+  if (GENERATORS[id]) return id
+  if (id.startsWith('voice')) throw new Error(`Unknown voice exercise: ${id}`)
+  return GENERATOR_ALIASES[id] ?? 'melody'
 }
 
 export function getGenerator(id: string): ExerciseGenerator {

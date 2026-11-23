@@ -233,11 +233,11 @@ describe('EarListener: when the player has answered', () => {
 
 describe('answerText', () => {
   it('says how far off the answer was, or that nothing was heard', () => {
-    expect(answerText({ judgement: 'perfect', played: 40.02, heard: true }, 'E2', 40)).toBe('spot on (E2)')
-    expect(answerText({ judgement: 'miss', played: 41, heard: true }, 'E2', 40)).toBe('100 cents sharp (E2)')
+    expect(answerText({ judgement: 'perfect', played: 40.02, heard: true, ringing: false }, 'E2', 40)).toBe('spot on (E2)')
+    expect(answerText({ judgement: 'miss', played: 41, heard: true, ringing: false }, 'E2', 40)).toBe('100 cents sharp (E2)')
     expect(answerText({ judgement: 'miss', played: null, heard: false, ringing: false }, 'E2', 40)).toBe('No note heard. It was E2.')
     // Sound was there, but never a steady note: not the same as silence.
-    expect(answerText({ judgement: 'miss', played: null, heard: true }, 'E2', 40)).toBe('We could not make out a clear note. It was E2.')
+    expect(answerText({ judgement: 'miss', played: null, heard: true, ringing: false }, 'E2', 40)).toBe('We could not make out a clear note. It was E2.')
   })
 })
 

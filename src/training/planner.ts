@@ -1025,7 +1025,12 @@ export function planSession(input: PlannerInput): SessionPlan {
     const drafts: Block[] = []
     const w = mkWarmup(tpl.warmup || 1)
     if (w) drafts.push(w)
-    const best = [...skills].filter((s) => stateOf(s.id) && inScope(s) && allowed(s)).sort((a, b) => ratings[b.id] - ratings[a.id] || a.tier - b.tier)
+    const practised = skills.filter((s) => stateOf(s.id) && allowed(s))
+    const scoped = practised.filter(inScope)
+    // A learner who so far knows only the very first skill has nothing above it to recap. Where drills
+    // are told apart by skill, that skill is recapped rather than leaving a day that is its warm-up
+    // alone (two or three minutes of a ten-minute day). Other plans keep the scoped list as it was.
+    const best = (scoped.length > 0 || !bySkill ? scoped : practised).sort((a, b) => ratings[b.id] - ratings[a.id] || a.tier - b.tier)
     // Where "the same drill" means the same skill, the warm-up skill is not recapped as well while
     // the learner knows two others: it would be the same exercise twice in a row.
     const apart = bySkill && w ? best.filter((s) => s.id !== w.skillId) : best

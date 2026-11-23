@@ -1,4 +1,5 @@
 import { db } from '../db/db'
+import { MAX_KEY_NUDGE, MIN_RANGE_SPAN } from '../music/keys'
 import { profileIdFor } from './instruments'
 import { defaultProfile, localDateString, peekSession } from './store'
 import type { VoiceProfile, VoiceRange } from './types'
@@ -14,14 +15,21 @@ import type { VoiceProfile, VoiceRange } from './types'
 const VOICE_ROW = profileIdFor('voice')
 
 /**
- * The smallest range that is ever stored, in semitones from the lowest note to the highest: eight notes,
- * a five-note scale with room to spare. The first step of every exercise is built to fit in it, so a
- * smaller range would leave the Coach with exercises it cannot place.
+ * The smallest range that is ever stored (eight notes, a five-note scale with room to spare: the first
+ * step of every exercise is built to fit in it) and the furthest a song may be moved from the key chosen
+ * for it. Both are the key maths' own numbers, so the store and the arranger cannot drift apart.
  */
-const SMALLEST_SPAN = 7
+const SMALLEST_SPAN = MIN_RANGE_SPAN
+const MAX_NUDGE = MAX_KEY_NUDGE
 
-/** The furthest a song may be moved from the key chosen for it, in semitones either way. */
-const MAX_NUDGE = 3
+/**
+ * The lowest and highest note a stored range may hold (C2 and D6). Below the bottom the app cannot
+ * recognise its own starting note, so it could no longer tell a singer from its own speaker; above the
+ * top no voice the app is made for sings in comfort. The range finder already treats a find outside
+ * these as a mistake; the same holds for a range entered by hand, a semitone at a time.
+ */
+export const LOWEST_RANGE_NOTE = 36
+export const HIGHEST_RANGE_NOTE = 86
 
 /** Read-only, so a live query may call it. Empty until the singer has saved something. */
 export async function loadVoiceProfile(): Promise<VoiceProfile> {
@@ -54,6 +62,9 @@ function storable(range: VoiceRange): VoiceRange {
   const whole = [range.low, range.high, range.easy].every((note) => Number.isInteger(note))
   if (!whole || range.high - range.low < SMALLEST_SPAN) {
     throw new Error('This range cannot be saved. It needs whole notes, and at least eight notes from the lowest to the highest.')
+  }
+  if (range.low < LOWEST_RANGE_NOTE || range.high > HIGHEST_RANGE_NOTE) {
+    throw new Error('This range cannot be saved. It goes lower or higher than the app can follow.')
   }
   const easy = Math.max(range.low, Math.min(range.high, range.easy))
   return easy === range.easy ? range : { ...range, easy }

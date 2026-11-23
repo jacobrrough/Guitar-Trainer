@@ -231,6 +231,11 @@ export interface SongItemState {
   lowStreak?: number
   /** Absent = guitar. */
   instrument?: InstrumentId
+  /**
+   * Songs to sing: when the Coach last moved the song to a lower key because its top notes were missed
+   * (ms since epoch). Runs sung before that moment were in the old key and say nothing about the new one.
+   */
+  keyLoweredAt?: number
 }
 
 export interface SongSummary {

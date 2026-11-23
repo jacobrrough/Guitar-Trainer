@@ -2,9 +2,9 @@ import { FrameAnalyzer, type AnalyzedFrame, type FrameAnalyzerOptions } from '..
 import type { OctaveTolerance } from '../../app/settings'
 import type { Beat, ChartNote } from '../../chart/types'
 import type { AttemptResult } from '../../training/types'
-import { PitchSmoother } from './pitchTracker'
-import { scoreFrame } from './scoreFrame'
-import { ScoreTracker, type GroupStatus, type ScoreSummary } from './scoring'
+import { guitarRunTracker, type RunTracker } from './runTracker'
+import type { FrameOutcome } from './scoreFrame'
+import type { GroupStatus, ScoreSummary, ScoreTracker } from './scoring'
 
 export interface SimulationOptions {
   /** Sample rate of `mic` (44100 on desktop, 48000 on iOS). */
@@ -15,8 +15,10 @@ export interface SimulationOptions {
   clarityThreshold?: number
   a4?: number
   octaveTolerance?: OctaveTolerance
-  /** Detector options as the player passes them to the microphone. The single-pitch detector is off by default: it only feeds the on-screen indicator. */
+  /** Detector options as the player passes them to the microphone. The single-pitch detector is off by default: on a guitar run it only feeds the on-screen indicator. */
   detector?: FrameAnalyzerOptions
+  /** Spectral peaks and attack strength in every frame (on by default: a guitar run is scored from them; a sung run does without). */
+  spectrum?: boolean
   /** Samples per audio callback (128 in every browser). */
   quantum?: number
   /**
@@ -41,9 +43,13 @@ export interface SimulationOptions {
   recognition?: ConstructorParameters<typeof ScoreTracker>[1] extends infer O ? (O extends { recognition?: infer R } ? R : never) : never
 }
 
-export interface SimulationResult {
+/** What any run comes to, guitar or sung. */
+export interface RunResult {
   summary: ScoreSummary
   result: AttemptResult
+}
+
+export interface SimulationResult extends RunResult {
   /** Signed timing error of each hit, ms (positive = late). */
   deltasMs: number[]
   statuses: GroupStatus[]
@@ -61,7 +67,7 @@ export interface HeardFrame {
  * analysis can be scored more than once.
  */
 export function analyseMic(mic: Float32Array, options: SimulationOptions): HeardFrame[] {
-  const analyzer = new FrameAnalyzer(options.sampleRate, { windowSize: 2048, spectrumWindow: 4096, hop: 512, minFreq: 55, maxFreq: 1500, threshold: 0.9, pitch: false, ...options.detector, spectrum: true })
+  const analyzer = new FrameAnalyzer(options.sampleRate, { windowSize: 2048, spectrumWindow: 4096, hop: 512, minFreq: 55, maxFreq: 1500, threshold: 0.9, pitch: false, ...options.detector, spectrum: options.spectrum ?? true })
   const quantum = options.quantum ?? 128
   // In the app the microphone is open and the tracker listens during the count-in: silence comes first.
   const micLead = Math.round(((options.micLead ?? 0) * options.sampleRate) / quantum) * quantum
@@ -77,16 +83,23 @@ export function analyseMic(mic: Float32Array, options: SimulationOptions): Heard
 }
 
 /**
- * Scores analysed frames (see `analyseMic`) against a chart exactly as the player scores the
- * microphone: each frame goes through `scoreFrame`, and the tracker is advanced with the same clock.
- * `durationSec` is the length of the recording.
+ * Drives a tracker with analysed frames (see `analyseMic`) exactly as the player drives it with the
+ * microphone: the count-in on the song's own timeline, the start of the song's sound told once, every
+ * frame with its latency-compensated song time, the tracker moved along with the same clock, loop
+ * wraps as the player wraps them. Guitar and sung runs both go through here. `durationSec` is the
+ * length of the recording; `onFrame` sees what each frame came to (the player reads the attack flag
+ * during the count-in).
  */
-export function scoreHeard(notes: ChartNote[], beats: Beat[], heard: HeardFrame[], durationSec: number, options: SimulationOptions): SimulationResult {
+export function runHeard(
+  tracker: RunTracker,
+  heard: HeardFrame[],
+  durationSec: number,
+  options: SimulationOptions,
+  onFrame?: (outcome: FrameOutcome, wall: number, songTime: number) => void,
+): RunResult {
   const speed = options.speed ?? 1
   const latency = options.latencySec ?? 0
-  const tracker = new ScoreTracker(notes, { octaveTolerance: options.octaveTolerance ?? 'chords', beats, a4: options.a4, recognition: options.recognition })
   tracker.setSpeed(speed)
-  const smoother = new PitchSmoother()
   const settings = { clarityThreshold: options.clarityThreshold ?? 0.85, a4: options.a4 ?? 440 }
   const loop = options.loop
   const origin = loop?.from ?? 0
@@ -94,6 +107,7 @@ export function scoreHeard(notes: ChartNote[], beats: Beat[], heard: HeardFrame[
   if (loop) tracker.setRange(loop.from, loop.to)
   const jitter = options.startJitter ?? 0
   let pass = 0
+  let started = false
   for (const { wall, frame } of heard) {
     let position = origin + wall * speed
     if (loop && wall >= 0) {
@@ -110,14 +124,31 @@ export function scoreHeard(notes: ChartNote[], beats: Beat[], heard: HeardFrame[
       // During the stall the clock still runs on from the loop's start; then it is set right.
       position = loop.from + (p === 0 || sinceWrap < stall ? sinceWrap : sinceWrap - stall) * speed
     }
+    if (!started && wall >= 0) {
+      // The count-in is over and the song's sound begins: the player tells its tracker so.
+      tracker.onPlaybackStart()
+      started = true
+    }
     const songTime = position - latency * speed + (wall < 0 ? jitter * speed : 0)
-    scoreFrame(tracker, smoother, { ...frame, time: wall }, songTime, settings)
+    const outcome = tracker.frame({ ...frame, time: wall }, songTime, settings)
+    onFrame?.(outcome, wall, songTime)
     tracker.advance(songTime)
   }
   tracker.advance(Number.POSITIVE_INFINITY)
   const summary = tracker.summary()
   const result = tracker.toAttemptResult({ playedTempo: 0, targetTempo: 0, speed, durationSec })
-  return { summary, result, deltasMs: tracker.hitDeltas().map((d) => d * 1000), statuses: tracker.groups.map((g) => g.status) }
+  return { summary, result }
+}
+
+/**
+ * Scores analysed frames (see `analyseMic`) against a guitar chart exactly as the player scores the
+ * microphone: the guitar tracker behind the seam, driven by `runHeard`. `durationSec` is the length of
+ * the recording.
+ */
+export function scoreHeard(notes: ChartNote[], beats: Beat[], heard: HeardFrame[], durationSec: number, options: SimulationOptions): SimulationResult {
+  const tracker = guitarRunTracker(notes, { octaveTolerance: options.octaveTolerance ?? 'chords', beats, a4: options.a4, recognition: options.recognition })
+  const { summary, result } = runHeard(tracker, heard, durationSec, options)
+  return { summary, result, deltasMs: tracker.score.hitDeltas().map((d) => d * 1000), statuses: tracker.score.groups.map((g) => g.status) }
 }
 
 /**

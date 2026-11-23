@@ -11,7 +11,10 @@ import { loadRealBank } from '../audio/instrument/realBank.testutil'
 import { renderChartBacking, renderDrums, synthAudioName } from '../audio/synth'
 import { addSong } from '../db/db'
 import { createDemoSong, DEMO_AUDIO_BASE } from '../features/library/demoSong'
+import { defaultProfile } from '../training/store'
 import { refreshRenderedAudio } from './refresh'
+import { VOCAL_SONGS } from './vocal'
+import { installVocalSongs, vocalSongRecord } from './vocal/install'
 
 const MIDI: Record<string, number> = { G3: 55, A3: 57, B3: 59, C4: 60, D4: 62, E4: 64, F4: 65, G4: 67 }
 const pitches = (names: string) => names.split(/\s+/).filter(Boolean).map((n) => MIDI[n])
@@ -400,5 +403,132 @@ describe('bundled chord songs keep their chords whole at every level', () => {
   it('a melody song is not affected', () => {
     const ode = builtInSong('ode-to-joy')!
     expect(ode.chart.wholeChords).toBeUndefined()
+  })
+})
+
+describe('the songs to sing beside the guitar songs', () => {
+  /**
+   * The fingerprint of every guitar song as it was before the songs to sing were added. Singing changes
+   * no guitar chart, tempo or name, so none of these may move because of it. A deliberate correction to a
+   * guitar song changes its own line here and no other.
+   */
+  const GUITAR_REVISIONS: Record<string, string> = {
+    'open-strings-groove': '1t3nwl81cmf3c9',
+    'ode-to-joy': '1ga6q5g1w6oyx4',
+    'happy-birthday': '091ooce14mtz26',
+    'jingle-bells': '0p9qviw0zuhawo',
+    'twinkle-twinkle': '0nzusde0a32rma',
+    'em-groove': '1ugmnol11altue',
+    'em-am-groove': '11q11990kzj626',
+    'd-a-groove': '13nc9l00bhel87',
+    'amazing-grace': '0p96wz20itfzrg',
+    'tom-dooley': '1bozmkb1l01bn5',
+    saints: '0uc583u0y8t3z0',
+    'first-riff': '1gflm1f1a278bp',
+  }
+
+  /** The preview key that shows the singing side on a device before it is released. */
+  const previewSinging = (on: boolean) => vi.stubGlobal('localStorage', { getItem: (key: string) => (on && key === 'gt.voice' ? '1' : null) })
+
+  beforeEach(async () => {
+    await db.songs.clear()
+    await db.profile.clear()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('the twelve guitar songs are what they were before singing was added', () => {
+    expect(Object.fromEntries(BUILT_IN_SONGS.map((s) => [s.id, builtInRevision(s)]))).toEqual(GUITAR_REVISIONS)
+  })
+
+  it('the list of guitar songs holds no song to sing', () => {
+    expect(BUILT_IN_SONGS).toHaveLength(12)
+    for (const s of VOCAL_SONGS) expect(builtInSong(s.id)).toBeUndefined()
+  })
+
+  it('a song to sing never has stale audio: it has none, and is arranged when it is opened', async () => {
+    const row = await vocalSongRecord('sing-hot-cross-buns')
+    expect(hasStaleAudio(row)).toBe(false)
+    // Also once the recorded guitar is there, which is when a guitar song made by the string model turns stale.
+    const bank = await loadRealBank()
+    setGuitarBankForTests(bank)
+    try {
+      expect(hasStaleAudio(row)).toBe(false)
+      expect(hasStaleAudio({ ...row, builtinRev: undefined })).toBe(false)
+    } finally {
+      setGuitarBankForTests(null)
+    }
+    // It is the stamp that says so: the same row read as a guitar song would be rendered again at every launch.
+    expect(hasStaleAudio({ ...row, instrument: undefined })).toBe(true)
+  })
+
+  it('the refresh at launch leaves the songs to sing exactly as they are', async () => {
+    await installVocalSongs()
+    const before = await db.songs.toArray()
+    const update = vi.spyOn(db.songs, 'update')
+    expect(await refreshRenderedAudio()).toBe(0)
+    expect(update).not.toHaveBeenCalled()
+    expect(await db.songs.toArray()).toEqual(before)
+    for (const row of await db.songs.toArray()) expect('audioData' in row).toBe(false)
+  })
+
+  it('a stale guitar song next to them is still rendered again, and only that one', async () => {
+    await installVocalSongs()
+    const rec = await builtInSongRecord('ode-to-joy')
+    await db.songs.update(rec.id, { audioName: 'ode-to-joy.v3.wav' })
+    const sung = (await db.songs.toArray()).filter((r) => r.instrument === 'voice')
+    expect(await refreshRenderedAudio()).toBe(1)
+    expect((await db.songs.get(rec.id))?.audioName).toBe(synthAudioName('ode-to-joy', null))
+    expect((await db.songs.toArray()).filter((r) => r.instrument === 'voice')).toEqual(sung)
+  }, 30_000)
+
+  it('installing the guitar songs and the songs to sing in either order gives each list its own rows', async () => {
+    await installVocalSongs()
+    await installBuiltInSongs()
+    await installVocalSongs()
+    const rows = await db.songs.toArray()
+    expect(rows.filter((r) => r.instrument === 'voice').map((r) => r.builtinId).sort()).toEqual(VOCAL_SONGS.map((s) => s.id).sort())
+    expect(rows.filter((r) => r.instrument === undefined).map((r) => r.builtinId).sort()).toEqual([...IDS].sort())
+    for (const r of rows) expect(!!r.audioData, r.builtinId).toBe(r.instrument !== 'voice')
+  }, 60_000)
+
+  describe('at launch', () => {
+    it('writes the songs to sing when there is a singing profile', async () => {
+      previewSinging(true)
+      await db.profile.put(defaultProfile(1, 'voice'))
+      expect(await refreshRenderedAudio()).toBe(0)
+      const rows = await db.songs.toArray()
+      expect(rows.map((r) => r.builtinId).sort()).toEqual(VOCAL_SONGS.map((s) => s.id).sort())
+      expect(rows.every((r) => r.instrument === 'voice')).toBe(true)
+      // And again at the next launch: the same rows.
+      expect(await refreshRenderedAudio()).toBe(0)
+      expect(await db.songs.toArray()).toEqual(rows)
+    })
+
+    it('writes nothing for someone who only plays the guitar', async () => {
+      previewSinging(true)
+      await db.profile.put(defaultProfile(1, 'guitar'))
+      expect(await refreshRenderedAudio()).toBe(0)
+      expect(await db.songs.count()).toBe(0)
+    })
+
+    it('writes nothing while the singing side is switched off, whatever is stored', async () => {
+      previewSinging(false)
+      await db.profile.put(defaultProfile(1, 'voice'))
+      expect(await refreshRenderedAudio()).toBe(0)
+      expect(await db.songs.count()).toBe(0)
+    })
+
+    it('a failure there does not stop the guitar songs from being refreshed', async () => {
+      previewSinging(true)
+      await db.profile.put(defaultProfile(1, 'voice'))
+      const rec = await builtInSongRecord('ode-to-joy')
+      await db.songs.update(rec.id, { audioName: 'ode-to-joy.v3.wav' })
+      vi.spyOn(db.songs, 'add').mockRejectedValue(new Error('disk full'))
+      expect(await refreshRenderedAudio()).toBe(1)
+      expect((await db.songs.get(rec.id))?.audioName).toBe(synthAudioName('ode-to-joy', null))
+    }, 30_000)
   })
 })

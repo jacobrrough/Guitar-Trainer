@@ -195,8 +195,8 @@ describe('session rules', () => {
     const tempoOf = (tempoCeiling: number) => {
       const stored: LearnerModel = { ...model, skills: { ...model.skills, 'chord.power': st('chord.power', { tempoCeiling }) } }
       const r = find(recommendations(ctx(flat, { model: stored })), 'plateau')
-      expect(r?.action.type).toBe('practice')
-      return r?.action.type === 'practice' ? r.action.tempo : undefined
+      expect(r?.action?.type).toBe('practice')
+      return r?.action?.type === 'practice' ? r.action.tempo : undefined
     }
     // The skills here aim for 120 bpm: a stored 240 gives the same step as 120.
     expect(tempoOf(240)).toBe(tempoOf(120))

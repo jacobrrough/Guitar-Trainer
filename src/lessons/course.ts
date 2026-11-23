@@ -1,5 +1,6 @@
 import { fingeringSentence } from './fingering'
-import type { Lesson, LessonProgress } from './types'
+import type { Lesson, LessonPlay, LessonProgress } from './types'
+import { VOICE_COURSE, VOICE_GOAL_LESSON_ID, VOICE_GOAL_SONG_IDS } from './voiceCourse'
 
 /**
  * The First steps course, in order. Card text is written for someone who has
@@ -9,6 +10,9 @@ import type { Lesson, LessonProgress } from './types'
  * the chord boxes are drawn from. A left or right that depends on how the guitar is held is written
  * {left} or {right} and shown through `forHand`, so a left-handed learner reads what their mirrored
  * pictures show.
+ *
+ * `COURSE` is the guitar course and nothing else. The singing course is its own list (`VOICE_COURSE`
+ * in voiceCourse.ts); the helpers under the list work on either.
  */
 export const COURSE: Lesson[] = [
   {
@@ -112,6 +116,7 @@ export const COURSE: Lesson[] = [
       },
     ],
     drill: null,
+    tool: 'tuner',
     play: { songId: 'open-strings-groove', level: 0, speed: 0.85, view: 'outline' },
     unlocks: [],
     done: 'Your guitar is in tune, and the same groove now sounds much better. Tune up at the start of every practice.',
@@ -506,28 +511,81 @@ export const COURSE: Lesson[] = [
   },
 ]
 
-export function lessonById(id: string): Lesson | undefined {
-  return COURSE.find((l) => l.id === id)
+/**
+ * The course a lesson is part of: the singing course for one of its lessons, the guitar course for any
+ * other id. (By the lists themselves, not through src/training/instruments.ts, which imports this file.)
+ */
+export function courseOfLesson(id: string): Lesson[] {
+  return VOICE_COURSE.some((l) => l.id === id) ? VOICE_COURSE : COURSE
 }
 
-export function nextLessonAfter(id: string): Lesson | undefined {
-  const i = COURSE.findIndex((l) => l.id === id)
-  return i >= 0 ? COURSE[i + 1] : undefined
+// The helpers below take the course to look in. Where a lesson id is given, the default is the course
+// that lesson belongs to. Where only progress rows are given, the default is the guitar course, as it
+// always was: the lesson table holds the rows of both courses, and rows alone do not say which is meant.
+
+/** A lesson by its id, of either course; of `course` alone when one is given. */
+export function lessonById(id: string, course?: Lesson[]): Lesson | undefined {
+  if (course) return course.find((l) => l.id === id)
+  return COURSE.find((l) => l.id === id) ?? VOICE_COURSE.find((l) => l.id === id)
 }
 
-/** Built-in song ids unlocked by the lessons marked done. */
-export function unlockedSongIds(progress: LessonProgress[]): string[] {
+/** The lesson after this one in its own course; undefined after the last. One course never runs on into the other. */
+export function nextLessonAfter(id: string, course: Lesson[] = courseOfLesson(id)): Lesson | undefined {
+  const i = course.findIndex((l) => l.id === id)
+  return i >= 0 ? course[i + 1] : undefined
+}
+
+/** Built-in song ids unlocked by the lessons of `course` marked done. */
+export function unlockedSongIds(progress: LessonProgress[], course: Lesson[] = COURSE): string[] {
   const done = new Set(progress.filter((p) => p.status === 'done').map((p) => p.id))
   const ids: string[] = []
-  for (const lesson of COURSE) {
+  for (const lesson of course) {
     if (!done.has(lesson.id)) continue
     for (const id of lesson.unlocks) if (!ids.includes(id)) ids.push(id)
   }
   return ids
 }
 
-/** The lesson to do next: the first available one, else the first not done. */
-export function nextAvailableLesson(progress: LessonProgress[]): Lesson | undefined {
+/** The lesson of `course` to do next: the one that is open. An open lesson of the other course is not it. */
+export function nextAvailableLesson(progress: LessonProgress[], course: Lesson[] = COURSE): Lesson | undefined {
   const byId = new Map(progress.map((p) => [p.id, p]))
-  return COURSE.find((l) => byId.get(l.id)?.status === 'available')
+  return course.find((l) => byId.get(l.id)?.status === 'available')
+}
+
+/**
+ * The tool a lesson runs as its middle step, where another lesson has its practice round: the tuner,
+ * the range finder, or "meet the note". A lesson with a practice round runs none.
+ */
+export function lessonTool(lesson: Pick<Lesson, 'drill' | 'tool'>): NonNullable<Lesson['tool']> | undefined {
+  return lesson.drill ? undefined : lesson.tool
+}
+
+/** What the song step of a lesson is called: a guitar song is played, a song of the singing course is sung. */
+export function songStepLabel(lesson: Pick<Lesson, 'id'>): 'Play' | 'Sing' {
+  return courseOfLesson(lesson.id) === VOICE_COURSE ? 'Sing' : 'Play'
+}
+
+/** The plays handed out for the last singing lesson, by the lesson's own play and then by song. See `lessonPlayFor`. */
+const goalPlays = new WeakMap<LessonPlay, Map<string, LessonPlay>>()
+
+/**
+ * The song a lesson puts on the screen for this learner. It is the lesson's own, except in the last
+ * singing lesson, which sings the goal the singer picked in set-up (`goalSongId` of the singing
+ * profile). A goal that is missing, or is not one of the songs the course can end on, leaves the
+ * lesson its own song. Null for a lesson without a song.
+ *
+ * The play of the last singing lesson is made here, and two things are kept true of it:
+ * - asked again for the same lesson and song, it is the very same object. A screen asks on every draw,
+ *   and a new object each time would look like a new song to whatever watches the play;
+ * - it cannot be written to, so nothing a screen does with it reaches the next singer, or the course.
+ */
+export function lessonPlayFor(lesson: Pick<Lesson, 'id' | 'play'>, goalSongId?: string): LessonPlay | null {
+  const own = lesson.play
+  if (!own || lesson.id !== VOICE_GOAL_LESSON_ID) return own
+  const songId = goalSongId !== undefined && VOICE_GOAL_SONG_IDS.includes(goalSongId) ? goalSongId : own.songId
+  const bySong = goalPlays.get(own) ?? new Map<string, LessonPlay>()
+  goalPlays.set(own, bySong)
+  const play = bySong.get(songId) ?? Object.freeze({ ...own, songId })
+  bySong.set(songId, play)
+  return play
 }

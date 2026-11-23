@@ -377,7 +377,7 @@ describe('warm-ups and the tempo ceiling', () => {
     expect(applyAttempt(state, warm(66, 0.95, NOW), skill, [], NOW).tempoCeiling).toBe(66)
     expect(applyAttempt(state, warm(57, 0.5, NOW), skill, [], NOW).tempoCeiling).toBe(63)
     // The best skill is the daily warm-up at nine tenths of its ceiling, with a rough round every fifth day.
-    let st = { ...confident, rating: 96, tempoCeiling: 100, lastPracticedAt: NOW - 31 * DAY }
+    let st: SkillState = { ...confident, rating: 96, tempoCeiling: 100, lastPracticedAt: NOW - 31 * DAY }
     let history: Attempt[] = []
     for (let day = 30; day >= 1; day--) {
       const at = NOW - day * DAY

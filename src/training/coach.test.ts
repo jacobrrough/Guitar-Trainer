@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from '../db/db'
 import { createDemoSong } from '../features/library/demoSong'
 import { COURSE, nextAvailableLesson } from '../lessons/course'
@@ -28,6 +28,16 @@ import { exerciseParams } from './exercises'
 import { SKILLS } from './skills'
 import { exportTrainingData, getSession, importTrainingData, listTests, loadLearnerModel, loadProfile, resetTrainingData, saveSession } from './store'
 import type { AttemptResult, Block, ExerciseBlock, SessionRecord, SongBlock, TestTask } from './types'
+
+// The cases below date their rounds in November 2026, and the store asks the clock which rounds are
+// from the last 30 days. Without a fixed clock they would start failing a month after they were written.
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date(2026, 10, 8, 9, 0, 0))
+})
+afterAll(() => {
+  vi.useRealTimers()
+})
 
 // The wizard also installs the bundled songs, which renders audio; these tests are about the course rows.
 vi.mock('../songs', async (importOriginal) => ({ ...(await importOriginal<typeof import('../songs')>()), installBuiltInSongs: vi.fn(async () => {}) }))

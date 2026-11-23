@@ -1,0 +1,10 @@
+{
+  // Type check for the test files, which the app build leaves out. Run with `npm run typecheck:tests`.
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["vite/client", "vite-plugin-pwa/client", "node"]
+  },
+  "include": ["src"],
+  "exclude": []
+}

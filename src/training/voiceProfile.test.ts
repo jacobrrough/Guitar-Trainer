@@ -156,11 +156,20 @@ describe('saving the range', () => {
     ['an easy note between two keys', range({ easy: 58.4 })],
     ['a missing edge', range({ high: Number.NaN })],
     ['a missing easy note', range({ easy: Number.NaN })],
+    ['a lowest note under the lowest the app can follow', range({ low: 35, high: 47, easy: 40 })],
+    ['a highest note above the highest the app can follow', range({ low: 76, high: 87, easy: 80 })],
   ])('refuses a range with %s, and stores nothing', async (_what, bad) => {
     await saveSession(session(TODAY, ['pending']))
     await expect(saveVoiceRange(bad, NOW)).rejects.toThrow(/range/i)
     expect(await db.profile.count()).toBe(0)
     expect(await db.sessions.count()).toBe(1)
+  })
+
+  it('stores a range that sits exactly on the lowest and the highest note the app can follow', async () => {
+    const low = await saveVoiceRange(range({ low: 36, high: 43, easy: 40 }), NOW)
+    expect(low.range).toEqual(range({ low: 36, high: 43, easy: 40 }))
+    const high = await saveVoiceRange(range({ low: 79, high: 86, easy: 82 }), NOW)
+    expect(high.range).toEqual(range({ low: 79, high: 86, easy: 82 }))
   })
 
   it('moves an easy note that lies outside the range onto its nearest edge, rather than refusing the range', async () => {

@@ -1,19 +1,21 @@
 import { ArrowLeft, Mic, MicOff, Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react'
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react'
-import { updateSettings, useSettings } from '../../app/settings'
+import { getSettings, updateSettings, useSettings } from '../../app/settings'
 import { useWakeLock } from '../../app/useWakeLock'
 import { audioEngine } from '../../audio/AudioEngine'
 import { playClick } from '../../audio/metronome/Metronome'
-import type { Chart, ChartNote } from '../../chart/types'
+import { chartBpm, type Chart, type ChartNote } from '../../chart/types'
 import { Button, cx, formatTime } from '../../components/ui'
 import type { AttemptResult } from '../../training/types'
-import { HighwayRenderer } from './Highway'
 import { PlaybackClock } from './PlaybackClock'
 import { detectBleed } from './bleed'
+import { createLaneRenderer, type LaneRenderer } from './laneRenderer'
 import { PitchSmoother } from './pitchTracker'
-import { scoreFrame } from './scoreFrame'
-import { ScoreTracker, type ScoreSummary } from './scoring'
+import { PLAYER_DETECTOR, detectorFor, deviceChangeMakesPartial, guideStartsOn, guideTrackStep, ownSoundCounts, playerLabels, soundMaySwap } from './playerLabels'
+import { createRunTracker, type RunTracker } from './runTracker'
+import type { ScoreSummary } from './scoring'
 import { barStartTime } from './sectionLoop'
+import { lanesVisibleSeconds } from './voice/VoiceLanes'
 import { primeMediaElement } from '../../audio/primeMedia'
 
 export type PlayerMode = 'song' | 'exercise' | 'test'
@@ -53,11 +55,16 @@ export interface PlayerProps {
   /**
    * The same track with the part's notes played (synthesised content only). Off by
    * default while the microphone scores, so a phone speaker cannot score itself.
+   * For a sung chart: the track with the guide voice singing the notes. It is on from the start only
+   * for a singer who wears headphones (`settings.voiceHeadphones`), and may arrive after the player
+   * has mounted (null until it is rendered).
    */
   guideAudio?: Blob | null
   /**
    * `audio` is a click track with no pitched content (the app's own exercises and songs). A phone
    * speaker playing it into the microphone cannot score notes, so such runs count in full.
+   * (The scored track of a sung chart also holds the app's cues; the tracker never credits those, so
+   * for a sung chart this flag is not read.)
    */
   backingIsClick?: boolean
   /** Changing this value resets the player to the start. */
@@ -75,7 +82,10 @@ export interface PlayerProps {
   onPhaseChange?: (phase: PlayerPhase) => void
 }
 
-/** Reusable play-along engine: highway, mic scoring, transport. Song, exercise and test pages wrap it. */
+/**
+ * Reusable play-along engine: highway, mic scoring, transport. Song, exercise and test pages wrap it.
+ * A chart that is sung (`chart.voice`) gets the pitch lanes and the voice tracker instead; no prop says so.
+ */
 export function Player({
   ref,
   title,
@@ -102,13 +112,19 @@ export function Player({
   onPhaseChange,
 }: PlayerProps) {
   const settings = useSettings()
+  // A sung chart says so itself (`chart.voice`): the tracker, the lanes and the words below all follow from it.
+  const sung = Boolean(chart.voice)
+  const labels = playerLabels(chart)
   const [phase, setPhaseState] = useState<PlayerPhase>('ready')
   const [micStatus, setMicStatus] = useState<'off' | 'on' | 'error'>(audioEngine.micActive ? 'on' : 'off')
   const [micError, setMicError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [noticeAction, setNoticeAction] = useState<'speaker-mode' | null>(null)
   // The guitar part is muted while the mic scores on a speaker, unless Speaker mode's echo cancellation keeps it out of the mic.
-  const [guide, setGuide] = useState(() => Boolean(guideAudio) && settings.echoCancellation)
+  // On a sung chart the guide voice is on only for a singer who wears headphones (see `guideStartsOn`).
+  const [guide, setGuide] = useState(() =>
+    guideStartsOn({ voice: sung, hasGuide: Boolean(guideAudio), echoCancellation: settings.echoCancellation, voiceHeadphones: settings.voiceHeadphones }),
+  )
   const [countdown, setCountdown] = useState<number | null>(null)
   const [progress, setProgress] = useState(0)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -117,9 +133,9 @@ export function Player({
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const rendererRef = useRef<HighwayRenderer | null>(null)
+  const rendererRef = useRef<LaneRenderer | null>(null)
   const clockRef = useRef<PlaybackClock | null>(null)
-  const trackerRef = useRef<ScoreTracker | null>(null)
+  const trackerRef = useRef<RunTracker | null>(null)
   const smootherRef = useRef(new PitchSmoother())
   const detectedRef = useRef<{ midi: number | null; matches: boolean }>({ midi: null, matches: false })
   const judgementRef = useRef<{ text: string; at: number } | null>(null)
@@ -152,6 +168,12 @@ export function Player({
   const micOffRef = useRef(false)
   const countInGainRef = useRef<GainNode | null>(null)
   const guideRef = useRef(false)
+  /** The detector was narrowed to a voice by this player and has to be set back when it goes. */
+  const voiceDetectorRef = useRef(false)
+  /** A sung chart's guide track arrived while a run was under way: the switch is put where it starts once the sound may be swapped. */
+  const guideSyncDueRef = useRef(false)
+  /** When this player last opened the microphone (performance.now()); null = it has not. */
+  const micOpenedAtRef = useRef<number | null>(null)
   const phaseRef = useRef<PlayerPhase>('ready')
   const settingsRef = useRef(settings)
   const propsRef = useRef({ chart, notes, speed, loopBars, loopCount, playedTempo, targetTempo, mode, backingIsClick })
@@ -163,7 +185,7 @@ export function Player({
   const lagRef = useRef<() => number>(() => 0)
   lagRef.current = () => (settingsRef.current.latencyMs / 1000) * propsRef.current.speed
   /** Seeks the tracker to `songTime` and, in a section loop, limits scoring to the loop's bars. */
-  const armTracker = useCallback((tracker: ScoreTracker, songTime: number) => {
+  const armTracker = useCallback((tracker: RunTracker, songTime: number) => {
     const p = propsRef.current
     tracker.seek(songTime - lagRef.current())
     if (p.loopBars) tracker.setRange(barStartTime(p.chart, p.loopBars[0]) ?? 0, barStartTime(p.chart, p.loopBars[1] + 1) ?? p.chart.duration)
@@ -238,13 +260,19 @@ export function Player({
     }
   }, [])
 
-  // Score tracker follows the active notes and speed.
+  // Score tracker follows the active notes and speed. Which tracker it is follows from the chart: a
+  // sung chart is scored by listening for a voice, every other chart by listening for a guitar.
   useEffect(() => {
-    const tracker = new ScoreTracker(notes, {
+    const tracker = createRunTracker(chart, notes, {
       octaveTolerance: settingsRef.current.octaveTolerance,
       a4: settingsRef.current.a4,
-      beats: chart.beats,
+      // Asked only for a sung chart, when its first frame arrives: no audio context is made here.
+      sampleRate: () => audioEngine.context.sampleRate,
+      // The player's own smoother, so a guitar tracker rebuilt in the middle of a run still knows the level of a moment ago.
+      smoother: smootherRef.current,
     })
+    // The spectrum analysis costs the worklet time on every frame; a voice is scored from its single pitch.
+    audioEngine.setSpectrum(tracker.needsSpectrum)
     tracker.setSpeed(speed)
     const el = audioRef.current
     if (el && el.currentTime > 0.05) {
@@ -265,13 +293,74 @@ export function Player({
       rendererRef.current = null
       return
     }
-    const renderer = new HighwayRenderer(canvas)
+    // The highway for a guitar chart, the pitch lanes for a sung one.
+    const renderer = createLaneRenderer(propsRef.current.chart, canvas)
     rendererRef.current = renderer
     renderer.resize()
-    const ro = new ResizeObserver(() => renderer.resize())
+    // Whichever renderer holds the canvas at the time (see the effect below).
+    const ro = new ResizeObserver(() => rendererRef.current?.resize())
     ro.observe(canvas)
     resizeObserverRef.current = ro
   }, [])
+
+  /** Puts the guide switch where it starts for the chart on screen (see `guideStartsOn`). */
+  const hasGuide = Boolean(guideAudio)
+  const hasGuideRef = useRef(hasGuide)
+  const syncGuide = useCallback(() => {
+    // Read from the store, not from the last render: the setting may have been changed a line ago.
+    const st = getSettings()
+    guideSyncDueRef.current = false
+    // The microphone was switched off by hand, to listen: then the guide plays, as the microphone button left it.
+    if (micOffRef.current) {
+      setGuide(hasGuideRef.current)
+      return
+    }
+    setGuide(
+      guideStartsOn({ voice: Boolean(propsRef.current.chart.voice), hasGuide: hasGuideRef.current, echoCancellation: st.echoCancellation, voiceHeadphones: st.voiceHeadphones }),
+    )
+  }, [])
+  /** No run is under way and none is being started: the sound may be swapped (see `soundMaySwap`). */
+  const idle = () => soundMaySwap({ phase: phaseRef.current, starting: startingRef.current, listening: listenOnlyRef.current })
+
+  // The chart on screen changed between a guitar chart and a sung one while the player stayed (a
+  // screen that swaps charts without leaving): the same canvas is drawn with the other renderer, and
+  // the guide switch goes where it starts for that kind of chart.
+  const sungRef = useRef(sung)
+  useEffect(() => {
+    if (sungRef.current === sung) return
+    sungRef.current = sung
+    const canvas = canvasRef.current
+    if (canvas) {
+      const renderer = createLaneRenderer(propsRef.current.chart, canvas)
+      rendererRef.current = renderer
+      renderer.resize()
+    }
+    if (idle()) syncGuide()
+  }, [sung, syncGuide])
+
+  // The guide track of a sung chart is rendered after the page has opened, and again for the next
+  // level, so it arrives when the switch has already been set without it. Put the switch where it
+  // starts, as long as no run is under way; during a run the sound must not be swapped, so that
+  // waits. And when the track goes away the switch goes off with it: left on, the next track would
+  // start playing the moment it arrived, in the middle of a run. (See `guideTrackStep`. A guitar
+  // chart keeps what it has always done: a guide that arrives late stays off until tapped.)
+  useEffect(() => {
+    if (hasGuideRef.current === hasGuide) return
+    hasGuideRef.current = hasGuide
+    const step = guideTrackStep({ voice: Boolean(propsRef.current.chart.voice), hasGuide, idle: idle() })
+    if (step === 'set') syncGuide()
+    else if (step === 'wait') guideSyncDueRef.current = true
+    else if (step === 'off') {
+      guideSyncDueRef.current = false
+      setGuide(false)
+    }
+  }, [hasGuide, syncGuide])
+
+  // A switch that had to wait is set as soon as the sound may be swapped: when the run has finished,
+  // or was called off and no new start followed at once.
+  useEffect(() => {
+    if (guideSyncDueRef.current && idle()) syncGuide()
+  }, [phase, starting, syncGuide])
 
   useEffect(() => {
     const update = () => setPortraitPhone(window.innerWidth < 640 && window.innerHeight > window.innerWidth)
@@ -301,12 +390,22 @@ export function Player({
     // No frames at all means no microphone (denied, switched off or dead): the run was not scored, which is not a 0 %.
     if (framesRef.current === 0) tracker.markUnscored()
     tracker.advance(Number.POSITIVE_INFINITY)
+    // A sung run with the guide on: one of the app's own notes came back through the microphone the
+    // way only a speaker plays it, so the guide may have been scored. Asked only while the guide is
+    // on: with it off the cues are all the app plays, they are never credited, and hearing them is
+    // how a bare phone is meant to work.
+    if (guideRef.current && !bleedRef.current && tracker.ownSoundHeard?.()) {
+      bleedRef.current = true
+      setNotice(labels.ownSoundNotice)
+      // No headphones after all: the next screen starts with the guide off.
+      updateSettings({ voiceHeadphones: false })
+    }
     const p = propsRef.current
     const durationSec = startedAtRef.current ? (performance.now() - startedAtRef.current) / 1000 : (el?.currentTime ?? 0)
     const scored = tracker.toAttemptResult({ playedTempo: p.playedTempo, targetTempo: p.targetTempo, speed: p.speed, durationSec })
     const result = partialRef.current ? { ...scored, partial: true } : scored
     onFinished(tracker.summary(), bleedRef.current ? { ...result, bleed: true } : result)
-  }, [endListen, onFinished, setPhase])
+  }, [endListen, labels, onFinished, setPhase])
   const finishRef = useRef(finish)
   finishRef.current = finish
 
@@ -352,7 +451,9 @@ export function Player({
           // The microphone was delivering and has gone quiet for over a second: what passes meanwhile is not the learner's fault.
           if (framesRef.current > 0 && performance.now() - lastFrameAtRef.current > MIC_GAP_MS) partialRef.current = true
           const missed = tracker.advance(t - lagRef.current())
-          if (missed.length) judgementRef.current = { text: 'Miss', at: t }
+          // A sung note that did not count has no word flashed for it (the labels give none): its bar shows it.
+          const missWord = missed.length ? playerLabels(c).judgement('miss') : null
+          if (missWord) judgementRef.current = { text: missWord, at: t }
         }
       }
       const widthFactor = Math.min(1, Math.max(0.45, renderer.width / 900))
@@ -360,7 +461,9 @@ export function Player({
         songTime: t,
         duration,
         notes: n,
+        chart: c,
         statusOf: (noteId) => tracker.stateOfNote(noteId),
+        progressOf: (noteId) => tracker.progressOf?.(noteId),
         beats: c.beats,
         tuning: c.tuning,
         capo: c.capo,
@@ -368,7 +471,8 @@ export function Player({
         detectedMatches: detectedRef.current.matches,
         hud: tracker.summary(),
         lastJudgement: judgementRef.current,
-        visibleSeconds: st.visibleSeconds * sp * widthFactor,
+        // Sung notes are long: the lanes show a number of beats, the highway a number of seconds.
+        visibleSeconds: c.voice ? lanesVisibleSeconds(chartBpm(c), renderer.width, st.visibleSeconds) : st.visibleSeconds * sp * widthFactor,
         showNoteNames: st.showNoteNames,
         paused: phaseRef.current === 'paused',
       })
@@ -403,12 +507,17 @@ export function Player({
           now = pre.song
           songTime = pre.song + (frame.time - pre.ctx) * propsRef.current.speed - lagRef.current()
         }
-        const out = scoreFrame(listening ? null : trackerRef.current, smootherRef.current, frame, songTime, st)
+        const tracker = trackerRef.current
+        if (!tracker) return
+        // `songTime` is null whenever nothing is scored (listening only, paused, before the start): the
+        // tracker then only works out the pitch for the screen and whether this frame is an attack.
+        const out = tracker.frame(frame, songTime, st)
         detectedRef.current.midi = out.midi
         detectedRef.current.matches = out.matches
         // Count-in: microphone attacks right after our own clicks mean the speaker is being heard.
         if (phaseRef.current === 'countin' && out.isAttack && !listening) countInAttacksRef.current.push(frame.time)
-        if (out.judgement) judgementRef.current = { text: out.judgement === 'perfect' ? 'Perfect!' : 'Good', at: now }
+        const word = out.judgement ? playerLabels(propsRef.current.chart).judgement(out.judgement) : null
+        if (word) judgementRef.current = { text: word, at: now }
       }),
     [],
   )
@@ -422,7 +531,7 @@ export function Player({
   }, [])
 
   useEffect(() => {
-    audioEngine.setSpectrum(true)
+    // (The spectrum analysis is switched on by the tracker effect above, for the trackers that need it.)
     const el = audioRef.current
     return () => {
       // Leaving the player: stop anything a pending start() would still do, the backing and the microphone.
@@ -430,14 +539,34 @@ export function Player({
       countInGainRef.current?.disconnect()
       el?.pause()
       audioEngine.setSpectrum(false)
+      // A sung chart narrowed the detector to a voice. Whoever opens the microphone next (the tuner
+      // claims a running one as it is) must find the whole range of a guitar again.
+      if (voiceDetectorRef.current) audioEngine.configureDetector(PLAYER_DETECTOR)
       audioEngine.stopMic()
     }
+  }, [])
+
+  // Headphones pulled out (or a headset connecting) in the middle of a sung run with the guide on:
+  // from here the guide may be coming out of the speaker and scoring itself, so the run is practice.
+  useEffect(() => {
+    const devices = navigator.mediaDevices
+    if (!devices?.addEventListener) return
+    const onDeviceChange = () => {
+      const chart = propsRef.current.chart
+      const sinceMicOpened = micOpenedAtRef.current === null ? Number.POSITIVE_INFINITY : (performance.now() - micOpenedAtRef.current) / 1000
+      if (!deviceChangeMakesPartial({ voice: Boolean(chart.voice), guideOn: guideRef.current, listening: listenOnlyRef.current, phase: phaseRef.current, sinceMicOpened })) return
+      partialRef.current = true
+      setNotice(playerLabels(chart).deviceChangedNotice)
+    }
+    devices.addEventListener('devicechange', onDeviceChange)
+    return () => devices.removeEventListener('devicechange', onDeviceChange)
   }, [])
 
   const startMic = useCallback(async (overrides: { echoCancellation?: boolean } = {}) => {
     try {
       const st = settingsRef.current
       await audioEngine.startMic({ deviceId: st.inputDeviceId || undefined, threshold: 0.9, echoCancellation: overrides.echoCancellation ?? st.echoCancellation })
+      micOpenedAtRef.current = performance.now()
       setMicStatus('on')
       setMicError(null)
     } catch (err) {
@@ -494,6 +623,13 @@ export function Player({
       setNoticeAction(null)
       if (!opts.listen && !micOffRef.current && !audioEngine.micActive && micStatus !== 'error') await startMic()
       if (stale()) return
+      // The detector is set at every start, not only when the microphone is opened here: it may be
+      // running from another screen, or from a chart of the other kind, with a different range. A
+      // guitar chart gets what this player has always opened the microphone with; a sung chart gets
+      // the singer's range, which is what the voice tracker counts on (at the app's own A = 440: the
+      // "Reference pitch" setting is the guitar's and is not handed to anything that is sung).
+      audioEngine.configureDetector(detectorFor(propsRef.current.chart))
+      voiceDetectorRef.current = Boolean(propsRef.current.chart.voice)
       await audioEngine.resume()
       if (stale()) return
       const p = propsRef.current
@@ -544,12 +680,16 @@ export function Player({
         }
         setCountdown(null)
         // Hearing our own clicks only matters when what plays next has pitches in it: the guitar part,
-        // or a real recording. The click track alone cannot score notes.
-        const pitched = guideRef.current || !p.backingIsClick
+        // or a real recording. The click track alone cannot score notes. (On a sung chart: the guide
+        // voice; the cues of its scored track are never credited. See `ownSoundCounts`.)
+        const pitched = ownSoundCounts({ voice: Boolean(p.chart.voice), guideOn: guideRef.current, backingIsClick: p.backingIsClick })
         if (pitched && audioEngine.micActive && detectBleed(clickTimesRef.current, countInAttacksRef.current)) {
+          const words = playerLabels(p.chart)
           bleedRef.current = true
-          setNotice('The microphone is hearing the speaker, so this run will not count towards your progress. Use headphones, or turn on speaker mode.')
-          setNoticeAction('speaker-mode')
+          setNotice(words.bleedNotice)
+          setNoticeAction(words.bleedAction)
+          // A singer whose phone hears its own clicks is not wearing headphones: the guide starts off from now on.
+          if (p.chart.voice) updateSettings({ voiceHeadphones: false })
         }
       }
       try {
@@ -564,7 +704,7 @@ export function Player({
         // Only a start the browser refused for want of a tap skips the count-in next time (it was already heard).
         skipCountInRef.current = blocked
         cancelCountIn()
-        setNotice(blocked ? 'Tap the play button once more to start.' : `Playback failed: ${err instanceof Error ? err.message : String(err)}`)
+        setNotice(blocked ? 'Tap the play button once more to start.' : playerLabels(p.chart).playbackError(err instanceof Error ? err.message : String(err)))
         setPhase('ready')
         return
       }
@@ -575,12 +715,13 @@ export function Player({
       skipCountInRef.current = false
       if (atStart || startedAtRef.current === null) startedAtRef.current = performance.now()
       clockRef.current?.reset()
-      smootherRef.current.reset()
+      // The song's sound starts: the level heard so far and the pitch on screen start afresh (for a guitar chart this resets the smoother above).
+      trackerRef.current?.onPlaybackStart()
       // The silence check counts from here: a pause is not the microphone going quiet.
       lastFrameAtRef.current = performance.now()
       setPhase('playing')
       songStartRef.current = null
-      if (opts.listen) setNotice('Listen first: the part is played for you and nothing is scored.')
+      if (opts.listen) setNotice(playerLabels(p.chart).listenNotice)
     } finally {
       startingRef.current = false
       setStarting(false)
@@ -716,8 +857,8 @@ export function Player({
             disabled={busy || starting}
             aria-pressed={guide}
             onClick={() => setGuide((g) => !g)}
-            title={guide ? 'Guitar part on: it plays along with the drums' : 'Guitar part muted: only the drums play'}
-            aria-label="Toggle the guitar part"
+            title={guide ? labels.guideOn : labels.guideOff}
+            aria-label={labels.guideToggle}
             data-testid="guide-toggle"
           >
             {guide ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
@@ -739,7 +880,15 @@ export function Player({
             } else {
               micOffRef.current = false
               audioEngine.unlock()
-              setGuide(Boolean(guideAudio) && settingsRef.current.echoCancellation)
+              // Scoring again: the guide goes back to where it starts for this chart.
+              setGuide(
+                guideStartsOn({
+                  voice: sung,
+                  hasGuide: Boolean(guideAudio),
+                  echoCancellation: settingsRef.current.echoCancellation,
+                  voiceHeadphones: settingsRef.current.voiceHeadphones,
+                }),
+              )
               void startMic()
             }
           }}
@@ -754,7 +903,7 @@ export function Player({
           {mobileControls ?? headerControls}
         </div>
       )}
-      {micError && <div className="bg-bad/15 px-4 py-1 text-xs text-red-200">Microphone: {micError}. You can still play along without scoring.</div>}
+      {micError && <div className="bg-bad/15 px-4 py-1 text-xs text-red-200">{labels.micError(micError)}</div>}
       {notice && (
         <div className="flex flex-wrap items-center gap-2 bg-accent/15 px-4 py-1 text-xs text-amber-100" data-testid="player-notice">
           <span>{notice}</span>
@@ -784,10 +933,8 @@ export function Player({
             >
               <Play className="h-12 w-12" />
             </button>
-            <p className="text-sm text-muted">{[readyHint ?? `${notesCount} notes · ${Math.round(speed * 100)}% speed`, guideAudio ? (guide ? 'guitar part on' : 'guitar part muted') : null].filter(Boolean).join(' · ')}</p>
-            {guideAudio && !guide && mode !== 'test' && (
-              <p className="max-w-sm text-xs text-muted">The guitar part is muted so the microphone hears you, not the speaker. Tap the speaker icon to hear it, or Listen first.</p>
-            )}
+            <p className="text-sm text-muted">{[readyHint ?? labels.readyLine(notesCount, speed), guideAudio ? (guide ? labels.guideOnShort : labels.guideOffShort) : null].filter(Boolean).join(' · ')}</p>
+            {guideAudio && !guide && mode !== 'test' && <p className="max-w-sm text-xs text-muted">{labels.guideOffWhy}</p>}
             {guideAudio && mode !== 'test' && (
               <Button variant="secondary" size="sm" onClick={listen} data-testid="listen">
                 <Volume2 className="h-4 w-4" /> Listen first
@@ -799,7 +946,7 @@ export function Player({
                 <span className="hidden md:inline"> · Space to pause · R to restart</span>
               </p>
             )}
-            {mode === 'test' && <p className="text-xs text-amber-200">Test: one attempt, no pausing.</p>}
+            {mode === 'test' && <p className="text-xs text-amber-200">{labels.testLine}</p>}
           </div>
         )}
         {countdown !== null && (
