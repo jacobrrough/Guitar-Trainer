@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router'
 import { Button, Card, cx } from '../../components/ui'
 import { skipPlacement, updatePrefs } from '../../training/coach'
 import type { Goal, Profile } from '../../training/types'
-import { GOAL_OPTIONS, MINUTE_OPTIONS } from './todayUtils'
+import { GOAL_OPTIONS, MINUTE_OPTIONS, shownMinutes } from './todayUtils'
 
 type Minutes = Profile['dailyMinutes']
 
@@ -36,18 +36,23 @@ export function GoalChips({ goals, onChange }: { goals: Goal[]; onChange: (goals
   )
 }
 
-export function MinutesPicker({ minutes, onChange }: { minutes: Minutes; onChange: (m: Minutes) => void }) {
+/**
+ * The lengths of a day to choose from: the guitar's four unless `options` says otherwise (a singing
+ * day is offered in three). The one that is lit is the one the Coach will plan (`shownMinutes`).
+ */
+export function MinutesPicker({ minutes, onChange, options = MINUTE_OPTIONS }: { minutes: Minutes; onChange: (m: Minutes) => void; options?: readonly Minutes[] }) {
+  const chosen = shownMinutes(minutes, options)
   return (
     <div className="flex gap-2" role="group" aria-label="Daily minutes">
-      {MINUTE_OPTIONS.map((m) => (
+      {options.map((m) => (
         <button
           key={m}
           type="button"
-          aria-pressed={minutes === m}
+          aria-pressed={chosen === m}
           onClick={() => onChange(m)}
           className={cx(
             'h-9 min-w-14 rounded-lg border px-3 text-sm font-semibold transition-colors',
-            minutes === m ? 'border-accent bg-accent text-slate-950' : 'border-line bg-panel-2 text-slate-200 hover:bg-line',
+            chosen === m ? 'border-accent bg-accent text-slate-950' : 'border-line bg-panel-2 text-slate-200 hover:bg-line',
           )}
         >
           {m} min

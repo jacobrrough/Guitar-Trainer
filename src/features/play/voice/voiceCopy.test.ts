@@ -128,6 +128,70 @@ describe('voice tip', () => {
     expect(voiceTip(feedback({ hits: 0, octave: -1, reasons: { silent: 12 } }))).toBe(VOICE_TIPS.silent)
   })
 
+  describe('where no other go follows', () => {
+    const lastGo = { anotherGo: false }
+    const runs: [string, VoiceFeedback][] = [
+      ['silent', feedback({ hits: 9, reasons: { silent: 3 } })],
+      ['low', feedback({ hits: 8, reasons: { low: 4 } })],
+      ['high', feedback({ hits: 8, reasons: { high: 4 } })],
+      ['unsteady', feedback({ hits: 8, reasons: { unsteady: 4 } })],
+      ['slid', feedback({ reasons: { slid: 5 } })],
+      ['an octave lower', feedback({ octave: -1 })],
+      ['an octave higher', feedback({ octave: 1 })],
+    ]
+
+    it('does not ask for one: the tip about singing under the note stops before "and try again"', () => {
+      expect(voiceTip(feedback({ hits: 8, reasons: { low: 4 } }), undefined, lastGo)).toBe('A little under the note. Think a bit higher.')
+    })
+
+    it('no tip speaks of trying again or of a next time, whatever the run', () => {
+      // The tip that asks for it is one of these: without it this case would hold for any wording.
+      expect(runs.map(([, run]) => voiceTip(run)).filter((tip) => /again/i.test(tip ?? ''))).toEqual([VOICE_TIPS.low])
+      for (const [name, run] of runs) {
+        const tip = voiceTip(run, undefined, lastGo)
+        expect(tip, name).not.toBeNull()
+        expect(tip, name).not.toMatch(/\bagain\b|another go|next time|once more|retry/i)
+        expect(tip, name).not.toMatch(UNKIND)
+        // Still whole sentences, each one finished, and nothing left dangling where the ending was.
+        expect(tip, name).toMatch(/^[A-Z].*[a-z]\.$/)
+        expect(tip, name).not.toMatch(/\band\.|\s\.|\.\./)
+      }
+    })
+
+    it('says everything else exactly as after any other run, and chooses the tip by the same rules', () => {
+      for (const [name, run] of runs) {
+        if (name === 'low') continue
+        expect(voiceTip(run, undefined, lastGo), name).toBe(voiceTip(run))
+      }
+      expect(voiceTip(feedback(), undefined, lastGo)).toBeNull()
+      expect(voiceTip(feedback({ notes: 6, hits: 6, reasons: { slid: 6 } }), { glide: true }, lastGo)).toBeNull()
+      // What cost the most notes still comes first.
+      expect(voiceTip(feedback({ hits: 5, reasons: { silent: 5, low: 1 } }), undefined, lastGo)).toBe(VOICE_TIPS.silent)
+    })
+
+    it('is only left out when the caller says so: said nothing, or told another go follows, the tip is as it always was', () => {
+      const low = feedback({ hits: 8, reasons: { low: 4 } })
+      expect(voiceTip(low)).toBe('A little under the note. Think a bit higher and try again.')
+      expect(voiceTip(low, undefined, {})).toBe(VOICE_TIPS.low)
+      expect(voiceTip(low, undefined, { anotherGo: true })).toBe(VOICE_TIPS.low)
+      expect(voiceTip(low, { glide: true })).toBe(VOICE_TIPS.low)
+    })
+
+    it('every tip that asks for another go asks at its very end, in the words that are cut there', () => {
+      // The asking is taken off the end of a sentence. A tip written later that asks somewhere else
+      // ("Try again, a little higher.") would slip through to a card with no second go: it is caught here.
+      const asking = Object.values(VOICE_TIPS).filter((tip) => /\bagain\b|another go|once more|next time|\bretry\b/i.test(tip))
+      expect(asking.length).toBeGreaterThan(0)
+      for (const tip of asking) {
+        expect(tip).toMatch(/ and try again\.$/)
+        expect(tip.match(/\bagain\b|another go|once more|next time|\bretry\b/gi)).toHaveLength(1)
+        // What is left is the advice, whole: nothing but the asking went.
+        expect(tip.startsWith(tip.replace(/ and try again\.$/, ''))).toBe(true)
+        expect(tip.replace(/ and try again\.$/, '.')).toMatch(/^[A-Z].*[a-z]\.$/)
+      }
+    })
+  })
+
   it('never says louder, wrong or anything unkind, and gives no numbers', () => {
     const sentences = Object.values(VOICE_TIPS)
     expect(sentences.length).toBeGreaterThanOrEqual(7)
@@ -165,6 +229,13 @@ describe('voice result copy from a run', () => {
 
   it('counts the notes from the summary when the run carries no feedback', () => {
     expect(voiceResultCopy(summary())).toEqual({ line: 'You were on the note for 5 of 8 notes.', tip: null })
+  })
+
+  it('hands on that no other go follows: the same line, and a tip that does not ask for one', () => {
+    const low = summary(feedback({ notes: 8, hits: 5, reasons: { low: 3 } }))
+    expect(voiceResultCopy(low, undefined, { anotherGo: false })).toEqual({ line: 'You were on the note for 5 of 8 notes.', tip: 'A little under the note. Think a bit higher.' })
+    expect(voiceResultCopy(low, { glide: true }, { anotherGo: false }).tip).toBe('A little under the note. Think a bit higher.')
+    expect(voiceResultCopy(summary(), undefined, { anotherGo: false })).toEqual({ line: 'You were on the note for 5 of 8 notes.', tip: null })
   })
 })
 

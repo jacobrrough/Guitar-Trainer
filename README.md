@@ -5,6 +5,10 @@ browser. Load a song you own, pick a difficulty, play along on your real guitar 
 scored in real time. Comes with a chromatic tuner and a metronome. No account, no
 subscription, no servers: your audio and progress never leave your device.
 
+The same app also teaches singing: finding your easy notes, a ten-lesson course, daily
+practice and ten songs, scored on whether you are on the note. That side is built and
+still hidden behind a preview key; see [Try singing before it is released](#try-singing-before-it-is-released).
+
 > Status: early but playable (v0.1). See [docs/ROADMAP.md](docs/ROADMAP.md) for what's next.
 
 ## Features
@@ -56,6 +60,16 @@ subscription, no servers: your audio and progress never leave your device.
 - **Installable PWA** – offline-capable service worker, home-screen icons, iOS audio
   session handling, wake lock, phone layout with tap-to-pause, and an icon badge while
   today's session is still waiting.
+- **Singing (preview, hidden until released)** – a "Guitar | Singing" switch turns the app
+  into a singing trainer with its own profile, plan and progress. A range finder (hum one
+  note, slide down and up) finds your easy notes, and every exercise and song is placed
+  inside them. Notes are drawn as bars on pitch lanes with a dot for your voice; a note
+  counts when enough of it is sung in tune, in any octave. Twelve skills with
+  call-and-answer exercises, a ten-lesson First steps course, ten public-domain songs at
+  six levels (from echoing one line to a performance), a weekly check, and a "My voice is
+  tired" button that ends the day without penalty. On a bare phone you sing to a click and
+  a starting note, so the app cannot score its own sound; with headphones a guide voice
+  and guitar chords play along. Design and limits: [docs/SINGING.md](docs/SINGING.md).
 
 ## On your iPhone
 
@@ -85,12 +99,40 @@ npm run build      # production build in dist/
 npm run preview    # serve the production build
 npm run test:e2e   # Playwright smoke test against the build (uses a fake microphone)
 npm run test:student   # a recorded guitar "plays" calibration, lesson 1, songs and a day's plan into the real app
+npm run test:singer    # a computed voice "sings" one exercise into the real app: in tune, flat and not at all
 npm run typecheck
+npm run typecheck:tests   # the test files, which the app build leaves out
 ```
+
+`test:student` and `test:singer` build the app first. `E2E_OUTPUT=<folder>` sends their
+rendered takes and screenshots somewhere other than `e2e/output`.
 
 Deploying is a static upload of `dist/`. The included GitHub Actions workflow runs the tests and
 publishes to GitHub Pages on every push to `main` (enable it once in *Settings → Pages →
 Source: GitHub Actions*). For hosting under a sub-path, build with `BASE_PATH=/your-path/`.
+
+## Try singing before it is released
+
+The singing side ships in every build and stays out of sight until `VOICE_RELEASED` in
+`src/app/features.ts` is set to `true`. To look at it on one device, open the app, run this
+in the browser console, and reload:
+
+```js
+localStorage.setItem('gt.voice', '1')
+```
+
+A "Guitar | Singing" switch appears above Today, Songs and Progress (under the app's name on
+a wide screen). Tap **Singing** and the
+set-up starts: a few questions, a microphone check and the range finder. Your guitar data is
+not touched, and `localStorage.removeItem('gt.voice')` hides the singing side again (what you
+sang stays stored).
+
+What to know before relying on it: the scoring of singing is proven with a computed singer,
+a model of a voice that goes through the same analyser and tracker as a microphone would,
+plus one exercise sung into the real app in a browser. No person has sung into it and it has
+not run on a phone. The model has no vocal fry, no break into the light voice and no child's
+voice. The checks that need a real phone and a real voice are listed in
+[docs/SINGING.md](docs/SINGING.md) §11.
 
 ## How to use it
 
@@ -150,7 +192,9 @@ See [docs/ROADMAP.md](docs/ROADMAP.md); the Coach's remaining phases are in
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Short version: Vite + React + TypeScript
 PWA; one `AudioContext`; an AudioWorklet posts pitch frames; every chart source converts
 into one `Chart` model; difficulty levels are derived deterministically; IndexedDB holds
-songs, charts and scores.
+songs, charts and scores. A chart that says it is sung gets a voice tracker and pitch lanes
+in place of the guitar tracker and the highway; how the two instruments share the app is in
+the same document, and the singing side in full in [docs/SINGING.md](docs/SINGING.md).
 
 ## Browser support
 

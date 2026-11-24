@@ -1008,7 +1008,8 @@ export function Player({
           aria-label="Position"
         />
         <span className="w-10 text-xs tabular-nums text-muted">{formatTime(duration)}</span>
-        {mode === 'song' && (
+        {/* Not on a sung chart: a number of milliseconds is nothing a new singer can use. Their sound delay is measured in the set-up. */}
+        {mode === 'song' && !sung && (
           <label className="hidden items-center gap-1 text-xs text-muted md:flex">
             Latency
             <input

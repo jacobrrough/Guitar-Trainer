@@ -17,13 +17,14 @@
  *
  * The takes are rendered by src/features/play/voice/e2eVoiceFixtures.test.ts from the exercise the
  * app builds, on every run, and scored there first. The app under test has to be built from the same
- * code, as for the virtual student (e2e/student.mjs): the first check compares the exercise on screen
- * with the one the takes were sung for.
+ * code, as for the virtual student (e2e/student.mjs): the first checks compare the exercise on screen,
+ * and its notes one by one, with what the takes were sung for.
  *
  * The script is a list of parts (`PARTS`), each a function that is handed the rig: the browser, the
  * address of the app, and the takes. The first part is the early proof on the hidden page
  * /voice-check, one generated exercise in the real player. A walk through the whole singing side
- * (set-up, a lesson, a song, a day's plan) is another part of the same shape.
+ * (set-up, a lesson, a song, a day's plan) is another part of the same shape; the names its checks
+ * answer to under `ONLY` go into `NAMES`.
  */
 import { spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -186,7 +187,7 @@ async function songAt(page, seconds) {
 // Part 1: the early proof. One generated exercise ("Match a note") in the real player, on /voice-check.
 // ---------------------------------------------------------------------------------------------------
 
-/** /voice-check with the player ready and its guide track there, on a fresh device (`device`: see `openDevice`). */
+/** /voice-check with the player ready and its guide track there, on a fresh device (`options`: what kind of device, see `openDevice`). */
 async function openVoiceCheck(rig, settings = {}, options = {}) {
   const device = await openDevice(rig, '/voice-check', { ...options, settings })
   await device.page.waitForSelector('[data-testid="voice-check"]', { timeout: 20000 })
@@ -234,6 +235,13 @@ async function tryAgain(page) {
 
 /** From this accuracy on the Coach calls a round clean (docs/SINGING.md §9: what singing in tune must reach). */
 const CLEAN = 0.85
+
+/**
+ * A second run in the same player came out as a clean round of its own: every note of the exercise on
+ * the note, and no more notes than the exercise has. Counts left over from the run before would show
+ * as more notes than there are, misses left over as an accuracy that is not clean.
+ */
+const cleanRoundOfItsOwn = (rig, read) => read.total === rig.fixtures.voiceCheck.notes && read.hits === read.total && read.accuracy >= CLEAN && read.accuracy <= 1
 
 const noErrors = (errors, take) => check(errors.length === 0, `${take}: no console errors${errors.length ? `: ${errors.slice(0, 3).join(' | ')}` : ''}`)
 
@@ -291,6 +299,13 @@ const TAKES = {
     check(read.cardVerdict === 'unscored' && read.verdict === 'unscored', `nobody sings: nothing was scored, and the card says so (${read.verdict}, card ${read.cardVerdict})`)
     check(read.hits === 0, `nobody sings: no note counts (${read.hits} of ${read.total})`)
     check(/could not hear you sing/.test(read.card ?? '') && !/guitar/i.test(read.card ?? ''), `the card speaks to a singer ("${(read.card ?? '').slice(0, 120)}")`)
+    // "Try again", and this time somebody sings. The four notes nobody sang must not be in this result:
+    // not as misses, and not as the tip (what cost the most notes is what the tip is about).
+    await tryAgain(page)
+    const again = await singTake(rig, page, 'octave-down', null, 'after-silence')
+    check(again.verdict === 'counted' && again.cardVerdict === null, `"Try again" after nobody sang, now sung in tune: the run counts (${again.verdict})`)
+    check(cleanRoundOfItsOwn(rig, again), `and nothing of the silent run is in its result (${again.hits} of ${again.total}, accuracy ${again.accuracy})`)
+    check(/octave lower/.test(again.tip ?? '') && !/could not hear/.test(again.tip ?? ''), `nor in its tip ("${again.tip}")`)
     noErrors(errors, 'silence')
     await context.close()
   },
@@ -302,7 +317,10 @@ const TAKES = {
     check(read.hits === 0, `guide off, the app's own starting notes come back through the microphone: they score nothing (${read.hits} of ${read.total})`)
     check(read.verdict === 'unscored', `and the run reads as not heard, not as the speaker being heard (${read.verdict})`)
     check(read.notice === null, `no notice blames the speaker (${read.notice})`)
-    check((await storedSettings(page)).voiceHeadphones !== true, 'the headphones setting is untouched')
+    // The app stores its settings only when it changes one, and the one it changes by itself is "I use
+    // headphones" (to off, when it takes a run for the speaker's). So it must have stored none here.
+    const stored = await storedSettings(page)
+    check(!('voiceHeadphones' in stored), `the app has not touched the headphones setting (stored: ${Object.keys(stored).join(', ')})`)
     noErrors(errors, 'own-track')
     await context.close()
   },
@@ -315,7 +333,7 @@ const TAKES = {
     const read = await singTake(rig, page, 'guide')
     check(read.verdict === 'bleed' && read.cardVerdict === 'bleed', `the guide heard through the microphone does not count (${read.verdict}, card ${read.cardVerdict})`)
     check(/guide/.test(read.notice ?? '') && /headphones/i.test(read.notice ?? ''), `the notice says what to do ("${read.notice}")`)
-    check((await page.getByTestId('speaker-mode').count()) === 0, 'no speaker mode is offered for singing')
+    // (Speaker mode is only ever offered when the count-in clicks were heard: see the take `speaker`.)
     check((await storedSettings(page)).voiceHeadphones === false, '"I use headphones" is set back to off')
     check(/own sound/.test(read.card ?? '') && /guide/.test(read.card ?? ''), `the card speaks of the guide ("${(read.card ?? '').slice(0, 120)}")`)
     // The card offers "Try again": with the guide still on, that try would be lost the same way.
@@ -326,7 +344,7 @@ const TAKES = {
     await tryAgain(page)
     const again = await singTake(rig, page, 'octave-down', null, 'after-guide')
     check(again.verdict === 'counted' && again.cardVerdict === null, `"Try again" after that, with the guide off: singing in tune counts (${again.verdict})`)
-    check(again.total > 0 && again.hits >= Math.ceil(again.total * 0.85), `and is heard as on the note (${again.hits} of ${again.total})`)
+    check(cleanRoundOfItsOwn(rig, again), `and is a clean round of its own (${again.hits} of ${again.total}, accuracy ${again.accuracy})`)
     check(again.notice === null, `the notice about the guide is gone (${again.notice})`)
     check(!(await guideIsOn(page)) && (await storedSettings(page)).voiceHeadphones === false, 'the guide and "I use headphones" stay off')
     noErrors(errors, 'guide')
@@ -356,7 +374,7 @@ const TAKES = {
     check(await guideIsOn(page), '"Try again": the guide voice is still on')
     const again = await singTake(rig, page, 'in-tune', null, 'in-tune-again')
     check(again.verdict === 'counted' && again.cardVerdict === null, `sung again with the guide in the headphones and no change on the way: the run counts (${again.verdict})`)
-    check(again.total > 0 && again.hits >= Math.ceil(again.total * 0.85) && again.accuracy >= CLEAN, `and it is a clean round (${again.hits} of ${again.total}, accuracy ${again.accuracy})`)
+    check(cleanRoundOfItsOwn(rig, again), `and it is a clean round of its own (${again.hits} of ${again.total}, accuracy ${again.accuracy})`)
     check(again.notice === null, `no notice is left over from the run before (${again.notice})`)
     check((await storedSettings(page)).voiceHeadphones === true && (await guideIsOn(page)), 'a singer with headphones on is not taken for the speaker: the setting and the guide stay on')
     noErrors(errors, 'in-tune')
@@ -401,7 +419,7 @@ const TAKES = {
     check(/hearing the speaker/.test(notice ?? '') && /will not count/.test(notice ?? '') && /headphones/i.test(notice ?? '') && /guide off/.test(notice ?? ''), `guide on: the clicks heard in the count-in stop the run from counting, and the notice says what to do ("${notice}")`)
     check((await page.getByTestId('speaker-mode').count()) === 0, 'and it does not offer speaker mode, which would take the voice out with the guide')
     await songAt(page, 1)
-    check(await guideIsOn(page), 'the sound is not swapped under a run: the guide plays on to the end of it')
+    check(await guideIsOn(page), 'the sound is not swapped under the run: the guide stays on while it plays')
     // Called off: the next start must not be lost the same way.
     await page.getByRole('button', { name: 'Restart', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-testid="guide-toggle"]')?.getAttribute('aria-pressed') === 'false', null, { timeout: 3000 }).catch(() => {})

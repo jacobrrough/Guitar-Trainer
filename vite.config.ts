@@ -24,7 +24,7 @@ export default defineConfig({
       manifest: {
         name: 'Guitar Trainer',
         short_name: 'Guitar Trainer',
-        description: 'Free, open-source guitar trainer. Play along to your songs with adjustable difficulty, tune up and keep time.',
+        description: 'Free, open-source trainer for guitar and singing. Play along to your songs with adjustable difficulty, learn to sing in tune, tune up and keep time.',
         id: '.',
         start_url: '.',
         scope: '.',

@@ -1,5 +1,6 @@
 import { COURSE, nextAvailableLesson } from '../../lessons/course'
-import type { LessonProgress } from '../../lessons/types'
+import type { Lesson, LessonProgress } from '../../lessons/types'
+import { instrumentOfLessonId } from '../../training/instruments'
 
 export interface CourseEntry {
   title: string
@@ -10,23 +11,34 @@ export interface CourseEntry {
   to: string
 }
 
+/** What the card says about a course nobody has started, and what a finished one is still good for. */
+const COURSE_WORDS = {
+  guitar: { leadsTo: 'from holding the guitar to playing your first songs', lookUp: 'like how to hold a chord' },
+  voice: { leadsTo: 'from finding your easy notes to singing your first whole song', lookUp: 'like how to breathe for a long note' },
+} as const
+
 /**
  * The card on Today that opens the First steps lessons. There is always one, whatever happened to
  * the course (finished, skipped, never started): the lessons are the only place that shows how to
  * hold the guitar or finger a chord, and the app has no other way to them.
+ *
+ * `course` is the course of the instrument on screen (the guitar's unless told otherwise). The lesson
+ * table holds the rows of both courses, so only the rows of `course` are counted: finished guitar
+ * lessons do not make a singer a graduate. The words are a singer's when the course is the singing one.
  */
-export function courseEntry(progress: LessonProgress[] | undefined): CourseEntry {
-  const total = COURSE.length
+export function courseEntry(progress: LessonProgress[] | undefined, course: Lesson[] = COURSE): CourseEntry {
+  const total = course.length
+  const words = COURSE_WORDS[course.length > 0 ? instrumentOfLessonId(course[0].id) : 'guitar']
   const doneIds = new Set((progress ?? []).filter((p) => p.status === 'done').map((p) => p.id))
-  const done = COURSE.filter((l) => doneIds.has(l.id)).length
+  const done = course.filter((l) => doneIds.has(l.id)).length
   const base = { title: 'First steps lessons', to: '/lessons' }
   if (done >= total) {
-    return { ...base, line: `All ${total} lessons done. Open them any time to look something up, like how to hold a chord.`, action: 'Open the lessons' }
+    return { ...base, line: `All ${total} lessons done. Open them any time to look something up, ${words.lookUp}.`, action: 'Open the lessons' }
   }
   if (done === 0) {
-    return { ...base, line: `${total} short lessons, from holding the guitar to playing your first songs. Open them any time.`, action: 'Open the lessons' }
+    return { ...base, line: `${total} short lessons, ${words.leadsTo}. Open them any time.`, action: 'Open the lessons' }
   }
-  const next = nextAvailableLesson(progress ?? []) ?? COURSE.find((l) => !doneIds.has(l.id))
+  const next = nextAvailableLesson(progress ?? [], course) ?? course.find((l) => !doneIds.has(l.id))
   const nextText = next ? ` Next is lesson ${next.number}: ${next.title}.` : ''
   return { ...base, line: `You have done ${done} of ${total} lessons.${nextText}`, action: 'Carry on with the lessons' }
 }
@@ -34,11 +46,13 @@ export function courseEntry(progress: LessonProgress[] | undefined): CourseEntry
 /**
  * A line for the top of the course page when the learner left the course for daily sessions with
  * lessons still to do: they came back, so say plainly that carrying on is fine. Null otherwise.
+ * Asked about one course (the guitar's unless told otherwise): a singer who finished the singing
+ * course has no lessons left, however many guitar lessons are still open.
  */
-export function resumeNote(profile: { firstStepsDoneAt?: number } | undefined, progress: LessonProgress[] | undefined): string | null {
+export function resumeNote(profile: { firstStepsDoneAt?: number } | undefined, progress: LessonProgress[] | undefined, course: Lesson[] = COURSE): string | null {
   if (!profile?.firstStepsDoneAt || !progress) return null
   const doneIds = new Set(progress.filter((p) => p.status === 'done').map((p) => p.id))
-  if (COURSE.every((l) => doneIds.has(l.id))) return null
+  if (course.every((l) => doneIds.has(l.id))) return null
   return 'You moved on to daily sessions before the end of these lessons. They are all still here: carry on with the next one whenever you like.'
 }
 

@@ -188,10 +188,33 @@ export function nextPlacementTask(tasks: TestTask[], results: TestTaskResult[]):
   return tasks.find((t) => !done.has(t.id)) ?? null
 }
 
+/**
+ * Room for the last digit of a sum. A note that is hit and not perfect counts four fifths, and four
+ * fifths cannot be written exactly in floating point: 43 such notes of 43 add up to
+ * 0.7999999999999999, one digit under a pass mark of 0.8, and so do 4 clean notes, 1 such note and
+ * 1 miss of 6. A run that is really under a mark given in whole percent is under it by at least one
+ * part in five hundred times its number of notes, so this decides nothing but that last digit.
+ */
+const MARK_TOLERANCE = 1e-9
+
+/**
+ * Whether an accuracy reaches a pass mark, counted as the rule is written and not to the last digit
+ * of the sum. The verdict (`meetsCriteria`) and the card that explains it (taskResult.ts) both ask
+ * here, so they cannot disagree. At the guitar's mark of 0.85 no mix of perfect, good and missed
+ * notes comes out a digit under (every mix of up to 3000 notes was counted through), so no guitar
+ * verdict changes; it is the sung mark of 0.8 that needs it.
+ *
+ * Asked as "not under the mark", as the rule always was: a result with no numbers in it (nothing in
+ * the app writes one) is then read exactly as before, and not turned round by the way this is put.
+ */
+export function reachesMark(accuracy: number, mark: number): boolean {
+  return !(accuracy + MARK_TOLERANCE < mark)
+}
+
 /** Pass check for raw numbers against criteria. */
 export function meetsCriteria(criteria: PassCriteria, result: AttemptResult): boolean {
   const acc = result.total > 0 ? (result.perfects + GOOD_HIT_WEIGHT * result.goods) / result.total : 0
-  if (acc < criteria.minAccuracy) return false
+  if (!reachesMark(acc, criteria.minAccuracy)) return false
   const hits = result.perfects + result.goods
   if (result.timingMedianMs === null) {
     if (hits >= MIN_HITS_FOR_TIMING) return false
@@ -237,13 +260,74 @@ export interface CheckpointOptions {
   minTempoOf?: (skill: SkillDef) => number | undefined
   /** false where a song has a single speed: the song task then does not ask for "full speed". Default true. */
   songsHaveSpeeds?: boolean
+  /** What the tasks are called and how the report reads. What is left out is the guitar's, letter for letter. */
+  copy?: Partial<CheckCopy>
+}
+
+/**
+ * The words of a weekly or monthly check that differ between instruments: what its tasks are called,
+ * and the lines of its report. A task keeps the title it was built with, so the cards before and after
+ * a task and the report all name it the same way.
+ */
+export interface CheckCopy {
+  /** Title of the task on the skill the learner is working on. */
+  focus: (skillName: string) => string
+  /** Title of the task on a skill that was solid before: has it stayed? */
+  retention: (skillName: string) => string
+  /** Title of the song task. `level` is the level index, 0 to 5. */
+  song: (songTitle: string, level: number) => string
+  /** One line of the report: a task, and how it went. */
+  line: (taskTitle: string, passed: boolean) => string
+  /** The first line of the report: how many of the tasks went well. */
+  headline: (type: Exclude<TestType, 'placement'>, passed: number, tasks: number) => string
+}
+
+/** The guitar's words, as its checks have always had them. Stored reports and the tests of the screens hold them letter for letter. */
+const GUITAR_CHECK_COPY: CheckCopy = {
+  focus: (skillName) => `Focus: ${skillName}`,
+  retention: (skillName) => `Retention: ${skillName}`,
+  song: (songTitle, level) => `Stretch: ${songTitle} (Level ${level + 1})`,
+  line: (taskTitle, passed) => `${taskTitle}: ${passed ? 'passed' : 'not yet'}`,
+  headline: (type, passed, tasks) => `${type === 'checkpoint' ? 'Checkpoint' : 'Monthly check'}: ${passed} of ${tasks} passed`,
+}
+
+/** `given` on top of the guitar's words; a word given as undefined is a word not given. */
+function checkCopy(given: Partial<CheckCopy> = {}): CheckCopy {
+  return {
+    focus: given.focus ?? GUITAR_CHECK_COPY.focus,
+    retention: given.retention ?? GUITAR_CHECK_COPY.retention,
+    song: given.song ?? GUITAR_CHECK_COPY.song,
+    line: given.line ?? GUITAR_CHECK_COPY.line,
+    headline: given.headline ?? GUITAR_CHECK_COPY.headline,
+  }
+}
+
+/**
+ * The six levels of a song to sing, by the names the song page gives them. They are written out here
+ * because this file knows nothing of songs, and the words of a check come in through its options as
+ * the verb does. The trap is a level renamed in one place only: a test holds this list to the levels
+ * themselves (VOICE_LEVELS), name for name.
+ */
+const SUNG_LEVEL_NAMES: readonly string[] = ['Echo each line', 'Echo two lines', 'Whole tune', 'In tune', 'Hold the long notes', 'Performance']
+
+/**
+ * A singer's words. "Focus", "Retention" and "Stretch" are the Coach's own book-keeping: a singer is
+ * told what is sung, and nothing else. A song is named with its level as the song page names it
+ * ("Hot Cross Buns (Echo two lines)"), and a task went "done well" or "not yet".
+ */
+const VOICE_CHECK_COPY: CheckCopy = {
+  focus: (skillName) => skillName,
+  retention: (skillName) => skillName,
+  song: (songTitle, level) => (SUNG_LEVEL_NAMES[level] === undefined ? songTitle : `${songTitle} (${SUNG_LEVEL_NAMES[level]})`),
+  line: (taskTitle, passed) => `${taskTitle}: ${passed ? 'done well' : 'not yet'}`,
+  headline: (_type, passed, tasks) => `Check: ${passed} of ${tasks} done well`,
 }
 
 /**
  * The weekly check of a singer (docs/SINGING.md §6 and §12.14). The Coach adds `paramsFor` with the
- * singer's range and reachable steps.
+ * singer's range and reachable steps. The same options word the report (`applyTestResults`).
  */
-export const VOICE_CHECK_OPTIONS: CheckpointOptions = { criteria: VOICE_TEST_PASS, verb: 'Sing', maxBars: 8, songsHaveSpeeds: false }
+export const VOICE_CHECK_OPTIONS: CheckpointOptions = { criteria: VOICE_TEST_PASS, verb: 'Sing', maxBars: 8, songsHaveSpeeds: false, copy: VOICE_CHECK_COPY }
 
 /** Checkpoint tasks (docs §7): focus skill, retention task, stretch song. */
 export function checkpointTasks(
@@ -257,7 +341,8 @@ export function checkpointTasks(
   const tasks: TestTask[] = []
   const criteria = options.criteria ?? TEST_PASS
   const verb = options.verb ?? 'Play'
-  const skillTask = (id: string, skill: SkillDef, label: string): TestTask => {
+  const copy = checkCopy(options.copy)
+  const skillTask = (id: string, skill: SkillDef, titled: (skillName: string) => string): TestTask => {
     const state = model.skills[skill.id]
     const extra = options.paramsFor?.(skill, state) ?? {}
     const steps = skill.steps ?? []
@@ -293,7 +378,7 @@ export function checkpointTasks(
     const params = exerciseParams(skill, generatorId, tempo, { ...asked, bars })
     return {
       id,
-      title: `${label}: ${skill.name}`,
+      title: titled(skill.name),
       instructions,
       skillIds: [skill.id],
       generatorId,
@@ -304,7 +389,7 @@ export function checkpointTasks(
   }
 
   const focus = skills.find((s) => s.id === focusSkillId)
-  if (focus) tasks.push(skillTask('checkpoint-01', focus, 'Focus'))
+  if (focus) tasks.push(skillTask('checkpoint-01', focus, copy.focus))
 
   const solid = skills
     .filter((s) => s.id !== focusSkillId && (model.skills[s.id]?.rating ?? 0) >= 75)
@@ -312,14 +397,14 @@ export function checkpointTasks(
   if (solid.length > 0) {
     const seed = dayNumber(now)
     const pick = solid[((seed * 1103515245 + 12345) >>> 0) % solid.length]
-    tasks.push(skillTask('checkpoint-02', pick, 'Retention'))
+    tasks.push(skillTask('checkpoint-02', pick, copy.retention))
   }
 
   const stretch = stretchSong(model, library)
   if (stretch) {
     tasks.push({
       id: 'checkpoint-03',
-      title: `Stretch: ${stretch.song.title} (Level ${stretch.level + 1})`,
+      title: copy.song(stretch.song.title, stretch.level),
       instructions: `${verb} ${stretch.song.title} at Level ${stretch.level + 1}${options.songsHaveSpeeds === false ? '' : ', full speed'}.`,
       skillIds: [],
       generatorId: 'song',
@@ -510,6 +595,11 @@ export function applyPlacement(
   }
 }
 
+/**
+ * Applies the results of a weekly or monthly check to the learner model and writes its report.
+ * `options.copy` words the report (the options the tasks were built with can be handed in as they
+ * are); left out, the report reads as the guitar's always did.
+ */
 export function applyTestResults(
   model: LearnerModel,
   type: Exclude<TestType, 'placement'>,
@@ -518,7 +608,9 @@ export function applyTestResults(
   skills: SkillDef[],
   applyAttempt: ApplyAttemptFn,
   now: number,
+  options: Pick<CheckpointOptions, 'copy'> = {},
 ): { model: LearnerModel; report: TestReport } {
+  const copy = checkCopy(options.copy)
   const byId = new Map(skills.map((s) => [s.id, s]))
   const resultById = new Map(results.map((r) => [r.taskId, r]))
   const nextSkills: Record<string, SkillState> = { ...model.skills }
@@ -529,7 +621,7 @@ export function applyTestResults(
   for (const task of tasks) {
     const res = resultById.get(task.id)
     if (!res) continue
-    lines.push(`${task.title}: ${res.passed ? 'passed' : 'not yet'}`)
+    lines.push(copy.line(task.title, res.passed))
     if (task.generatorId === 'song') continue
     for (const id of task.skillIds) {
       const def = byId.get(id)
@@ -552,7 +644,6 @@ export function applyTestResults(
   for (const id of Object.keys(before)) ratingDeltas[id] = round1(nextSkills[id].rating - before[id])
 
   const passedCount = tasks.filter((t) => resultById.get(t.id)?.passed).length
-  const label = type === 'checkpoint' ? 'Checkpoint' : 'Monthly check'
   const ratings = ratingsOf(next)
   const lowest = skills
     .filter((s) => s.id in ratings)
@@ -561,6 +652,6 @@ export function applyTestResults(
   const nextFocus = [...failedSkills, ...lowest.filter((id) => !failedSkills.includes(id))].slice(0, 3)
   return {
     model: next,
-    report: { headline: `${label}: ${passedCount} of ${tasks.length} passed`, lines, ratingDeltas, nextFocus },
+    report: { headline: copy.headline(type, passedCount, tasks.length), lines, ratingDeltas, nextFocus },
   }
 }

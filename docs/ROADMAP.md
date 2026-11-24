@@ -39,6 +39,79 @@
   public-domain songs played by the app's guitar, finger numbers and string names on the
   note lane, left-handed mirroring, and plain-language copy throughout
 
+## Singing
+
+<!-- RELEASE STATUS: the one sentence below is what changes when VOICE_RELEASED in src/app/features.ts becomes true
+     (then: "Status: released; the singing side shows on every device."), together with item 3 of "Next for singing". -->
+**Status:** the singing side is in every build and hidden: it shows only on a device that stores `'1'` under the localStorage key `gt.voice`, because `VOICE_RELEASED` in `src/app/features.ts` is `false`.
+
+What is in it (`SINGING.md` has the detail):
+
+- One app, two instruments: a "Guitar | Singing" switch, a second profile, and one plan a
+  day for each. Guitar data is not rewritten; a backup holds both.
+- Scoring for a voice: the share of each note sung inside a band of cents, in any octave,
+  with the app's own starting notes never credited. Proven with a computed singer through
+  the app's analyser (in tune, flat, sharp, another octave, vibrato, late, quiet, one held
+  note, nobody singing, the app's own tracks alone), not with a person.
+- A range finder (a hum and four slides, under a minute), and every exercise and song
+  placed in the singer's own easy notes.
+- Twelve singing skills with generated call-and-answer exercises. Skills where slower is
+  not easier keep one tempo and climb a ladder of steps.
+- Ten songs to sing at six levels, arranged for the singer's key and rendered when opened;
+  nothing is stored per key.
+- A ten-lesson First steps course for singing, the Coach's daily plan, a weekly check,
+  progress and settings for a singer.
+- A first browser proof (`npm run test:singer`): one sung exercise in the real player,
+  sung in tune, flat and not at all, with and without the app's own sound in the microphone.
+
+Left out on purpose:
+
+- A rhythm skill (the voice tracker reports no spread of note onsets), a scored hum and a
+  breath-flow skill (no pitch, and level is weak evidence), finding the note from chords
+  (no chords play under exercises), louder and softer, and a skill that widens the range.
+- A 5-minute day. A voice is always warmed up first, so the shortest singing day is 10
+  minutes.
+- A starting check and a monthly check. Singing has the weekly one.
+- Slowing a song down. A sung song has one speed; its levels withdraw help instead.
+- Any automatic widening of the range, and any guess from sex or age.
+
+Known limits:
+
+- No real voice and no real phone has been through it. The singer in the tests is a model:
+  vocal fry, a break into the light voice, subharmonics and children's voices are not in
+  it. The clarity gate and the shares may need retuning from real recordings.
+- The pitch detector's window is 2048 samples at every sample rate. Through a wireless
+  headset's microphone (16 kHz) that is 128 ms: a low voice with a wide vibrato is counted
+  but not clean, a singer steadily 60 cents off on quick notes is given up to 4 notes in
+  18, and the count-in check can miss a faint speaker (the second check still catches it).
+- A sung song is arranged and rendered on the main thread after the page has painted;
+  only its chords are rendered in the worker. On a slow phone the page does not answer
+  for that moment.
+- The ten tunes were written from memory by two engineers, one after the other, and
+  compared with the guitar bundle where a tune is shared. No score library could be
+  reached, so none is checked against a published score.
+- Nobody has listened to the guide voice or to the level of the chords under it.
+- The browser proof covers one exercise on a hidden page. The set-up, a lesson, a song
+  and a day's plan are covered by unit tests and simulations only.
+
+Next for singing:
+
+1. **The device checks** in `SINGING.md` §11, with a real voice on a real phone, and
+   recordings of real singers to retune the gates from.
+2. **A full browser walk** in `e2e/singer.mjs`: set-up, lessons 1 to 3, a song, a planned
+   block, with guitar data beside it unchanged.
+3. **Release**: flip `VOICE_RELEASED`, change the two cases in
+   `src/training/instruments.test.ts` that pin it off and the "hidden" check of
+   `e2e/singer.mjs` in the same commit, and decide whether `/voice-check` stays.
+4. **A shorter detector window at low sample rates** (1024 samples with a hop of 256 at
+   24 kHz and below, with `VOICE.hopSamples` and `VOICE.windowCentreSamples` following).
+   It changes the guitar's detector as well and needs a real headset to judge.
+5. **Sung songs rendered in a worker.** The worker's client is private to
+   `src/audio/guitar.ts`, and a worker that imports `render.ts` would import its own
+   spawner, so the pure render functions have to move to a file of their own first.
+6. **The tunes against a score**, and the guide voice by ear.
+7. The skills left out above, once the tracker can measure what they need.
+
 ## Next
 
 1. **Tab view** – render the real tablature with alphaTab under/instead of the
@@ -58,6 +131,9 @@
    matching; vibrato depth/rate measurement for `lead.vibrato`.
 
 ## Known limitations
+
+The limits of the singing side are listed under "Singing" above; these are the guitar's
+and the app's.
 
 - Transcription of full mixes is rough; the model works best on exposed guitar.
   Stem separation is the planned fix.

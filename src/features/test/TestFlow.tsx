@@ -25,9 +25,8 @@ import { NotCountedCard } from '../play/NotCountedCard'
 import { Player, type PlayerHandle } from '../play/Player'
 import { runVerdict, type RunVerdict } from '../play/runVerdict'
 import type { ScoreSummary } from '../play/scoring'
-import { voiceResultCopy } from '../play/voice/voiceCopy'
 import { TaskCard, TaskIntro, TaskResultCard } from './TaskIntro'
-import { checkInstrument, checkOffered, checkWords, focusSkillFor, singingRange, sungSongStep, type CheckWords } from './taskResult'
+import { checkInstrument, checkOffered, checkWords, focusSkillFor, singingRange, sungSongStep, sungTaskTip, type CheckWords } from './taskResult'
 import { TestReportView } from './TestReportView'
 import { initialTestFlowState, isComplete, progressOf, testFlowReducer } from './testFlowState'
 
@@ -329,7 +328,7 @@ function TestFlowInner({ type, instrument }: { type: TestType; instrument: Instr
     // Whose run it is has to be said here: a song task names no skill to read it from.
     const attempt = attemptForTask(task, result, settings, Date.now(), instrument)
     setLastResult(result)
-    setLastTip(sung ? voiceResultCopy(summary, chart.voice).tip : null)
+    setLastTip(sung ? sungTaskTip(summary, chart.voice) : null)
     dispatch({
       type: 'finishedTask',
       result: { taskId: task.id, attempt, passed },

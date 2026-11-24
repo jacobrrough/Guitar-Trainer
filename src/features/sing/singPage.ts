@@ -14,7 +14,7 @@ import { DEFAULT_RANGES, type RangeEdges } from '../../music/keys'
 import { midiToName } from '../../music/pitch'
 import { levelIndex, songKey, songSpan, VOICE_LEVELS, type VocalSong } from '../../songs/vocal'
 import { GOOD_HIT_WEIGHT, SONG_LEVEL_UP_ACCURACY } from '../../training/constants'
-import type { VoiceProfile } from '../../training/types'
+import type { Profile, VoiceProfile } from '../../training/types'
 import type { ScoreSummary } from '../play/scoring'
 
 export const SING_COPY = {
@@ -255,13 +255,33 @@ export function levelRows(bestScores: SongRecord['bestScores']): LevelRow[] {
   })
 }
 
+/** "Whole tune": where a song that was never sung starts for a singer who is past the echo levels. The Coach starts it there too. */
+const WHOLE_TUNE = 2
+
+/** What the page knows of the singer when it opens a song: what they answered in the set-up, and whether the course is behind them. */
+export type SingerSoFar = Pick<Profile, 'experience' | 'firstStepsDoneAt'>
+
 /**
- * The level the page opens on: the one asked for in the address, else the one sung last, else the
- * first ("Echo each line"), which asks least. `lastLevel` is the level number the song row stores (1 to 6).
+ * Whether the echo levels are behind this singer: they said in the set-up that they have sung before,
+ * or the First steps course is ended (finished or left). The Coach's own test for a beginner reads
+ * ratings inside the planner and is not known to a page; this is the same line drawn from the profile.
  */
-export function startLevel(lastLevel: number | null, asked?: number): number {
+function pastTheEchoLevels(singer: SingerSoFar | undefined): boolean {
+  if (!singer) return false
+  return (singer.experience !== undefined && singer.experience !== 'new') || singer.firstStepsDoneAt !== undefined
+}
+
+/**
+ * The level the page opens on: the one asked for in the address, else the one sung last. A song that
+ * was never sung opens on the first level ("Echo each line"), which asks least, for a beginner and
+ * wherever nothing is known of the singer; and on "Whole tune" for a singer who has sung before, who
+ * would only be held up by echoing a tune line by line.
+ * `lastLevel` is the level number the song row stores (1 to 6).
+ */
+export function startLevel(lastLevel: number | null, asked?: number, singer?: SingerSoFar): number {
   if (asked !== undefined) return levelIndex(asked)
-  return lastLevel === null ? 0 : levelIndex(lastLevel - 1)
+  if (lastLevel !== null) return levelIndex(lastLevel - 1)
+  return pastTheEchoLevels(singer) ? WHOLE_TUNE : 0
 }
 
 /** The level to offer after a run: the next one up when the Coach would move the song up after it (`countedShare`), or none. */

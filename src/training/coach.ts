@@ -13,7 +13,7 @@ import type { AppSettings } from '../app/settings'
 import { generateLevels } from '../chart/difficulty'
 import { db, type SongRecord } from '../db/db'
 import { MIN_RANGE_SPAN } from '../music/keys'
-import { applyPlacement, applyTestResults, isTestDue } from './assessment'
+import { VOICE_CHECK_OPTIONS, applyPlacement, applyTestResults, isTestDue } from './assessment'
 import { exerciseParams, generateExercise } from './exercises'
 import { renderExerciseBacking } from './exercises/backing'
 import { DEFAULT_TUNING } from './exercises/builder'
@@ -280,6 +280,19 @@ async function withinTargets(record: SessionRecord): Promise<SessionRecord> {
   return next
 }
 
+/**
+ * How many lessons the planner counts when it chooses a singer's songs. A song waits for its lesson
+ * only while the course is running. Once the course is ended on the profile no lesson will ever open
+ * another song, so a singer who left after lesson 5 would keep to two songs for good: from then on
+ * the whole course counts, and what holds a song back is the range and the skills it needs
+ * (`coachOffersSong`), nothing else. The skills the lessons taught are still the lessons really finished.
+ *
+ * Singing only. On the guitar, leaving the course half way does not open the songs of the later lessons.
+ */
+function lessonsForSongs(profile: Pick<Profile, 'firstStepsDoneAt'>, lessonsDone: number): number {
+  return profile.firstStepsDoneAt ? courseFor('voice').length : lessonsDone
+}
+
 async function planTodaySession(opts: TodayOptions): Promise<SessionRecord> {
   const instrument = opts.instrument ?? 'guitar'
   const voice = instrument === 'voice'
@@ -313,7 +326,7 @@ async function planTodaySession(opts: TodayOptions): Promise<SessionRecord> {
     recentFocusSkillIds: recentFocus,
     recentRecapSkillIds: recentRecap,
     goalSongId: library.find((s) => s.builtinId !== undefined && s.builtinId === profile.goalSongId)?.id,
-    lessonsDone: lessons.lessonsDone,
+    lessonsDone: voice ? lessonsForSongs(profile, lessons.lessonsDone) : lessons.lessonsDone,
     lessonSkillIds: lessons.lessonSkillIds,
     daysSinceLastSession: daysSinceDate(profile.lastSessionDate, now),
     practiceDays,
@@ -853,6 +866,16 @@ export function attemptForTask(
 }
 
 /**
+ * The milestone of a check in which every task went well, as a singer reads it. The report beside it
+ * says "Check: 2 of 2 done well", so "Checkpoint test passed" would be the guitar talking. Only the two
+ * lines that are read change: what it is stored under and what it counts stay as `testMilestone` made them.
+ */
+function sungCheckMilestone(milestone: Milestone): Milestone {
+  const tasks = milestone.value ?? 0
+  return { ...milestone, title: 'Your weekly check went well', detail: `You did ${tasks === 1 ? 'its one task' : `all ${tasks} tasks`} well.` }
+}
+
+/**
  * Applies a finished test to the learner model, stores the record and the attempts.
  * Tasks that did not count (see `runCounts`) go into the attempt history and nowhere else: they are
  * judged as not attempted. A test made of nothing else is not saved at all.
@@ -877,22 +900,25 @@ export async function finishTest(type: TestType, tasks: TestTask[], allResults: 
   }
   const skills = skillsFor(instrument)
   const model = await loadLearnerModel(instrument)
+  // A singer's report is written in a singer's words (the ones the tasks were titled in); the guitar's reads as it always did.
+  const words = voice ? VOICE_CHECK_OPTIONS : undefined
   const applied =
     type === 'placement'
       ? applyPlacement(model, tasks, results, skills, now)
-      : applyTestResults(model, type, tasks, results, skills, (state, attempt, skill) => applyAttempt(state, attempt, skill, [], attempt.at), now)
+      : applyTestResults(model, type, tasks, results, skills, (state, attempt, skill) => applyAttempt(state, attempt, skill, [], attempt.at), now, words)
   await saveLearnerModel(applied.model)
   for (const r of stamped) await recordAttempt(r.attempt)
   const record: TestRecord = { at: now, type, tasks, results, report: applied.report, ...stampOf(instrument) }
   const id = await recordTest(record)
   const changed = skills.filter((s) => applied.model.skills[s.id] && applied.model.skills[s.id].rating !== model.skills[s.id]?.rating)
   const taught = (await finishedLessons(instrument)).lessonSkillIds
+  // "Passed every task" is only true when every task was judged.
+  const passedAll = dropped === 0 ? compact([testMilestone({ ...record, id }, now)]) : []
   await recordMilestones(
     milestonesFor(instrument, [
       ...changed.flatMap((s) => skillMilestones(s, model.skills[s.id] ?? null, applied.model.skills[s.id], now, instrument)),
       ...unlocksBetween(model, applied.model, taught, now, instrument),
-      // "Passed every task" is only true when every task was judged.
-      ...(dropped === 0 ? compact([testMilestone({ ...record, id }, now)]) : []),
+      ...(voice ? passedAll.map(sungCheckMilestone) : passedAll),
     ]),
   )
   return { ...record, id }

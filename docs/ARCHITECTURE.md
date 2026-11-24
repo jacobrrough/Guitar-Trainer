@@ -5,9 +5,14 @@ and scores live in the browser's IndexedDB, and all signal processing and machin
 learning run on the user's device. It is installable as a PWA and can be hosted on
 any static file host (GitHub Pages included).
 
+The app trains two instruments, guitar and voice. The voice side is in the build and
+out of sight behind a flag; "Two instruments" below says how the two share one app,
+and `SINGING.md` describes the voice side in full.
+
 ```
 src/
-├── app/            settings store (localStorage) and the shell layout
+├── app/            settings store (localStorage), the shell layout, and the release
+│                   flag of the singing side (features.ts)
 ├── audio/          AudioContext owner, mic input, pitch-detection worklet, metronome
 │   ├── AudioEngine.ts         single AudioContext + MediaStream + worklet node
 │   ├── pitch/fft.ts           radix-2 FFT
@@ -18,8 +23,10 @@ src/
 │   ├── instrument/            the recorded guitar: sample bank + sampler; string model as fallback voice
 │   ├── guitar.ts              the app's guitar voice: loads the sample pack, renders in synth.worker.ts
 │   ├── synth.ts               offline renderer: strings (sampled or modelled), drums, loudness mastering
+│   ├── voice.ts               the guide voice for singing: additive harmonics, rendered offline
 │   └── metronome/             pure lookahead scheduler + click synthesis
-├── music/          pitch math, tunings, string colours, string/fret assignment (Viterbi)
+├── music/          pitch math, tunings, string colours, string/fret assignment (Viterbi),
+│                   keys.ts: the key of a tune and of an exercise for a singer's range
 ├── chart/          the app's own chart model + importers + difficulty generator
 │   ├── types.ts               Chart, ChartNote, Beat, TempoEvent …
 │   ├── timing.ts              tick→seconds map, beat grids
@@ -29,14 +36,20 @@ src/
 │                              tempo-estimate.ts
 ├── db/             Dexie database (songs + training tables) and React hooks
 ├── training/       the Coach: skills graph, learner model, exercise generators,
-│                   session planner, tests, recommendations, store, orchestration
-├── lessons/        the First steps course: lesson content, progress store
+│                   session planner, tests, recommendations, store, orchestration;
+│                   instruments.ts, voiceSkills.ts, voicePlan.ts, voiceProfile.ts for the voice
+├── lessons/        the two First steps courses (course.ts, voiceCourse.ts): lesson content,
+│                   progress store
 ├── songs/          bundled public-domain songs built with ChartBuilder, played by the app's guitar
-├── components/diagrams  SVG instruction set: chord boxes, fretboard spots, posture, pick grip
-└── features/       UI: onboarding (Start Here wizard), lessons (course + lesson pages),
-                    today (session + block runner), progress, test flow, library
-                    (+ import dialog, demo song), play (Player engine, highway,
-                    scoring), tuner (+ guided tune-up), metronome, settings
+│   └── vocal/                 songs to sing: tunes as data, arranged and rendered when opened
+├── components/diagrams  SVG instruction set: chord boxes, fretboard spots, posture, pick grip,
+│                   and the drawings of the singing lessons (voiceScenes.tsx)
+└── features/       UI: onboarding (Start Here wizard for either instrument), lessons (course +
+                    lesson pages), today (session + block runner), progress, test flow, library
+                    (+ import dialog, demo song), play (Player engine, highway, scoring;
+                    play/voice: voice tracker and pitch lanes), tuner (+ guided tune-up),
+                    metronome, settings, voice (range finder, "My voice", "Meet the note"),
+                    sing (the page of a song to sing), dev (a hidden check page)
 ```
 
 ## Data flow
@@ -121,9 +134,11 @@ Design: `ADAPTIVE_TRAINING.md`. The code mirrors its sections and is pure apart 
 | Module | Role |
 |---|---|
 | `types.ts`, `constants.ts` | contracts and every tunable number |
-| `skills.ts` | 25-skill prerequisite graph with tips and generator ids |
+| `skills.ts` | the guitar's 27-skill prerequisite graph with tips and generator ids |
+| `instruments.ts` | which instrument a stored row, a skill, a lesson or a block belongs to; `skillsFor`, `courseFor`, `activeInstrument` |
+| `voiceSkills.ts`, `voicePlan.ts`, `voiceProfile.ts` | the twelve singing skills; the options and rules the Coach uses for a voice; the singer's range, key choices and tired mark on profile row 2 |
 | `performance.ts`, `learner.ts`, `review.ts` | attempt performance and reliability, Elo-style rating update, tempo ceiling, rust, bands, review scheduling, song items |
-| `exercises/` | `ChartBuilder` (beats → chart), fifteen generators (open strings, first frets, chromatic, melody, scale runs, string skipping, chord changes, strum patterns, power-chord riffs, subdivisions, steady beat, legato, slides, bends, match-the-pitch), registry, backing audio via `audio/synth.ts` |
+| `exercises/` | `ChartBuilder` (beats → chart), fifteen guitar generators (open strings, first frets, chromatic, melody, scale runs, string skipping, chord changes, strum patterns, power-chord riffs, subdivisions, steady beat, legato, slides, bends, match-the-pitch), four sung ones in `exercises/voice/`, registry, backing audio via `audio/synth.ts` and `audio/voice.ts` |
 | `planner.ts` | session templates, focus selection, song level targeting, test insertion, in-session tempo adaptation |
 | `assessment.ts`, `recommend.ts`, `plateau.ts` | placement ladder, checkpoint and monthly tests, test scheduling, rule-based recommendations, plateau detection |
 | `milestones.ts`, `milestoneStore.ts` | band, tempo, unlock, streak, song and test milestones; deduplicated by key in a Dexie v3 table |
@@ -137,6 +152,109 @@ detection coverage, which become the `AttemptResult` the learner model consumes.
 Ear-training exercises (`interaction: 'ear'`) bypass the highway: `EarTrainer`
 plays each chart note on the app's guitar as a reference and listens for a stable pitch,
 then hands the block runner the same `AttemptResult` shape.
+
+## Two instruments
+
+Design and detail: `SINGING.md`. Guitar and voice share the Player, the Coach, the
+lesson engine, the database and every list page. What keeps them apart is small, and
+every piece of it defaults to the guitar, so guitar code and guitar data read as they
+did before the voice existed.
+
+**Release flag.** `app/features.ts` holds `VOICE_RELEASED` (false) and
+`voiceEnabled()`, which is also true on a device that stores `'1'` under the
+localStorage key `gt.voice` (the preview key). Every door into the voice side asks it:
+the "Guitar | Singing" switch in the shell, the voice routes (`/range`, `/sing/:songId`,
+`/start?instrument=voice`, and the hidden `/voice-check`, which is only registered
+while the flag or the key is on), and `activeInstrument(settings)`, which answers
+guitar while it is off whatever the setting says.
+
+**The instrument dimension.** `InstrumentId` is `'guitar' | 'voice'`
+(`training/instruments.ts`). Nothing stored was rewritten for it:
+
+- ids carry the side where they can: singing skills are `voice.*`, singing lessons
+  `v01-…` to `v10-…`, the blocks of a singing plan `voice-${date}-${i}-${kind}`, songs
+  to sing `sing-…`;
+- rows that have no such id carry an optional `instrument` stamp (sessions, attempts,
+  tests, milestones, song items, song rows), read as guitar when missing
+  (`instrumentOf`);
+- the `profile` table has two rows: 1 is the guitar profile, 2 the singing profile
+  (`profileIdFor`), which also carries the singer's range, key choices and tired mark;
+- Dexie version 5 changes one line, `sessions: '++id, date, &[instrument+date]'`, and
+  stamps the stored sessions `'guitar'` in the repository's first `.upgrade()`. The
+  compound index gives one plan a day per instrument. A row without a stamp sits
+  outside it, so `saveSession` always stamps, and `getSession` falls back to the plain
+  `date` index for rows an older copy of the app may still write.
+
+Store functions and hooks take the instrument as a last parameter defaulting to
+`'guitar'` (`loadProfile(i)`, `loadLearnerModel(i)`, `getSession(date, i)`,
+`listTests(limit, i)`, `useSongs(i)` …). Backups are version 2 (both profiles); a
+version 1 file is a guitar backup and replaces the guitar rows only.
+
+**The scoring seam.** The Player knows one thing about scoring: it has a `RunTracker`
+(`features/play/runTracker.ts`), feeds it every microphone frame with the song time,
+moves it along with the clock, and at the end asks for a summary and an
+`AttemptResult`. `createRunTracker(chart, notes, options)` returns the tracker from
+the chart alone:
+
+- a chart with `chart.voice` set gets a `VoiceTracker`
+  (`features/play/voice/voiceTracker.ts`): a sung note is a stretch of time, and what
+  is measured is the share of it sung inside a band of cents around the note, in any
+  octave, from the worklet's single-pitch estimate. Spectrum analysis is switched off
+  for such a run, and the detector is narrowed to the chart's range;
+- every other chart gets `guitarRunTracker`, the `ScoreTracker` and `PitchSmoother`
+  the Player always drove, behind the same interface. The guitar simulations hold it
+  to the old numbers.
+
+No screen passes a flag, so none can forget one. The renderer follows the same rule
+(`laneRenderer.ts`): `HighwayRenderer` for a guitar chart, `VoiceLanesRenderer`
+(`voice/VoiceLanes.ts`) for a sung one. The pitch lanes have the highway's surface
+(`resize`, `draw`, `width`) and draw height as pitch: each note a bar as long as it
+lasts, a dot for the singer's voice on the same hit line, the sung part of a bar
+filling in. The words and small rules of the Player that differ between the two
+(guide switch, notices, detector range) are in `playerLabels.ts`.
+
+**The app's own sound for singing.** A sung chart lists the notes the app itself
+sounds on the scored track (`chart.voice.cues`: the starting note, the guide's turns
+of an echo). The tracker gives no credit while one sounds. The melody sung by the
+guide voice (`audio/voice.ts`) and the strummed chords are on the guide track only,
+which plays while scoring only for a singer who said they wear headphones
+(`settings.voiceHeadphones`).
+
+**The vocal song pipeline** (`songs/vocal/`). A song to sing is data: lines of
+`[semitones above home, beats, syllable]` and one chord degree per bar (`tunes/`,
+`types.ts`). Nothing is rendered or stored per key:
+
+1. `install.ts` writes one light row per song into the song table (`instrument:
+   'voice'`, a chart of the tune as written, no audio), on demand
+   (`vocalSongRecord`), so results and song items have a row id to hang on;
+2. when a song is opened, `music/keys.ts` chooses the key for the singer's range
+   (`chooseKey`), `arrange.ts` builds the chart for one of six levels (`levels.ts`:
+   echo each line, echo two lines, whole tune, in tune, hold the long notes,
+   performance; the speed is always 1) and the chord chart under it;
+3. `render.ts` makes the two tracks: the scored track (click and cues) and the guide
+   (the same, the melody sung, and the chords from the guitar's own render job in
+   `synth.worker.ts`). The last three runs are kept in memory;
+4. `useVocalRun.ts` hands a screen the run once both tracks exist, and starts the
+   work only after the page has painted.
+
+So a singer whose range changes gets every song in the new key the next time it
+opens, and storage does not grow. Apart from the chords, the rendering runs on the
+main thread.
+
+**Voice exercises** (`training/exercises/voice/`). Four generators (`voiceEcho`,
+`voiceHold`, `voicePattern`, `voiceSlide`) are registered beside the guitar's and
+build call-and-answer charts with `VoiceBuilder`, which refuses a note outside the
+singer's range, a cue too close to a scored note, or a round over eight bars. The
+range reaches a generator when the exercise is built (`exerciseForBlock`,
+`exerciseForTask`, `lessonDrillExercise` take it as a last argument), never from the
+stored block. Skills where slower is not easier keep one tempo and climb a ladder of
+steps (`SkillDef.steps`); `ADAPTIVE_TRAINING.md` §16 says how the Coach reads it.
+
+**Two courses.** `lessons/course.ts` (`COURSE`, ten guitar lessons) and
+`lessons/voiceCourse.ts` (`VOICE_COURSE`, ten singing lessons) share the `Lesson`
+shape, the progress table and the lesson screens. A lesson's course follows from its
+id. A singing lesson may run a tool where a practice round stands (`Lesson.tool`: the
+range finder, "Meet the note"), as the guitar course runs its tuner.
 
 ## iOS / PWA layer
 
@@ -192,6 +310,18 @@ then hands the block runner the same `AttemptResult` shape.
   estimation, the importers (alphaTex → chart, MIDI → chart) and a model
   integration test that runs the real Basic Pitch weights on a synthetic signal
   with the TensorFlow.js CPU backend (~10 s).
+- `npm run typecheck:tests` – `tsc -p tsconfig.test.json --noEmit`. The app build
+  (`tsc -b`) leaves the test files out; this checks them with the same compiler
+  options.
+- The singing side has its own virtual performer: a computed singer
+  (`features/play/voice/virtualSinger.testutil.ts`, built on another model than the
+  app's guide voice and sharing no code with it) sings through the same analyser and
+  the voice tracker (`simulateVoice.ts`). `voice/voice.sim.test.ts` holds the two
+  lists of what must score and what must not, `voice/voice.bleed.sim.test.ts` the
+  checks that the app knows its own sound, `training/exercises/voice/voice.sim.test.ts`
+  every skill's exercise, `songs/vocal/vocal.sim.test.ts` the songs and
+  `lessons/material.voice.test.ts` the lesson rounds and songs. A plain run sings a
+  part of each; `FULL_SIM=1` the rest. The singer is a model, not a person.
 - `src/features/play/scoring.sim.test.ts` (part of `npm test`) is a virtual player: the
   recorded guitar plays every lesson drill and lesson song through the same analyser
   and tracker the app uses, at 44.1 and 48 kHz, with click-track bleed, a phone
@@ -219,6 +349,17 @@ then hands the block runner the same `AttemptResult` shape.
   exercise and its song as the Coach planned them (the performance is rendered on the
   spot from the stored block), checking the round card, the skill score and the plan.
   It builds the app first, so the performances and the app always come from the same code.
+- `npm run test:singer` – `e2e/singer.mjs`, the same rig for the singing side. The
+  virtual microphone, the fixture plumbing and the preview server are shared with the
+  student in `e2e/lib/virtualMic.mjs`. With the preview key set it opens the hidden
+  page `/voice-check` (one generated voice exercise in the real Player) and feeds it
+  takes of the computed singer, written and scored in Node first by
+  `features/play/voice/e2eVoiceFixtures.test.ts`: in tune an octave below the lanes
+  must count, 150 cents flat must be heard and count for nothing, silence and the
+  app's scored track alone must be "nothing was scored", and the guide track fed back
+  must be known for the app's own sound. It does not yet walk through the set-up, a
+  lesson, a song or a day's plan. `E2E_OUTPUT` sends the rendered takes and
+  screenshots of either script to another folder.
 - `npm run test:e2e` – Playwright smoke test against the production build using
   Chromium's fake microphone: navigation, metronome, tuner, demo song play-through
   to the results screen, persistence, an end-to-end AI transcription of a

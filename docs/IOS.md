@@ -52,6 +52,49 @@ Other iOS details handled by the app:
 - Transcription resampling falls back to a JavaScript resampler on Safari versions
   whose OfflineAudioContext cannot render 22.05 kHz.
 
+## Singing on a phone
+
+The singing side (see `docs/SINGING.md`) is in the build behind a flag and has not been
+tried on a real phone or with a real voice. What it adds to the picture above:
+
+| Situation | What happens |
+|---|---|
+| Phone speaker, no headphones (the default) | The singer hears a click and one starting note before the tune; from "Whole tune" on that note is all the help there is. On the two echo levels of a song and in exercises the guide voice sings its turn first. The guide never sings while the singer is scored, and the app gives no credit for anything heard while one of its own notes sounds, so a phone on a table cannot sing a song into its own microphone. |
+| Wired headphones | Answer "Yes" to "Are you wearing headphones?" in the singing set-up, or tick **Settings → Singing → I use headphones**. The guide then sings the singer's notes along with them (in exercises and on the first four levels of a song; the last two levels leave the tune to the singer) and a song gets its strummed chords. |
+| Guide on, but the phone hears itself | Two checks: the count-in clicks heard through the microphone, and one of the app's own notes coming back on time and on pitch. Either makes the run "did not count"; the app turns "I use headphones" and the guide off, and the next try can count. A singer who really wears headphones and joins the guide from its very first moment looks the same to the microphone; the notice says how to turn the guide back on. |
+| Headphones pulled out in the middle of a run with the guide on | The browser reports a change of audio devices and the run becomes practice: nothing is saved. A change in the first 3 seconds after the microphone opens is ignored, because granting the permission and a headset connecting raise the same event. How real headsets behave here is unchecked. |
+| Bluetooth headset | Opening the microphone can switch a wireless headset to its call mode, which puts the whole audio context at 16 or 24 kHz. Scoring measures in seconds, not in frames, and is simulated at both rates. At 16 kHz the pitch detector's window is 128 ms long: a low voice with a wide vibrato is counted but not clean, a singer steadily a little off is given a note here and there, and the count-in check can miss a faint speaker. Expect the 150–250 ms of delay as on the guitar. |
+
+Other details:
+
+- **Speaker mode is not offered for singing.** Echo cancellation would take the voice out
+  together with the guide. The setting still applies to the microphone as the learner left
+  it; what it does to a long held note is one of the device checks.
+- **Sound delay.** A sung result is judged on pitch; when a note begins is measured and
+  never fails a run. The notes are still lined up with the same latency setting the guitar
+  uses (simulated clean at 60 and 250 ms of delay with the setting matched), so the
+  singing set-up offers **Sync your sound** on its phone step when the phone has never
+  been measured. It can be skipped.
+- **Pitch standard.** Singing is judged against A = 440 Hz whatever "Reference pitch" says,
+  because the starting notes and the recorded chords are at 440.
+- **Low starting notes.** Under 110 Hz the guide voice adds the octave above, because a
+  phone speaker plays almost nothing that low. Whether a low voice can hear its starting
+  note from the speaker is unchecked.
+- **Screen awake.** The range finder, "My voice" and "Meet the note" ask for the wake lock
+  while the microphone listens, and a sung run while it plays, through the same
+  `useWakeLock` as the tuner and the guitar player. The caveats above apply unchanged:
+  home-screen apps before iOS 18.4 get the silent-clip stand-in, which has not been tried
+  on a real iPhone.
+- **Back to the guitar.** A voice screen narrows the pitch detector to a voice and sets it
+  back to the guitar's range (55 to 1500 Hz) when it closes, so the tuner still reads both
+  E strings afterwards.
+- **Opening a song.** A song to sing is arranged for the singer's range and rendered when
+  it is opened ("Getting your song ready"). The chords are rendered in a worker, the rest
+  on the main thread; on an old phone the page may not answer for a second or more.
+
+The device checks for singing, with what to expect, are the numbered list in
+`docs/SINGING.md` §11. None of them has been done.
+
 ## Formats
 
 Safari decodes **MP3, M4A/AAC, WAV, AIFF, FLAC and CAF**. It does not decode
@@ -106,6 +149,7 @@ Then in Xcode:
 1. Set your Team under *Signing & Capabilities* and pick a unique bundle id.
 2. In `ios/App/App/Info.plist` add
    `NSMicrophoneUsageDescription` = "Guitar Trainer listens to your guitar to score what you play."
+   (Once the singing side is released: "… listens to your guitar or your voice to score what you play or sing.")
 3. Optional: add `UIFileSharingEnabled` / `LSSupportsOpeningDocumentsInPlace` so
    songs can be dropped in through Files.
 4. Run on your iPhone.
@@ -119,6 +163,8 @@ WebView's IndexedDB can be purged by iOS under storage pressure, so use Export r
 ## Checklist for a real device (not yet done)
 
 The 15-minute version with expected results is the *Device checklist* in `docs/SAFARI_AUDIT.md`.
+The checks for the singing side are a list of their own, `docs/SINGING.md` §11; they need the
+preview key (`localStorage['gt.voice'] = '1'`) while the singing side is not released.
 
 This build was verified in Chromium with iPhone viewport/touch emulation and a fake
 microphone. These need a real iPhone:

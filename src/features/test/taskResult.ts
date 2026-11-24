@@ -7,12 +7,16 @@
  * guitar screens have always used. A singer's words name no tempo for a step exercise, no percent and
  * no milliseconds: when a sung note begins is no part of a sung result (docs/SINGING.md §12.10).
  */
+import type { VoiceChart } from '../../chart/types'
 import { DEFAULT_RANGES, type RangeAroundEasy } from '../../music/keys'
 import { VOICE_LEVELS, levelIndex } from '../../songs/vocal/levels'
+import { reachesMark } from '../../training/assessment'
 import { GOOD_HIT_WEIGHT, MIN_HITS_FOR_TIMING } from '../../training/constants'
 import { skillById } from '../../training/instruments'
 import { stepWithin } from '../../training/learner'
 import type { AttemptResult, InstrumentId, LearnerModel, PassCriteria, Profile, SkillDef, TestTask, TestType, VoiceProfile } from '../../training/types'
+import type { ScoreSummary } from '../play/scoring'
+import { voiceResultCopy } from '../play/voice/voiceCopy'
 
 export type FailedCriterion = 'accuracy' | 'timing' | 'spread'
 
@@ -21,10 +25,14 @@ export function ruleAccuracy(result: Pick<AttemptResult, 'perfects' | 'goods' | 
   return result.total > 0 ? (result.perfects + GOOD_HIT_WEIGHT * result.goods) / result.total : 0
 }
 
-/** Which parts of the pass rule a result misses; empty when the task is passed. Mirrors `meetsCriteria`. */
+/**
+ * Which parts of the pass rule a result misses; empty when the task is passed. Mirrors `meetsCriteria`,
+ * and asks the same `reachesMark` about the notes: compared on its own here, a sung task of 43 notes
+ * that were all only just in tune read "Not yet" beside "on the note for 43 of 43 notes".
+ */
 export function failedCriteria(criteria: PassCriteria, result: AttemptResult): FailedCriterion[] {
   const failed: FailedCriterion[] = []
-  if (ruleAccuracy(result) < criteria.minAccuracy) failed.push('accuracy')
+  if (!reachesMark(ruleAccuracy(result), criteria.minAccuracy)) failed.push('accuracy')
   const hits = result.perfects + result.goods
   const timingOff = result.timingMedianMs === null ? hits >= MIN_HITS_FOR_TIMING : Math.abs(result.timingMedianMs) > criteria.maxMedianMs
   if (timingOff) failed.push('timing')
@@ -38,7 +46,8 @@ export function failedCriteria(criteria: PassCriteria, result: AttemptResult): F
  */
 export function shownAccuracyPct(accuracy: number, minAccuracy: number): number {
   const rounded = Math.round(Math.max(0, Math.min(1, accuracy)) * 100)
-  if (accuracy >= minAccuracy) return rounded
+  // "Under the mark" as the pass rule reads it: a result that passes is never shown one percent short either.
+  if (reachesMark(accuracy, minAccuracy)) return rounded
   return Math.min(rounded, Math.ceil(minAccuracy * 100) - 1)
 }
 
@@ -169,6 +178,15 @@ export function sungSongStep(live: SongOnItsWay, held: { fits: boolean } | null)
   const run = held ?? (live.status === 'ready' ? live.run : null)
   if (run) return run.fits ? 'sing' : 'left-out'
   return live.status === 'preparing' ? 'waiting' : 'left-out'
+}
+
+/**
+ * The one tip under a sung task of a check, from what the tracker heard of the run. A task of a check
+ * is sung once, so the tip does not end by asking for another go: on the card of a task that went
+ * well, "try again" would point at a button that is not there.
+ */
+export function sungTaskTip(summary: ScoreSummary, voice?: Pick<VoiceChart, 'glide'>): string | null {
+  return voiceResultCopy(summary, voice, { anotherGo: false }).tip
 }
 
 /**

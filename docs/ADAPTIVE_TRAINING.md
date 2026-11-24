@@ -7,7 +7,7 @@ specified against the code that already exists (chart model, scoring engine,
 difficulty levels, synthesised audio) and keeps the app's constraints: free,
 offline, all data on the device.
 
-Status: **Phases 0–3 implemented** (see `src/training/`), except reminders, which need a push relay. "Later" items are open. Phases and estimates are in §13.
+Status: **Phases 0–3 implemented** (see `src/training/`), except reminders, which need a push relay. "Later" items are open. Phases and estimates are in §13. The same Coach also plans for a second instrument, the voice; what that changed is in §16.
 
 ---
 
@@ -658,3 +658,175 @@ coach.ts) and the plan builds on the skills they drilled. In first-steps mode:
 - Every exercise with a guide track offers **Listen first** on the ready screen: the
   part plays once without the microphone or scoring.
 
+
+---
+
+## 16. A second instrument: singing
+
+The Coach plans, rates and checks singing with the code described above. Nothing was
+forked: every rule that differs for a voice is an option or an optional field whose
+default is the guitar's value, so a guitar plan is the same down to the byte whether
+or not the voice exists (tests pin a recorded guitar plan against it). `SINGING.md`
+has the skills, the songs and the scoring; this section is what changed in the Coach.
+
+Every Coach operation takes the instrument, defaulting to guitar
+(`getOrCreateTodaySession({ instrument })`, `songSummaries(i)`, `finishedLessons(i)`,
+`coachRecommendations(…, i)`, `startFirstSteps(setup, now, i)`,
+`completeFirstSteps(now, i)`); an exercise round is sorted by its skill id and a song
+play by the song row. Each instrument has its own profile row, its own learner model
+and its own session for a date. An unknown skill id is an error wherever something is
+built or rated from it. A singer's runs, tests, song items and milestones are stamped
+`instrument: 'voice'` in `coach.ts`.
+
+### 16.1 Planner options
+
+`planSession` reads these optional `PlannerInput` fields; `voicePlanOptions(range,
+gentle)` in `voicePlan.ts` puts together the voice's values.
+
+| Option | Default (guitar) | Voice | Why |
+|---|---|---|---|
+| `idPrefix` | `''` | `'voice-'` | two instruments can each have a plan for the same day |
+| `warmupCategories` | picking, fretting, timing | pitch, range | |
+| `maxBars` | 32 | 8 | a voice needs its rests |
+| `templates` | §6.2 | 10: warm-up 2 · focus 4 · song 4; 20: 3 · 6 · song 7 · review 4; 30 and 45: 3 · 7 · second 5 · song 10 · review 5 | a voice day always opens with a warm-up and has no ear block |
+| `songSpeeds` | 0.75, 0.85, 1 | 1 | slowed down, a line outlasts the breath |
+| `excludeCategories` | none | range, on a gentle day (§16.7) | |
+| `sameDrillBy` | `'generator'` | `'skill'` | twelve singing skills share four generators |
+| `loopWeakBars` | true | false | a bar is not a breath; the song page loops a whole line instead |
+| `maxSteps` | none | per skill, the highest step the singer's range holds | §16.3 |
+| `copy` | `GUITAR_PLANNER_COPY` | `VOICE_PLANNER_COPY` | nothing is "played", and no sentence promises a slower or faster song |
+
+The day lasts what its template adds up to (not `prefs.dailyMinutes`), which is the
+same number for every built-in guitar template. Singing is offered for 10, 20 or 30
+minutes and has no 5-minute day: `quick` for a voice gives the 10-minute day.
+
+One planner rule only singing meets: a tier 0 skill that other skills build on stays
+in the recap rotation and is the warm-up again after a week without practice.
+"Match a note" would otherwise leave the plan when beginner mode ends, go rusty and
+close everything built on it. No guitar tier 0 skill is a prerequisite.
+
+### 16.2 A tempo floor
+
+`SkillDef.minTempo` is the slowest a skill is ever asked for. Every singing skill has
+one; no guitar skill does. A block stores `params.minTempo` only when its skill has
+one. The floor holds everywhere a tempo is lowered: the start tempo, the warm-up and
+comeback factor, the day factor, `nextRepTempo(…, minTempo)` after a rough round (at
+the floor the round is repeated at the floor), `exerciseForBlock`, a stored plan
+brought within its targets, and a check task.
+
+### 16.3 Step skills: a ladder where slower is not easier
+
+A held note, a slide and a longer line do not get easier when they are slower. Such a
+skill has `steps: SkillStep[]` (`{ label, params, bonus, span? }`) and one tempo
+(ref = start = target = floor). `SkillState.step` is to it what the tempo ceiling is
+to the others. The rules of §4.2 and §6.4 are read on the ladder:
+
+| Rule for a tempo | The same rule for a step |
+|---|---|
+| start at the ceiling | the block is built on `state.step`, no higher than `maxSteps[skill.id]`; the block stores `step`, `startStep`, and `maxStep` when the range ends the ladder early |
+| warm-up and comeback at 0.9 × | one step easier, never under the first |
+| `d` from the tempo | `d = tierBase + steps[step].bonus` (`itemDifficulty` at the reference tempo), in practice and in a check alike |
+| ≥ 0.85 → +5 %, at most +15 % in a session | `nextRepStep`: the next step, at most one above the step the block started on |
+| < 0.75 → −8 % | the step below: easier, never slower |
+| two in-between rounds at one tempo → −5 % | two in-between rounds on one step → the step below |
+| day factor after a rough warm-up | pending step blocks start one step easier (only after a warm-up under 0.75) |
+| tempo ceiling from the last 10 attempts in 30 days | the highest step `s` at or below the run's that has two clean, reliable runs at `s` or above opens `s + 1`; three counted runs in a row under 0.6 on the step reached or below go back one. A warm-up can raise it, never lower it |
+| gain stops at `d + 40` and at 75 + 14 · progress; no stop at the target | `ratingDelta` unchanged, with `{ start: 0, target: top }`, the run's tempo set to its step and the ceiling to the step below the one reached. `top` is `params.maxStep`, else the last step |
+
+So no step below the top carries a rating past 89, and only an accurate run on the
+top step reaches 100. `maxStepFor(skill, range)` is the highest step a voice range
+holds (a slide to the octave needs 12 semitones); with it a singer with a small range
+finishes a skill on the highest step their voice can hold. The exercise generators
+ask the same function, so when the range was made smaller in the middle of a day the
+exercise is built on the highest step that fits, and the run says which step that
+was. Worked stops, pinned through the real exercises: "Match a note" 50, 62, 70, then
+100; "Hold a note steady" 60, 68, 76, then 100.
+
+`RepOutcome.nextParams = { step }` carries the next step to the block runner as
+`nextTempo` carries the next tempo. A fixed-tempo skill rated by the tempo rule alone
+would be "at its target" on every accurate run, which is why the ladder exists.
+
+### 16.4 Checks
+
+Singing has the weekly checkpoint and no other. The voice set-up marks the starting
+check done whatever is answered, and `finishTest` refuses a placement or monthly
+check for a voice. `voiceCheckDue` asks `isTestDue` as if a monthly check had been
+taken this moment and with a fresh sound sync, so the weekly check is never hidden
+behind a monthly one and never waits for calibration; there is none on a gentle day.
+
+`checkpointTasks(…, options)` takes `CheckpointOptions`: `criteria`, `verb`,
+`paramsFor`, `maxBars`, `minTempoOf`, `songsHaveSpeeds`, `copy`. For a voice
+(`voiceCheckOptions(range)`): the pass mark `VOICE_TEST_PASS = { minAccuracy: 0.8,
+maxMedianMs: 10000, maxStdevMs: 10000 }`, "Sing …", at most 8 bars, tempo never under
+the floor, a step skill at its one tempo on the step reached and no higher than the
+range holds, and a singer's words (tasks titled by what is sung, "Check: N of M done
+well"). The mark is 0.8 because a singer inside the band on every note, but only
+just, earns "good" (0.8) on each. Timing is measured and never fails a sung check.
+The pass mark is compared through `reachesMark` (tolerance 1e-9): `(0.8 × n) / n`
+comes out a digit under 0.8 for some note counts. No guitar verdict changes at 0.85.
+
+For a voice the sound-sync age is always 0 (`syncAgeDays`): a sung result is never
+flagged or blocked for want of calibration (§5).
+
+### 16.5 Advice
+
+`recommendations(ctx, options)` takes `{ instrument, passCriteria, songSpeeds,
+calibrate, stepSkills }`. `instrument: 'voice'` implies the sung pass mark, one song
+speed and no calibration card. With one speed there is no slower-song card and no
+weak-bars loop card. A skill at its tempo floor gets no slower-tempo card. Step
+skills get step-worded cards (`step-ratchet`, `step-fallback`,
+`test-passed-step-up`) or none. The Coach hands in only the runs sung in a song's
+present key (§16.8) and only runs of songs it offers.
+
+### 16.6 Milestones
+
+A step reached for the first time is a milestone of type `tempo` with key
+`step:${skill.id}:${n}`; the "clean at N bpm" milestone is not raised for a step
+skill. Band, tempo and song milestones take the instrument for their words only
+("sang" for "played"). Stored for a voice (`milestonesFor`), a milestone is stamped,
+and a streak or test milestone gets the key prefix `voice:` so three days of singing
+are not swallowed by three days of guitar.
+
+### 16.7 The tired mark and the gentle day
+
+"My voice is tired" (`markVoiceTired`) writes the date on the singing profile and
+skips every open block of the day as a single skipped block is skipped: nothing is
+recorded and no rating moves. That day and the day after are gentle days: the
+10-minute template, no skill of the `range` category, no check, and one line of
+explanation first. After a counted round of slides the singer is asked how it felt;
+"Tight" lowers the top of the stored range by one note (`recordFelt`), whatever the
+round scored.
+
+### 16.8 Songs to sing
+
+A song has six levels that score the same notes at one speed; the level ladder of
+§6.4 applies with the speed list `[1]`. A summary carries `levelDurations`, and the
+passes of a song block are fitted to the level about to be sung (an echo level lasts
+about twice the tune). The Coach offers a song when it fits the singer's range in
+some key and each skill it names under `needs` is rated 50 or more
+(`coachOffersSong`). While the course runs a song waits for its lesson; once the
+course is ended on the profile the whole course counts (`lessonsForSongs`). On the
+guitar, leaving the course half way still does not open the later songs.
+
+The key rule: a run reports `voice.topMissed`, the missed notes among the top three
+semitones of the piece that came out low or were not heard. Two counted runs in a
+row with two or more of them, both sung since the song was last moved, mean the key
+is too high, not the level too hard: the song goes down one semitone, the item's low
+streak is cleared and `keyLoweredAt` is set, so key and level never drop on the same
+day. The next plan gives "That one sat high for you, so we moved the song down a
+little." as the reason until the song has been sung again.
+
+### 16.9 Starting points
+
+A singer who has sung before, or who leaves the course before its last lesson,
+starts with "Match a note" at the unlock rating on its second step
+(`seededFirstSkill`), so the next tier is open on the first day. Nothing earned is
+lowered. A graduate is rated by what they sang in the lessons.
+
+### 16.10 What is proven
+
+`planner.voice.test.ts` runs simulated singers through weeks of plans with the real
+exercises and the real rating; `coach.voice.test.ts` runs the Coach against a real
+database (fake-indexeddb) for both instruments side by side. No plan has been sung by
+a person: the accuracies in those tests are set by hand, and whether the ladders and
+bonuses fit real voices is open.

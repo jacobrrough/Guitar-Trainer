@@ -37,6 +37,7 @@ import {
   singsAgainAtOnce,
   startLevel,
   type LevelRow,
+  type SingerSoFar,
 } from './singPage'
 
 const TONE_CLASS: Record<LevelRow['tone'], string> = {
@@ -279,9 +280,10 @@ function SingRun({
 }
 
 /** The song page itself: the key, the six levels with the best run on each, one line for practice, and the way in. */
-function SingSong({ record, song, asked }: { record: SongRecord; song: VocalSong; asked: number | undefined }) {
+function SingSong({ record, song, asked, singer }: { record: SongRecord; song: VocalSong; asked: number | undefined; singer: SingerSoFar }) {
   const voice = useLiveQuery(loadVoiceProfile)
-  const [level, setLevel] = useState(startLevel(record.lastLevel, asked))
+  // Read once, when the page opens: a song never sung starts on "Whole tune" for a singer who is past the echo levels.
+  const [level, setLevel] = useState(() => startLevel(record.lastLevel, asked, singer))
   const [line, setLine] = useState<number | null>(null)
   const [open, setOpen] = useState(false)
   const [moving, setMoving] = useState(false)
@@ -455,5 +457,5 @@ export function SingPage() {
   }
   const asked = askedLevel(params.get('level'))
   // Keyed by the row and the level asked for: another song, or an address that names another level, is the page opened afresh.
-  return <SingSong key={`${songQuery.id}:${asked ?? ''}`} record={songQuery} song={song} asked={asked} />
+  return <SingSong key={`${songQuery.id}:${asked ?? ''}`} record={songQuery} song={song} asked={asked} singer={profile} />
 }

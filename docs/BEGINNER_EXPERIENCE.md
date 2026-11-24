@@ -3,7 +3,8 @@
 Purpose of the app: take someone who has never touched a guitar to playing songs. This
 document compares how Yousician, Simply Guitar, Fender Play, Rocksmith+, JustinGuitar and
 Guitar Tricks handle the first hours and weeks, audits our own first-run experience, and
-proposes a concrete "zero to first song" path.
+proposes a concrete "zero to first song" path. §4 describes the second beginner course,
+which does the same for someone who has never sung.
 
 Sources: official course pages, help centres and long-form reviews reached through web
 search (the development sandbox cannot open arbitrary pages, so details are from search
@@ -261,12 +262,115 @@ highway while a chord is coming.
    traditional songs. (Gets them to "I can play songs".)
 4. Rhythm, the first riff, graduation into the Coach, the "songs you can play" list.
 
-Each wave is a day or two of parallel agent work plus integration, in the same way the
-Coach was built.
+---
+
+## 4. The second course: First steps for singing
+
+Status: implemented and out of sight. The singing side shows only with the preview key
+(`localStorage['gt.voice'] = '1'`) until it is released; see `SINGING.md`. The course is
+`src/lessons/voiceCourse.ts`; it runs on the same lesson engine, the same lesson screens
+and the same progress table as the guitar course of §3. It has been sung by a computed
+singer in simulation (every round and every lesson song, in the two starting ranges). No
+person has taken it, and no phone has run it.
+
+### 4.1 Principles
+
+The principles of §3.1 hold unchanged: songs are the goal, nothing before it is needed,
+show, try, play (here: sing), plain language, ten minutes a day is a win. A voice adds
+four, because the instrument is the learner's own body and many beginners are shy of it:
+
+- **Nobody is listening.** The first lesson says so before a note is sung, and that
+  cracks and wobbles are normal.
+- **Never louder, never higher than easy.** When the app cannot hear, it asks for the
+  phone to come closer, never for more voice. Nothing is ever asked outside the learner's
+  own easy notes.
+- **It should never hurt.** A stop line is on the range screens and on Today, every
+  exercise has rests built in, and "My voice is tired" ends the day without a penalty.
+- **Any octave counts.** A low voice sings a high tune an octave down and is told that
+  this counts.
+
+### 4.2 First launch: the singing set-up
+
+The Start Here wizard of §3.2 with a singer's questions (`/start?instrument=voice`):
+
+1. "Have you sung before?" Never / A little / Yes, often. "Yes, often" goes straight to
+   daily practice; the other two start First steps. There is no starting test for a voice.
+2. "How long each day?" 10 / 20 / 30 minutes.
+3. Phone and sound: stand or sit about a forearm from the phone in a quiet room; "Are you
+   wearing headphones?"; say or hum anything and watch the bar move; an optional sound
+   sync.
+4. Your easy notes: hum one note, slide down twice and up twice, under a minute, every
+   step skippable. Skipped altogether, the learner picks "Lower voice" or "Higher voice"
+   by ear. The app never guesses from sex or age.
+5. "Pick a song to aim for": Ode to Joy, When the Saints or Mary Had a Little Lamb, the
+   three course songs that fit every voice.
+
+There is nothing to tune and no hand to choose. "Not now, back to guitar" on the first
+screen leaves without writing anything.
+
+### 4.3 The course
+
+Each lesson = **Learn** (two or three cards, seven of them with a drawing, each with an
+"If … then …" for what can go wrong) →
+**Try** (one short round, the app sings first, the microphone scores) → **Sing** (a
+song). Four to six minutes a lesson. The first two lessons have a tool where the others
+have a round, and nothing in a tool is scored.
+
+| # | Lesson | Learn | Try | Sing |
+|---|---|---|---|---|
+| 1 | Meet your voice | singing is speaking, held longer; you and your phone; it should never hurt | find your easy notes (the range finder) | |
+| 2 | Meet the note | listen, hear it inside, then sing; under or over the note; high voice, low voice, same note | "Meet the note": hear a note and find it with your voice, three times, unscored | |
+| 3 | Match a note | reading the screen; my turn, your turn; breathe in the gap | four notes close to the easy note, each sung back and held | **Hot Cross Buns**, echoing each line on "la" |
+| 4 | Step up, step down | next-door notes 1, 2, 3; keep the air going on the way down | 1-2-3-2-1 after the app | Hot Cross Buns, echoing two lines at a time |
+| 5 | Sing the words | the open sound carries the note; breathe at the marks; every line has its starting note | echo a tune of three notes, hidden until sung | Hot Cross Buns, the whole tune with its words |
+| 6 | Five notes | up five and back; lighter at the top; a little higher, then back down | five notes up and back on one breath | **Mary Had a Little Lamb**, echoing each line |
+| 7 | Hold it steady | breathe low and quiet; steady air, not more air; feeling dizzy? stop and breathe | hold a note for four beats | Mary Had a Little Lamb, the whole tune |
+| 8 | Small jumps | skipping a note; hear the landing note first; land on it, without sliding | 1-3-5-3-1 from the first note alone | **Ode to Joy**, echoing two lines at a time |
+| 9 | Sliding higher, staying easy | the slide; cracks are normal; stop while it is easy | a small slide up and back, then "How did the slides feel?" | **When the Saints**, echoing two lines at a time |
+| 10 | Your first whole song | one note to start, then it is yours; headphones let you hear the guitar; what daily practice looks like | wider notes to match, as a warm-up | the goal song, whole, from one starting note, then **graduate** |
+
+Songs open as the lessons finish: Hot Cross Buns after lesson 4, Mary Had a Little Lamb
+after 5, Ode to Joy after 6, Go Tell Aunt Rhody after 7, When the Saints and London
+Bridge after 8, Jingle Bells and Twinkle, Twinkle after 9. Amazing Grace and Happy
+Birthday wait for the end of the course and for the skills they need. A song wider than
+the learner's easy notes is listed under "Comes later", with a kind line.
+
+After lesson 10 the Coach takes over with the twelve singing skills, as it does for the
+guitar. The lesson rounds are the skills' own exercises, so they feed the ratings from
+the start. A singer can leave the course at any time ("Sung before? Skip the course and
+go to daily sessions"); the lessons stay.
+
+### 4.4 What this needed beyond the guitar course
+
+- **A range instead of a tuning.** The range finder, the "My voice" page, and every
+  exercise and song placed inside the learner's easy notes when it is built.
+- **Pitch lanes instead of the note lane.** Height is pitch; each note is a bar as long
+  as it lasts; a dot shows the voice; the sung part of a bar fills in. The syllable, "la"
+  or the note's number stands under each bar, and a breath mark before each line.
+- **Tools as lesson steps.** The range finder and "Meet the note" stand where a practice
+  round stands, as the guided tuner does in guitar lesson 2.
+- **Songs by withdrawing help, not by thinning notes.** Six levels: echo each line, echo
+  two lines, the whole tune, in tune, hold the long notes, performance. A song is never
+  slowed down.
+- **The guide for headphones only.** On a bare phone the learner sings to a click and a
+  starting note, and the app's guide voice only sings its own turn. With headphones it
+  sings along and a song gets its chords.
+- **Seven drawings** for the cards: posture, breath, phone, mouth, the pitch ladder, the
+  pitch lanes, the slide.
+
+### 4.5 What a singing beginner reads
+
+"You were on the note for 5 of 8 notes." and at most one tip: "A little under the note.
+Think a bit higher and try again.", "We could not hear you there. Move the phone a little
+closer.", "You sang it an octave lower. That counts." No cents, no ratings, no timing
+line, no stars on a song. A missed note is a dimmed bar with a small arrow to where the
+note is; no word is flashed for it. Tests hold the copy of the course, the cards, the
+tools and the result lines to a list of words it never uses (among them wrong, failed,
+tone deaf, louder, push and belt).
 
 ---
 
-## 4. Links
+## 5. Links
 
 Yousician: <https://support.yousician.com/hc/en-us/articles/204738362-Get-started-with-Yousician-guitar>,
 <https://yousician.com/blog/learn-to-play-guitar>, <https://yousician.com/blog/how-to-play-guitar>,

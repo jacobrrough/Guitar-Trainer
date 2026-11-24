@@ -50,7 +50,7 @@ import { fitSongPasses, maxStepFor } from './planner'
 import { SKILLS } from './skills'
 import { getSession, listTests, loadLearnerModel, loadProfile, peekProfile, recentAttempts, resetTrainingData, saveProfile, saveSession } from './store'
 import { completeTestBlock, saveFinishedTest } from './testBlocks'
-import type { AttemptResult, Block, ExerciseBlock, ExerciseParams, Profile, SessionRecord, SkillState, SongBlock, SongItemState, TestBlock, TestTask, VoiceRange } from './types'
+import type { AttemptResult, Block, ExerciseBlock, ExerciseParams, Profile, SessionRecord, SkillState, SongBlock, SongItemState, SongSummary, TestBlock, TestTask, VoiceRange } from './types'
 import { GENTLE_DAY_LINE, MOVED_DOWN, VOICE_CHECK_HEARD_ITSELF, VOICE_ONLY_WEEKLY_CHECK, lowerKeyNudge, voiceCheckOptions, voiceIsSetUp } from './voicePlan'
 import { loadVoiceProfile, saveVoiceRange, setKeyNudge } from './voiceProfile'
 
@@ -995,6 +995,127 @@ describe('the songs the Coach offers a singer', () => {
   })
 })
 
+describe('the songs of a singer who left the course part way', () => {
+  const finishLessons = (ids: string[], count: number) => db.lessons.bulkPut(ids.slice(0, count).map((id) => ({ id, status: 'done' as const, completedAt: 1 })))
+  const sungAnHourAgo = (songId: number, instrument?: 'voice'): SongItemState => ({
+    key: `${songId}:2`,
+    songId,
+    level: 2,
+    bestAccuracy: 0.8,
+    lastAt: at - 3_600_000,
+    ease: 2.3,
+    intervalDays: 0,
+    weakBars: [],
+    lastAccuracy: 0.8,
+    lastSpeed: 1,
+    lowStreak: 0,
+    ...(instrument ? { instrument } : {}),
+  })
+  /** The song of the day when every other song on offer was sung an hour ago and this one never: the songs take turns, so it is this one if the Coach may pick it at all. */
+  async function songOfTheDayWhenOnlyThisOneWaits(waiting: SongSummary, library: SongSummary[]): Promise<number> {
+    await db.songItems.clear()
+    await db.songItems.bulkPut(library.filter((s) => s.id !== waiting.id).map((s) => sungAnHourAgo(s.id, 'voice')))
+    return songsOf(await voiceDay(NOW, { forceNew: true }))[0].songId
+  }
+
+  it('is every song that fits the range and whose skills are under way, also the two that come after the course', async () => {
+    await singer('new', WIDE)
+    await finishLessons(VOICE_LESSONS, 5)
+    // What the two songs after the course need is under way.
+    await db.skillStates.bulkPut([skillState('voice.interval.triad', 60), skillState('voice.interval.leaps', 60)])
+    const library = await songSummaries('voice')
+    expect(library.map((s) => s.builtinId)).toEqual(VOCAL_SONGS.map((s) => s.id))
+    expect(library.filter((s) => s.lessonLevel === 10).map((s) => s.builtinId)).toEqual(['sing-amazing-grace', 'sing-happy-birthday'])
+
+    // Still in the course: a song waits for its lesson, however long it has waited for its turn.
+    for (const song of library) {
+      const id = await songOfTheDayWhenOnlyThisOneWaits(song, library)
+      const got = library.find((s) => s.id === id)!
+      if (song.lessonLevel! <= 5) expect(got.builtinId, song.title).toBe(song.builtinId)
+      else expect(got.lessonLevel, song.title).toBeLessThanOrEqual(5)
+    }
+
+    // The course is left after five lessons. From here on no lesson will ever open another song.
+    await completeFirstSteps(at + 60_000, 'voice')
+    expect((await finishedLessons('voice')).lessonsDone).toBe(5)
+    for (const song of library) {
+      const id = await songOfTheDayWhenOnlyThisOneWaits(song, library)
+      expect(library.find((s) => s.id === id)!.builtinId, song.title).toBe(song.builtinId)
+    }
+  })
+
+  it('still leaves out what does not fit the range or needs a skill that is not under way', async () => {
+    await singer('new', SMALL)
+    await finishLessons(VOICE_LESSONS, 5)
+    await completeFirstSteps(at + 60_000, 'voice')
+    const library = await songSummaries('voice')
+    // Six songs fit eight notes. "Jingle Bells" belongs to lesson 9: it is offered, the wider songs are not.
+    expect(library.map((s) => s.builtinId)).toEqual(['sing-hot-cross-buns', 'sing-mary-lamb', 'sing-ode-to-joy', 'sing-aunt-rhody', 'sing-saints', 'sing-jingle-bells'])
+    const offered = new Set(library.map((s) => s.id))
+    for (const song of library) {
+      const id = await songOfTheDayWhenOnlyThisOneWaits(song, library)
+      expect(id, song.title).toBe(song.id)
+      expect(offered.has(id)).toBe(true)
+    }
+  })
+
+  it('is unchanged on the guitar: leaving that course half way does not open the songs of the later lessons', async () => {
+    await guitarist()
+    await saveProfile({ ...(await loadProfile()), firstStepsStartedAt: at - 5 * DAY, firstStepsDoneAt: at - DAY })
+    await finishLessons(GUITAR_LESSONS, 4)
+    const { audio, ...demo } = await createDemoSong()
+    const audioData = await audio.arrayBuffer()
+    const row = (builtinId: string) => ({ ...demo, title: builtinId, builtinId, audioData, createdAt: 1, updatedAt: 1, bestScores: {}, lastLevel: null, lastSpeed: 1, playCount: 0 })
+    const early = await db.songs.add(row('open-strings-groove'))
+    const late = await db.songs.add(row('saints'))
+    expect((await songSummaries()).map((s) => [s.id, s.lessonLevel])).toEqual([
+      [early, 1],
+      [late, 8],
+    ])
+    // The song of lesson 8 has waited longest. On the guitar it still waits for its lesson.
+    await db.songItems.put(sungAnHourAgo(early))
+
+    const day = await guitarDay()
+
+    expect(songsOf(day).length).toBeGreaterThan(0)
+    expect(songsOf(day).map((b) => b.songId)).toEqual(songsOf(day).map(() => early))
+  })
+
+  it('goes by the singing course alone: a guitar course that is over opens no song for a singer still in theirs', async () => {
+    // The trap is the other profile row: the same learner, and the same field, one row up.
+    await guitarist()
+    await saveProfile({ ...(await loadProfile()), firstStepsStartedAt: at - 9 * DAY, firstStepsDoneAt: at - DAY })
+    await db.lessons.bulkPut(GUITAR_LESSONS.map((id) => ({ id, status: 'done' as const, completedAt: 1 })))
+    await singer('new', WIDE)
+    await finishLessons(VOICE_LESSONS, 5)
+    expect((await loadProfile('voice')).firstStepsDoneAt).toBeUndefined()
+    const library = await songSummaries('voice')
+    const late = library.find((s) => s.builtinId === 'sing-twinkle')!
+    expect(late.lessonLevel).toBe(9)
+
+    const id = await songOfTheDayWhenOnlyThisOneWaits(late, library)
+
+    expect(library.find((s) => s.id === id)!.lessonLevel).toBeLessThanOrEqual(5)
+  })
+
+  it('counts the whole course from the day it is left, and not a lesson more while it runs: nine lessons done is still nine', async () => {
+    await singer('new', WIDE)
+    await finishLessons(VOICE_LESSONS, 9)
+    await db.skillStates.bulkPut([skillState('voice.interval.triad', 60), skillState('voice.interval.leaps', 60)])
+    const library = await songSummaries('voice')
+    const after = library.filter((s) => s.lessonLevel === 10)
+    expect(after.map((s) => s.builtinId)).toEqual(['sing-amazing-grace', 'sing-happy-birthday'])
+    // One lesson to go: the two songs that come after the course still wait, though everything they need is there.
+    for (const song of after) {
+      const id = await songOfTheDayWhenOnlyThisOneWaits(song, library)
+      expect(library.find((s) => s.id === id)!.lessonLevel, song.title).toBeLessThanOrEqual(9)
+    }
+    // Left with that one lesson undone: they are offered like any other.
+    await completeFirstSteps(at + 60_000, 'voice')
+    for (const song of after) expect(await songOfTheDayWhenOnlyThisOneWaits(song, library), song.title).toBe(song.id)
+  })
+})
+
 describe('a round of a step exercise', () => {
   const holdOn = (step: number, startStep = step, extra: Partial<ExerciseParams> = {}) => voiceBlock('voice.pitch.hold', 'focus', { step, startStep, ...extra })
 
@@ -1337,6 +1458,81 @@ describe('the weekly check of a singer', () => {
     vi.setSystemTime(week)
     await saveProfile({ ...(await loadProfile('voice')), sessionsSinceTest: 5, lastSessionDate: '2026-11-15' })
     expect(testsOf(await voiceDay(week)).map((b) => b.test)).toEqual(['checkpoint'])
+  })
+
+  it('is written down in a singer\'s words, and a guitar check in the guitar\'s as before', async () => {
+    await guitarist()
+    await dueSinger()
+    // A song cleared on its second level: the check asks for the third, and names it as the song page does.
+    const buns = await vocalSongRecord('sing-hot-cross-buns')
+    await db.songItems.put({ key: `${buns.id}:1`, songId: buns.id, level: 1, bestAccuracy: 0.9, lastAt: at - DAY, ease: 2.3, intervalDays: 0, weakBars: [], instrument: 'voice' })
+    const tasks = await checkTasks()
+    expect(tasks.map((t) => t.title)).toEqual(['Hold a note steady', `Hot Cross Buns (${VOICE_LEVELS[2].name})`])
+    const results = tasks.map((t, i) => ({ taskId: t.id, attempt: attemptForTask(t, i === 0 ? clean() : rough(), neverSynced, at, 'voice'), passed: i === 0 }))
+
+    const record = await finishTest('checkpoint', tasks, results, at, 'voice')
+
+    expect(record.report.headline).toBe('Check: 1 of 2 done well')
+    expect(record.report.lines).toEqual(['Hold a note steady: done well', 'Hot Cross Buns (Whole tune): not yet'])
+    // It is stored as it was written: Progress shows the first line of every check taken.
+    expect((await listTests(20, 'voice'))[0].report).toEqual(record.report)
+    for (const text of [record.report.headline, ...record.report.lines, ...tasks.map((t) => `${t.title} ${t.instructions}`)]) {
+      expect(text).not.toMatch(NOT_FOR_A_SINGER)
+      expect(text).not.toMatch(UNKIND)
+      expect(text).not.toMatch(/\b(checkpoint|focus|retention|stretch|passed)\b/i)
+    }
+
+    // The same check on the guitar, with nobody saying whose it is: the words it always had.
+    const skill = SKILLS[0]
+    const task: TestTask = { id: 'checkpoint-01', title: `Focus: ${skill.name}`, instructions: '', skillIds: [skill.id], generatorId: skill.generators[0], params: exerciseParams(skill, skill.generators[0], 80), difficulty: 20, passCriteria: { minAccuracy: 0.8, maxMedianMs: 60, maxStdevMs: 60 } }
+    const guitar = await finishTest('checkpoint', [task], [{ taskId: task.id, attempt: attemptForTask(task, played(), synced, at), passed: true }], at)
+    expect(guitar.instrument).toBeUndefined()
+    expect(guitar.report.headline).toBe('Checkpoint: 1 of 1 passed')
+    expect(guitar.report.lines).toEqual([`Focus: ${skill.name}: passed`])
+  })
+
+  it('a check in which every task went well leaves its milestone in a singer\'s words as well, and the guitar\'s as it was', async () => {
+    await guitarist()
+    await dueSinger()
+    const buns = await vocalSongRecord('sing-hot-cross-buns')
+    await db.songItems.put({ key: `${buns.id}:1`, songId: buns.id, level: 1, bestAccuracy: 0.9, lastAt: at - DAY, ease: 2.3, intervalDays: 0, weakBars: [], instrument: 'voice' })
+    const tasks = await checkTasks()
+    expect(tasks).toHaveLength(2)
+    const allWell = (some: TestTask[]) => some.map((t) => ({ taskId: t.id, attempt: attemptForTask(t, clean(), neverSynced, at, 'voice'), passed: true }))
+    const ofTheCheck = async (key: string) => (await db.milestones.toArray()).find((m) => m.key === key)!
+
+    await finishTest('checkpoint', tasks, allWell(tasks), at, 'voice')
+
+    // Stored where it always was, counting what it always counted: only the two lines a singer reads differ.
+    const both = await ofTheCheck(`voice:test:checkpoint:${TODAY}`)
+    expect(both).toMatchObject({ type: 'test', instrument: 'voice', value: 2, at })
+    expect([both.title, both.detail]).toEqual(['Your weekly check went well', 'You did all 2 tasks well.'])
+    // A check of a single task a week later: still a sentence that reads.
+    const week = at + 7 * DAY
+    await finishTest('checkpoint', tasks.slice(0, 1), allWell(tasks.slice(0, 1)), week, 'voice')
+    const one = await ofTheCheck('voice:test:checkpoint:2026-11-16')
+    expect([one.title, one.detail]).toEqual(['Your weekly check went well', 'You did its one task well.'])
+    for (const m of [both, one]) {
+      // The report beside it reads "Check: 2 of 2 done well": "Checkpoint test passed" would be the guitar talking.
+      expect(`${m.title} ${m.detail}`).not.toMatch(/\b(checkpoint|tests?|passed|monthly)\b/i)
+      expect(`${m.title} ${m.detail}`).not.toMatch(NOT_FOR_A_SINGER)
+      expect(`${m.title} ${m.detail}`).not.toMatch(UNKIND)
+    }
+
+    // The guitar's, with nobody saying whose check it is.
+    const skill = SKILLS[0]
+    const task: TestTask = { id: 'checkpoint-01', title: `Focus: ${skill.name}`, instructions: '', skillIds: [skill.id], generatorId: skill.generators[0], params: exerciseParams(skill, skill.generators[0], 80), difficulty: 20, passCriteria: { minAccuracy: 0.8, maxMedianMs: 60, maxStdevMs: 60 } }
+    await finishTest('checkpoint', [task], [{ taskId: task.id, attempt: attemptForTask(task, played(), synced, at), passed: true }], at)
+    const guitar = await ofTheCheck(`test:checkpoint:${TODAY}`)
+    expect('instrument' in guitar).toBe(false)
+    expect([guitar.title, guitar.detail, guitar.value]).toEqual(['Checkpoint test passed', 'You passed all 1 tasks.', 1])
+  })
+
+  it('a sung check with a task that did not go well leaves no such milestone, as on the guitar', async () => {
+    await dueSinger()
+    const tasks = await checkTasks()
+    await finishTest('checkpoint', tasks, tasks.map((t) => ({ taskId: t.id, attempt: attemptForTask(t, rough(), neverSynced, at, 'voice'), passed: false })), at, 'voice')
+    expect((await db.milestones.toArray()).filter((m) => m.type === 'test')).toEqual([])
   })
 
   it('judges a guitar check as before: without a fresh sound sync its runs are weak evidence', async () => {

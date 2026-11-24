@@ -7,7 +7,7 @@ import { vocalRunFor } from '../../songs/vocal/render'
 import { afterPaint, GETTING_READY, useVocalRun, useVocalRunState, type VocalRunState } from '../../songs/vocal/useVocalRun'
 import { SONG_LEVEL_UP_ACCURACY } from '../../training/constants'
 import { attemptPerformance } from '../../training/performance'
-import type { AttemptResult, VoiceProfile, VoiceRange } from '../../training/types'
+import type { AttemptResult, Profile, VoiceProfile, VoiceRange } from '../../training/types'
 import { lowerKeyNudge } from '../../training/voicePlan'
 import type { ScoreSummary } from '../play/scoring'
 import {
@@ -391,6 +391,47 @@ describe('the six levels', () => {
     // A stored number that is no level is the nearest one.
     expect(startLevel(9)).toBe(5)
     expect(startLevel(0)).toBe(0)
+  })
+
+  it('a song never sung opens on "Echo each line" for a beginner, and on "Whole tune" for a singer who has sung before or has left the course', () => {
+    const whole = VOICE_LEVELS.findIndex((l) => l.name === 'Whole tune')
+    expect(whole).toBe(2)
+    expect(startLevel(null, undefined, { experience: 'new' })).toBe(0)
+    expect(startLevel(null, undefined, { experience: 'some' })).toBe(whole)
+    expect(startLevel(null, undefined, { experience: 'played' })).toBe(whole)
+    // New to singing, and the course is behind them, finished or left: the echo levels are too.
+    expect(startLevel(null, undefined, { experience: 'new', firstStepsDoneAt: 5 })).toBe(whole)
+    expect(startLevel(null, undefined, { firstStepsDoneAt: 5 })).toBe(whole)
+    // In the course still, however far.
+    const inTheCourse: Pick<Profile, 'experience' | 'firstStepsStartedAt' | 'firstStepsDoneAt'> = { experience: 'new', firstStepsStartedAt: 5 }
+    expect(startLevel(null, undefined, inTheCourse)).toBe(0)
+    // Nothing known of the singer: the level that asks least.
+    expect(startLevel(null, undefined, {})).toBe(0)
+    expect(startLevel(null, undefined, undefined)).toBe(0)
+  })
+
+  it('what is known of the singer only matters for a song never sung: the level sung last and a level asked for still win', () => {
+    expect(startLevel(4, undefined, { experience: 'played' })).toBe(3)
+    expect(startLevel(1, undefined, { experience: 'played' })).toBe(0)
+    expect(startLevel(6, undefined, { experience: 'new' })).toBe(5)
+    expect(startLevel(null, 0, { experience: 'played' })).toBe(0)
+    expect(startLevel(null, 5, { experience: 'new' })).toBe(5)
+    expect(startLevel(3, 1, { experience: 'played', firstStepsDoneAt: 5 })).toBe(1)
+  })
+
+  it('an address that names no level it can read leaves the choice to what is known of the singer', () => {
+    // The trap: "?level=" with nothing after it, or with a word, read as a number would be level 1 for everyone.
+    const sungBefore = { experience: 'played' as const }
+    for (const written of ['', '  ', 'soon', 'NaN', 'Infinity']) {
+      expect(startLevel(null, askedLevel(written), sungBefore), JSON.stringify(written)).toBe(2)
+      expect(startLevel(null, askedLevel(written), { experience: 'new' }), JSON.stringify(written)).toBe(0)
+    }
+    expect(startLevel(null, askedLevel(null), sungBefore)).toBe(2)
+    // A level that is named wins, the first one too: "0" is a level, not nothing.
+    expect(startLevel(null, askedLevel('0'), sungBefore)).toBe(0)
+    // And a level beyond the last, or before the first, is the nearest there is, whoever sings.
+    expect(startLevel(null, askedLevel('99'), { experience: 'new' })).toBe(5)
+    expect(startLevel(null, askedLevel('-3'), sungBefore)).toBe(0)
   })
 
   it('a level asked for in the address wins, read as the nearest level there is', () => {

@@ -18,10 +18,12 @@ import { MetronomePage } from './features/metronome/MetronomePage'
 import { PlayPage } from './features/play/PlayPage'
 import { ProgressPage } from './features/progress/ProgressPage'
 import { SettingsPage } from './features/settings/SettingsPage'
+import { SingPage } from './features/sing/SingPage'
 import { TestFlow } from './features/test/TestFlow'
 import { BlockRunner } from './features/today/BlockRunner'
 import { TodayPage } from './features/today/TodayPage'
 import { TunerPage } from './features/tuner/TunerPage'
+import { RangePage } from './features/voice/RangePage'
 
 const router = createHashRouter([
   {
@@ -37,9 +39,14 @@ const router = createHashRouter([
       { path: 'test/:type', element: <TestFlow /> },
       { path: 'lessons', element: <CoursePage /> },
       { path: 'tune', element: <GuidedTunerPage /> },
+      // "My voice": a singer's easy notes. The page goes home by itself while the singing side is switched off.
+      { path: 'range', element: <RangePage /> },
     ],
   },
   { path: '/play/:songId', element: <PlayPage /> },
+  // A song to sing. It goes home by itself while the singing side is switched off, as "My voice" does.
+  { path: '/sing/:songId', element: <SingPage /> },
+  // The set-up, for the guitar; with `?instrument=voice` and the singing side switched on, for a singer.
   { path: '/start', element: <StartHere /> },
   { path: '/lessons/:lessonId', element: <LessonPage /> },
   { path: '/today/block/:blockId', element: <BlockRunner /> },

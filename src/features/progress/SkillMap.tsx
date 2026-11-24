@@ -39,6 +39,8 @@ interface SkillMapProps {
    * named under a bar is held to it. A skill that is not named can reach its last step.
    */
   maxSteps?: Record<string, number>
+  /** The skill whose details are open when the map is first drawn. None when left out, as it always was. */
+  openSkillId?: string
 }
 
 const BAND_BAR: Record<MasteryBand, string> = {
@@ -52,10 +54,23 @@ const BAND_BAR: Record<MasteryBand, string> = {
 /**
  * What opens under a skill: what it is, how to go about it, and how its rating has moved.
  *
- * The chart is a line of ratings with its grid labelled 50, 75 and 90, so it goes with the scores:
- * where they are left out (`scores` off: a singer in plain mode) it is left out too, and the words stand alone.
+ * The chart is a line of ratings with its grid labelled 50, 75 and 90, so it goes with the scores.
+ * Where they are left out (`scores` off: a singer in plain mode) that chart is left out too.
+ * `plainChart` then draws the same line with no number on it, so a singer still sees a skill grow;
+ * the map asks for it. A caller that only says `scores: false` gets the words alone.
  */
-export function SkillDetails({ skill, series, scores = true }: { skill: Pick<SkillDef, 'description' | 'tips'>; series: { at: number; rating: number }[]; scores?: boolean }) {
+export function SkillDetails({
+  skill,
+  series,
+  scores = true,
+  plainChart = false,
+}: {
+  skill: Pick<SkillDef, 'description' | 'tips'>
+  series: { at: number; rating: number }[]
+  scores?: boolean
+  /** With the scores left out: draw the line all the same, without its numbers. Nothing changes where the scores are shown. */
+  plainChart?: boolean
+}) {
   return (
     <div className="mt-3 space-y-3 pl-6 text-sm">
       <p className="text-slate-300">{skill.description}</p>
@@ -66,13 +81,13 @@ export function SkillDetails({ skill, series, scores = true }: { skill: Pick<Ski
           ))}
         </ul>
       )}
-      {scores && <RatingChart series={series} />}
+      {scores ? <RatingChart series={series} /> : plainChart && <RatingChart series={series} plain />}
     </div>
   )
 }
 
-export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSkillIds, skills = SKILLS, course = COURSE, scores = true, maxSteps }: SkillMapProps) {
-  const [open, setOpen] = useState<string | null>(null)
+export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSkillIds, skills = SKILLS, course = COURSE, scores = true, maxSteps, openSkillId }: SkillMapProps) {
+  const [open, setOpen] = useState<string | null>(openSkillId ?? null)
   const simple = useSettings().simpleFeedback
   // The same rule and the same facts the Coach plans with (what the finished lessons taught included),
   // so a skill is never drawn locked while it is in today's plan. The lesson table holds the rows of
@@ -165,7 +180,8 @@ export function SkillMap({ model, now, pinnedSkillId, onPin, seriesFor, taughtSk
                       <Pin size={16} />
                     </button>
                   </div>
-                  {expanded && <SkillDetails skill={skill} series={seriesFor(skill.id)} scores={scores} />}
+                  {/* Where the map prints no score, the line under a skill has no number on it either. */}
+                  {expanded && <SkillDetails skill={skill} series={seriesFor(skill.id)} scores={scores} plainChart={!scores} />}
                 </li>
               )
             })}

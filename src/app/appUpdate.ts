@@ -16,8 +16,22 @@ type Apply = (reloadPage?: boolean) => Promise<void>
 
 export const BUILD_ID: string = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'development build'
 
-/** Screens on which a reload would interrupt something: playing, a lesson, the set-up, tuning, a test. */
-const BUSY_ROUTES = [/^#\/play\//, /^#\/lessons\/./, /^#\/today\/block\//, /^#\/test\//, /^#\/start(\b|$)/, /^#\/tune($|[/?])/]
+/**
+ * Screens on which a reload would interrupt something: playing, a lesson, the set-up, tuning, a test.
+ * And for a singer: a song being sung, "My voice" (the range finder may be listening, and its steps
+ * are not in the address) and the hidden check of the singing side.
+ */
+const BUSY_ROUTES = [
+  /^#\/play\//,
+  /^#\/lessons\/./,
+  /^#\/today\/block\//,
+  /^#\/test\//,
+  /^#\/start(\b|$)/,
+  /^#\/tune($|[/?])/,
+  /^#\/sing\//,
+  /^#\/range($|[/?])/,
+  /^#\/voice-check($|[/?])/,
+]
 
 export function isBusyRoute(hash: string): boolean {
   return BUSY_ROUTES.some((r) => r.test(hash))

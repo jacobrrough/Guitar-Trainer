@@ -8,6 +8,10 @@ import { TEST_PASS, VOICE_TEST_PASS } from '../../training/constants'
 import { SKILLS } from '../../training/skills'
 import type { AttemptResult, LearnerModel, SkillDef, SkillState, TestRecord, TestTask, TestType } from '../../training/types'
 import { VOICE_SKILLS } from '../../training/voiceSkills'
+import { voiceResultCopy } from '../play/voice/voiceCopy'
+import type { NoteReason, VoiceScoreSummary } from '../play/voice/voiceTracker'
+import { RatingChart } from '../progress/RatingChart'
+import { SkillDetails, SkillMap } from '../progress/SkillMap'
 import { TaskCard, TaskIntro, TaskResultCard } from './TaskIntro'
 import { TestReportView } from './TestReportView'
 import {
@@ -23,6 +27,7 @@ import {
   shownAccuracyPct,
   singingRange,
   sungSongStep,
+  sungTaskTip,
   taskPace,
   verdictBadge,
 } from './taskResult'
@@ -584,6 +589,44 @@ describe('a sung task: what is said after it', () => {
     }
   })
 
+  it('a task in which every note was only just in tune is passed on the card as well, whatever the number of notes', () => {
+    // 43 notes that each count four fifths add up to 0.7999999999999999 of 43: one digit under the mark.
+    const missed: number[] = []
+    for (let total = 1; total <= 200; total++) {
+      const r = sung({ perfects: 0, goods: total, misses: 0, total })
+      if (failedCriteria(VOICE_TEST_PASS, r).length > 0 || failureReasons(VOICE_TEST_PASS, r, 'voice').length > 0) missed.push(total)
+    }
+    expect(missed).toEqual([])
+    const r = sung({ perfects: 0, goods: 43, misses: 0, total: 43 })
+    expect(drawn(r, meetsCriteria(VOICE_TEST_PASS, r))).toEqual(['Task result', `Focus: ${HOLD.name}`, 'Passed', 'on target', 'You were on the note for 43 of 43 notes.', 'Next'])
+  })
+
+  it('the card and the verdict agree on the notes for every mix of them up to 200, at the sung mark and at the guitar\'s', () => {
+    // Timing well inside both rules, so the notes alone decide.
+    const disagree: string[] = []
+    for (const criteria of [VOICE_TEST_PASS, TEST_PASS]) {
+      for (let total = 1; total <= 200; total++) {
+        for (let goods = 0; goods <= total; goods++) {
+          for (let perfects = 0; perfects + goods <= total; perfects++) {
+            const r = result({ perfects, goods, misses: total - perfects - goods, total })
+            const onTheCard = !failedCriteria(criteria, r).includes('accuracy')
+            if (onTheCard !== meetsCriteria(criteria, r) && disagree.length < 5) disagree.push(`${criteria.minAccuracy}: ${perfects}+${goods}/${total}`)
+          }
+        }
+      }
+    }
+    expect(disagree).toEqual([])
+  })
+
+  it('a percentage on the mark is shown as the mark, also where the sum is a digit under it', () => {
+    // The guitar card shows a percentage. No guitar task has such a count at its mark of 85 %; a mark of 80 % would.
+    const fourFifths = ruleAccuracy(result({ perfects: 4, goods: 1, misses: 1, total: 6 }))
+    expect(fourFifths).toBeLessThan(0.8)
+    expect(shownAccuracyPct(fourFifths, 0.8)).toBe(80)
+    // Really under the mark: never rounded up to it, as before.
+    expect(shownAccuracyPct(0.7996, 0.8)).toBe(79)
+  })
+
   it('a task of one note does not say "all 1 notes"', () => {
     const r = sung({ perfects: 0, goods: 0, misses: 1, total: 1 })
     expect(meetsCriteria(VOICE_TEST_PASS, r)).toBe(false)
@@ -614,6 +657,50 @@ describe('a sung task: what is said after it', () => {
     const text = drawn(sung(), true)
     expect(text).toEqual(['Task result', `Focus: ${HOLD.name}`, 'Passed', 'on target', 'You were on the note for 8 of 8 notes.', 'Next'])
     expect(text.join(' ')).not.toMatch(/\bms\b|%|Timing|Spread|Accuracy/)
+  })
+
+  describe('the tip under it', () => {
+    /** The summary of a sung run of eight notes, with what the tracker kept about the notes that did not count. */
+    const heard = (reasons: Partial<Record<NoteReason, number>>, octave = 0): VoiceScoreSummary => {
+      const lost = (reasons.silent ?? 0) + (reasons.low ?? 0) + (reasons.high ?? 0) + (reasons.unsteady ?? 0)
+      return {
+        score: 0,
+        streak: 0,
+        maxStreak: 0,
+        multiplier: 1,
+        perfects: 8 - lost,
+        goods: 0,
+        misses: lost,
+        total: 8,
+        judged: 8,
+        accuracy: (8 - lost) / 8,
+        voice: { notes: 8, hits: 8 - lost, octave, medianCents: 0, reasons: { silent: 0, low: 0, high: 0, unsteady: 0, slid: 0, ...reasons } },
+      }
+    }
+
+    it('never asks for another go: a task of a check is sung once, and the page before it says so', () => {
+      expect(checkWords('voice').rules.join(' ')).toMatch(/sung once/)
+      const under = heard({ low: 1 })
+      // After any other run this tip ends "and try again".
+      expect(voiceResultCopy(under).tip).toMatch(/try again\.$/)
+      expect(sungTaskTip(under)).toBe('A little under the note. Think a bit higher.')
+      // On the card of a task that went well: seven notes of eight, and nothing to do over.
+      const card = drawn(sung({ perfects: 7, misses: 1 }), true, sungTaskTip(under))
+      expect(card).toEqual(['Task result', `Focus: ${HOLD.name}`, 'Passed', 'on target', 'You were on the note for 7 of 8 notes.', 'A little under the note. Think a bit higher.', 'Next'])
+      for (const run of [heard({ silent: 2 }), heard({ low: 2 }), heard({ high: 2 }), heard({ unsteady: 2 }), heard({ slid: 4 }), heard({}, -1), heard({}, 1)]) {
+        expect(sungTaskTip(run)).not.toBeNull()
+        expect(sungTaskTip(run)).not.toMatch(/\bagain\b|another go|once more/i)
+      }
+    })
+
+    it('is otherwise the tip of any sung run: the same choice, the chart\'s word about slides, and none where there is nothing to add', () => {
+      for (const run of [heard({ silent: 2 }), heard({ high: 2 }), heard({ unsteady: 2 }), heard({ slid: 4 }), heard({}, -1)]) expect(sungTaskTip(run)).toBe(voiceResultCopy(run).tip)
+      expect(sungTaskTip(heard({ slid: 4 }), { glide: true })).toBeNull()
+      expect(sungTaskTip(heard({}))).toBeNull()
+      // A result that carries nothing from the tracker (it was read back from what is stored) has no tip.
+      const { voice: _voice, ...bare } = heard({ low: 2 })
+      expect(sungTaskTip(bare)).toBeNull()
+    })
   })
 })
 
@@ -705,5 +792,127 @@ describe('every word of a sung check', () => {
       expect(line).not.toMatch(NO_USE_TO_A_BEGINNER)
       expect(line).not.toMatch(/\btest\b/i)
     }
+  })
+})
+
+/**
+ * The line under a skill on the Progress page (../progress/RatingChart.tsx, and SkillDetails and the
+ * map in ../progress/SkillMap.tsx). The other cases of those two files are in
+ * ../progress/progressStats.test.ts; these came with the chart that has no numbers and are held here,
+ * beside the other screens that are drawn for a singer and read back.
+ */
+describe('the line under a skill on Progress, where the numbers are left out', () => {
+  const DAY = 86_400_000
+  const NOW = new Date(2026, 10, 11, 12).getTime()
+  const series = [
+    { at: NOW - 3 * DAY, rating: 41 },
+    { at: NOW - 2 * DAY, rating: 52.4 },
+    { at: NOW - DAY, rating: 63 },
+  ]
+  const chart = (props: Partial<Parameters<typeof RatingChart>[0]> = {}) => renderToStaticMarkup(createElement(RatingChart, { series, ...props }))
+  const details = (props: Partial<Parameters<typeof SkillDetails>[0]> = {}) => renderToStaticMarkup(createElement(SkillDetails, { skill: { description: 'Hold one note.', tips: [] }, series, ...props }))
+  /** The chart alone, without the words above it: the one drawing that is a picture with a label (the icons of the map are not). */
+  const svgOf = (html: string) => /<svg[^>]*role="img"[\s\S]*?<\/svg>/.exec(html)?.[0] ?? ''
+  /** What can be read off a drawing: its text, and its label for a screen reader. Not the numbers its shapes are placed by. */
+  const readable = (html: string) => [...textOf(svgOf(html)), ...[...svgOf(html).matchAll(/aria-label="([^"]*)"/g)].map((m) => m[1])]
+  const line = (html: string) => /<polyline points="([^"]*)"/.exec(html)?.[1]
+  const label = (html: string) => /aria-label="([^"]*)"/.exec(svgOf(html))?.[1]
+
+  it('is the same line, with no number on it and none in what a screen reader is told', () => {
+    const plain = chart({ plain: true })
+    expect(line(plain)).toBeTruthy()
+    expect(line(plain)).toBe(line(chart()))
+    const read = readable(plain)
+    // It still says what it is: a drawing without a label is nothing to a screen reader.
+    expect(label(plain)).toBeTruthy()
+    for (const piece of read) {
+      expect(piece).not.toMatch(/\d/)
+      expect(piece).not.toMatch(NO_USE_TO_A_BEGINNER)
+      expect(piece).not.toMatch(/score|%|\bdata\b/i)
+      expect(piece).not.toMatch(NOT_FOR_A_SINGER)
+    }
+    // The numbered chart is told apart by exactly these: the three marks of its grid and the two ends of the line.
+    expect(readable(chart()).filter((piece) => /\d/.test(piece)).length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('says in words which way the skill has gone, kindly either way', () => {
+    const from = (first: number, last: number) => label(chart({ plain: true, series: [{ at: 1, rating: first }, { at: 2, rating: last }] })) ?? ''
+    expect(from(41, 63)).toMatch(/stronger/)
+    expect(from(63, 41)).not.toMatch(/stronger/)
+    expect(from(63, 41)).toMatch(/a little more practice/)
+    expect(from(50, 50)).toMatch(/about where it was/)
+    // Less than a whole point either way is no move worth a word.
+    expect(from(50, 50.3)).toBe(from(50, 50))
+    for (const said of [from(41, 63), from(63, 41), from(50, 50)]) {
+      expect(said).not.toMatch(/\d|worse|dropped|lost|bad\b|fell/i)
+      expect(said).toMatch(/\.$/)
+    }
+  })
+
+  it('a move is a whole point between the two ends of the line, not two numbers that happen to round apart', () => {
+    const from = (first: number, last: number) => label(chart({ plain: true, series: [{ at: 1, rating: first }, { at: 2, rating: last }] })) ?? ''
+    const still = from(50, 50)
+    // A fifth of a point apart, on either side of a half: rounded one by one they read 50 and 51.
+    expect(from(50.4, 50.6)).toBe(still)
+    expect(from(50.6, 50.4)).toBe(still)
+    // Nine tenths of a point is no move either; a whole one is, up or down.
+    expect(from(50.5, 51.4)).toBe(still)
+    expect(from(50.5, 51.5)).toMatch(/stronger/)
+    expect(from(51.5, 50.5)).toMatch(/a little more practice/)
+    // What lies between the two ends does not change which way it went.
+    const dipped = label(chart({ plain: true, series: [{ at: 1, rating: 40 }, { at: 2, rating: 20 }, { at: 3, rating: 46 }] }))
+    expect(dipped).toBe(from(40, 46))
+  })
+
+  it('draws ratings that are off the scale without a number, as any other: the line stops at the edge', () => {
+    const wild = chart({ plain: true, series: [{ at: 1, rating: -20 }, { at: 2, rating: 250 }] })
+    expect(line(wild)).toBe(line(chart({ plain: true, series: [{ at: 1, rating: 0 }, { at: 2, rating: 100 }] })))
+    for (const piece of readable(wild)) expect(piece).not.toMatch(/\d/)
+    // Two runs in the same moment: one place on the line, and still nothing to read a number from.
+    const atOnce = chart({ plain: true, series: [{ at: 5, rating: 30 }, { at: 5, rating: 31 }] })
+    expect(line(atOnce)).toBeTruthy()
+    expect(line(atOnce)).not.toMatch(/NaN|Infinity/)
+    for (const piece of readable(atOnce)) expect(piece).not.toMatch(/\d/)
+  })
+
+  it('says nothing at all where there is too little to draw a line from', () => {
+    expect(chart({ plain: true, series: [] })).toBe('')
+    expect(chart({ plain: true, series: series.slice(0, 1) })).toBe('')
+  })
+
+  it('leaves the chart with its numbers exactly as it was, asked for nothing or told it is not plain', () => {
+    const html = chart()
+    expect(html).toContain('aria-label="Rating over time, from 41 to 63"')
+    expect(textOf(html).slice(0, 3)).toEqual(['50', '75', '90'])
+    expect(textOf(html)).toHaveLength(5)
+    expect(chart({ plain: false })).toBe(html)
+    expect(chart({ series: [] })).toBe('<p class="text-xs text-muted">Not enough data yet</p>')
+  })
+
+  it('under a skill it is drawn where it is asked for in place of the scores, and never a number with it', () => {
+    const plain = details({ scores: false, plainChart: true })
+    expect(svgOf(plain)).toBe(chart({ plain: true }))
+    expect(plain).toContain('Hold one note.')
+    // Asking for it changes nothing where the scores are shown: the chart there is the one with its numbers.
+    expect(details({ plainChart: true })).toBe(details())
+    expect(svgOf(details())).toBe(chart())
+    // And leaving the scores out without asking for it is the words alone, as before.
+    expect(svgOf(details({ scores: false }))).toBe('')
+  })
+
+  it('the map asks for it for every skill it draws without a score', () => {
+    const hold = HOLD
+    const model: LearnerModel = { skills: { [hold.id]: { skillId: hold.id, rating: 63, confidence: 3, tempoCeiling: 0, ease: 2.3, intervalDays: 0, plateauStep: 0, attempts: 4, step: 1 } }, songItems: {}, profile: { id: 2, goals: [], dailyMinutes: 20, startedAt: 0, streak: 0, longestStreak: 0, sessionsSinceTest: 0 } }
+    const map = (props: Partial<Parameters<typeof SkillMap>[0]> = {}) =>
+      renderToStaticMarkup(createElement(SkillMap, { model, now: NOW, onPin: noop, seriesFor: (id: string) => (id === hold.id ? series : []), taughtSkillIds: [], skills: VOICE_SKILLS, course: [], openSkillId: hold.id, ...props }))
+    // A singer in plain mode: the line, and nothing to read a number from.
+    const plain = map({ scores: false })
+    expect(svgOf(plain)).toBe(chart({ plain: true }))
+    expect(plain).toContain(hold.description)
+    // With the scores on the map (the guitar, and a singer who asked for the numbers) it is the chart as it always was.
+    expect(svgOf(map())).toBe(chart())
+    // No skill is open unless one is named, as before.
+    expect(svgOf(map({ scores: false, openSkillId: undefined }))).toBe('')
+    expect(map({ scores: false, openSkillId: undefined })).not.toContain(hold.description)
   })
 })

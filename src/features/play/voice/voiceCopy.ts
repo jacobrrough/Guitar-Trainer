@@ -34,6 +34,24 @@ const MISSED: readonly Exclude<NoteReason, 'slid'>[] = ['silent', 'low', 'high',
 const SLID_NOTES = 2
 const SLID_SHARE = 0.25
 
+/** What the caller knows about what comes after the run the tip is for. */
+export interface TipOptions {
+  /**
+   * false where no other go follows: a task of a check is sung once, and its card would otherwise say
+   * "try again" under a task that is already done, also one that went well. Default true: the tip reads
+   * as it always did.
+   */
+  anotherGo?: boolean
+}
+
+/** How a tip ends when it asks for another go. */
+const AND_TRY_AGAIN = ' and try again.'
+
+/** The same tip for a run that has no other go after it: the advice stays, the asking goes, and the sentence is closed. */
+function withoutAnotherGo(tip: string): string {
+  return tip.endsWith(AND_TRY_AGAIN) ? `${tip.slice(0, -AND_TRY_AGAIN.length)}.` : tip
+}
+
 /** "You were on the note for 5 of 8 notes." */
 export function voiceResultLine(run: { hits: number; notes: number }): string {
   return `You were on the note for ${run.hits} of ${run.notes} ${run.notes === 1 ? 'note' : 'notes'}.`
@@ -48,8 +66,16 @@ export function voiceResultLine(run: { hits: number; notes: number }): string {
  *
  * `voice` is the chart's own word about itself (`chart.voice`). On a chart of slides (`glide`) the
  * singer is asked to slide up to the notes, so sliding is never what the tip is about.
+ *
+ * `options.anotherGo: false` says that the run is not sung again: the tip is chosen as ever, and does
+ * not end by asking for another go.
  */
-export function voiceTip(feedback: VoiceFeedback, voice?: Pick<VoiceChart, 'glide'>): string | null {
+export function voiceTip(feedback: VoiceFeedback, voice?: Pick<VoiceChart, 'glide'>, options: TipOptions = {}): string | null {
+  const tip = tipFor(feedback, voice)
+  return tip !== null && options.anotherGo === false ? withoutAnotherGo(tip) : tip
+}
+
+function tipFor(feedback: VoiceFeedback, voice: Pick<VoiceChart, 'glide'> | undefined): string | null {
   let worst: Exclude<NoteReason, 'slid'> | null = null
   for (const reason of MISSED) {
     const count = feedback.reasons[reason]
@@ -66,10 +92,10 @@ export function voiceTip(feedback: VoiceFeedback, voice?: Pick<VoiceChart, 'glid
 /**
  * The result line and the tip of a sung run, from the summary the player hands to `onFinished` and
  * the chart that was sung (`chart.voice`). A summary that carries no feedback (it was put together
- * from a stored result) still gets its line.
+ * from a stored result) still gets its line. `options` are the tip's (`voiceTip`).
  */
-export function voiceResultCopy(summary: ScoreSummary, voice?: Pick<VoiceChart, 'glide'>): { line: string; tip: string | null } {
+export function voiceResultCopy(summary: ScoreSummary, voice?: Pick<VoiceChart, 'glide'>, options: TipOptions = {}): { line: string; tip: string | null } {
   const feedback = voiceFeedbackOf(summary)
   if (!feedback) return { line: voiceResultLine({ hits: summary.perfects + summary.goods, notes: summary.perfects + summary.goods + summary.misses }), tip: null }
-  return { line: voiceResultLine(feedback), tip: voiceTip(feedback, voice) }
+  return { line: voiceResultLine(feedback), tip: voiceTip(feedback, voice, options) }
 }

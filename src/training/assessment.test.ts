@@ -7,14 +7,26 @@ import {
   checkpointTasks,
   evaluateTask,
   isTestDue,
+  meetsCriteria,
   monthlyTasks,
   nextPlacementTask,
   placementLadder,
   shouldStopPlacement,
 } from './assessment'
 import type { LadderSpec } from './assessment'
-import { TEST_PASS, UNLOCK_RATING, VOICE_TEST_PASS } from './constants'
+import { VOICE_LEVELS } from '../songs/vocal/levels'
+import {
+  CEILING_MIN_ACCURACY,
+  REP_DOWN_ACCURACY,
+  REP_FALLBACK_ACCURACY,
+  SONG_SLOW_DOWN_ACCURACY,
+  SONG_TARGET_ACCURACY,
+  TEST_PASS,
+  UNLOCK_RATING,
+  VOICE_TEST_PASS,
+} from './constants'
 import { itemDifficulty } from './difficulty'
+import { attemptPerformance } from './performance'
 import { DEFAULT_TUNING } from './exercises/builder'
 import { exerciseParams, generateExercise } from './exercises'
 import { SKILLS, SKILLS_BY_ID } from './skills'
@@ -125,6 +137,109 @@ describe('evaluateTask', () => {
   it('null timing passes only with fewer than 8 hits', () => {
     expect(evaluateTask(task, res({ perfects: 4, goods: 0, misses: 0, total: 4, timingMedianMs: null, timingStdevMs: null }))).toBe(true)
     expect(evaluateTask(task, res({ timingMedianMs: null, timingStdevMs: null }))).toBe(false)
+  })
+})
+
+describe('the pass mark and the last digit of a sum', () => {
+  // A note that is hit and not perfect counts four fifths. Added up in floating point and divided by
+  // the number of notes, a run that is exactly on a mark can come out one digit under it.
+  const COUNTS = 200
+  const run = (perfects: number, goods: number, total: number) => res({ perfects, goods, misses: total - perfects - goods, total, timingMedianMs: 0, timingStdevMs: 0 })
+  /** The rule in whole numbers, where nothing is rounded: `perfects + 0.8 x goods >= mark x total`, times one hundred. */
+  const reaches = (markPercent: number, perfects: number, goods: number, total: number) => 100 * perfects + 80 * goods >= markPercent * total
+  /** Every mix of perfect, good and missed notes up to COUNTS notes for which `differs` holds, as "perfects+goods/total" (the first few). */
+  function mixesWhere(differs: (perfects: number, goods: number, total: number) => boolean): string[] {
+    const found: string[] = []
+    for (let total = 1; total <= COUNTS; total++) {
+      for (let goods = 0; goods <= total; goods++) {
+        for (let perfects = 0; perfects + goods <= total; perfects++) {
+          if (differs(perfects, goods, total) && found.length < 5) found.push(`${perfects}+${goods}/${total}`)
+        }
+      }
+    }
+    return found
+  }
+
+  it('passes a sung task in which every note was only just in tune, whatever the number of notes', () => {
+    const notPassed: number[] = []
+    for (let notes = 1; notes <= COUNTS; notes++) if (!meetsCriteria(VOICE_TEST_PASS, run(0, notes, notes))) notPassed.push(notes)
+    expect(notPassed).toEqual([])
+    // The counts this is about: for these, 0.8 x n / n is 0.7999999999999999.
+    const aDigitUnder = Array.from({ length: COUNTS }, (_, i) => i + 1).filter((n) => (0.8 * n) / n < 0.8)
+    expect(aDigitUnder).toEqual([43, 81, 86, 91, 162, 167, 172, 177, 182, 187])
+  })
+
+  it('judges every mix of notes at the sung mark by the rule as it is written', () => {
+    expect(VOICE_TEST_PASS.minAccuracy).toBe(0.8)
+    expect(mixesWhere((p, g, t) => meetsCriteria(VOICE_TEST_PASS, run(p, g, t)) !== reaches(80, p, g, t))).toEqual([])
+    // Four clean notes, one only just in tune and one that did not count, of six: exactly four fifths.
+    expect(meetsCriteria(VOICE_TEST_PASS, run(4, 1, 6))).toBe(true)
+    // A run that is really under the mark stays under it, however close: one note in two hundred short.
+    expect(meetsCriteria(VOICE_TEST_PASS, run(159, 0, 200))).toBe(false)
+    expect(meetsCriteria(VOICE_TEST_PASS, run(160, 0, 200))).toBe(true)
+  })
+
+  it('changes no verdict at the guitar\'s mark: there the sum was never a digit out', () => {
+    expect(TEST_PASS.minAccuracy).toBe(0.85)
+    // The comparison as it stood before, written out: the same answer as the rule for every mix...
+    expect(mixesWhere((p, g, t) => (p + 0.8 * g) / t >= 0.85 !== reaches(85, p, g, t))).toEqual([])
+    // ...and so the same answer as the pass rule now gives.
+    expect(mixesWhere((p, g, t) => meetsCriteria(TEST_PASS, run(p, g, t)) !== (p + 0.8 * g) / t >= 0.85)).toEqual([])
+  })
+
+  it('leaves room for a digit and never for a note, however long the piece: on the mark is passed, one note short is not', () => {
+    // A guitar song has thousands of notes. The fewest clean notes that reach a mark, worked out in whole
+    // numbers, once with every other note missed and once with every other note only just counted.
+    const off: string[] = []
+    const marks = [
+      { criteria: VOICE_TEST_PASS, percent: 80 },
+      { criteria: TEST_PASS, percent: 85 },
+    ]
+    for (const { criteria, percent } of marks) {
+      for (let total = 1; total <= 5000; total++) {
+        const alone = Math.ceil((percent * total) / 100)
+        const withTheRest = Math.ceil(((percent - 80) * total) / 20)
+        const cases: [perfects: number, goods: number, passes: boolean][] = [
+          [alone, 0, true],
+          [alone - 1, 0, false],
+          [withTheRest, total - withTheRest, true],
+          // One of the notes that only just counted is missed instead.
+          [withTheRest, total - withTheRest - 1, false],
+        ]
+        for (const [perfects, goods, passes] of cases) {
+          if (perfects < 0 || goods < 0) continue
+          expect(reaches(percent, perfects, goods, total)).toBe(passes)
+          if (meetsCriteria(criteria, run(perfects, goods, total)) !== passes && off.length < 5) off.push(`${percent}: ${perfects}+${goods}/${total}`)
+        }
+      }
+    }
+    expect(off).toEqual([])
+  })
+
+  it('reads a result that has no numbers in it as it always did, at either mark', () => {
+    // Nothing in the app writes such a result. Should one ever arrive (a row from a broken backup), the
+    // room for the last digit must not be what changes how it is read.
+    const asItWas = (criteria: typeof TEST_PASS, r: AttemptResult) => {
+      const acc = r.total > 0 ? (r.perfects + 0.8 * r.goods) / r.total : 0
+      if (acc < criteria.minAccuracy) return false
+      return Math.abs(r.timingMedianMs ?? 0) <= criteria.maxMedianMs && (r.timingStdevMs ?? 0) <= criteria.maxStdevMs
+    }
+    const noNumbers = [run(Number.NaN, 0, 8), run(0, Number.NaN, 8), { ...run(8, 0, 8), total: Number.NaN }, run(0, 0, 0)]
+    for (const criteria of [TEST_PASS, VOICE_TEST_PASS]) {
+      for (const r of noNumbers) expect(meetsCriteria(criteria, r)).toBe(asItWas(criteria, r))
+    }
+  })
+
+  it('the marks the Coach reads a run by have no such count either: clean, rough, and the two a song is held to', () => {
+    // 0.85, 0.75, 0.6 and 0.7, on the accuracy the Coach stores with a run. Were one of them moved to a
+    // number that has the trap (0.8 and 0.9 do), this is where it would show.
+    const marks = [CEILING_MIN_ACCURACY, REP_DOWN_ACCURACY, REP_FALLBACK_ACCURACY, SONG_TARGET_ACCURACY, SONG_SLOW_DOWN_ACCURACY]
+    expect(marks).toEqual([0.85, 0.75, 0.6, 0.85, 0.7])
+    const aDigitOut = mixesWhere((p, g, t) => {
+      const acc = attemptPerformance(run(p, g, t)).acc
+      return marks.some((mark) => acc >= mark !== reaches(Math.round(mark * 100), p, g, t))
+    })
+    expect(aDigitOut).toEqual([])
   })
 })
 
@@ -599,6 +714,70 @@ describe('checks for another instrument: the options set the pace, the length, t
     tasks[0].passCriteria.minAccuracy = 0
     expect(VOICE_TEST_PASS.minAccuracy).toBe(0.8)
     expect(tasks[1].passCriteria.minAccuracy).toBe(0.8)
+  })
+
+  describe('the words of a singer\'s check', () => {
+    const states = [state('voice.pitch.hold', 80, { step: 1 }), state('voice.pitch.steps', 50, { tempoCeiling: 70 })]
+    const sungTasks = () => checkpointTasks(singer(states), voice, [tune], NOW, 'voice.pitch.steps', VOICE_CHECK_OPTIONS)
+    const guitarTasks = () => checkpointTasks(singer(states), voice, [tune], NOW, 'voice.pitch.steps')
+    /** The first task done well, the second not, the third done well. */
+    const outcome = (tasks: { id: string }[]) => tasks.map((t, i) => taskResult(t.id, i !== 1))
+    /** What the Coach has for its own book-keeping and a singer has no use for, and what is never said to a learner. */
+    const NOT_A_SINGERS = /\b(checkpoint|focus|retention|stretch|level \d|passed|play\w*|guitar|wrong|fail\w*)\b/i
+
+    it('names each task by what is sung, and the level of the song by its name', () => {
+      // The song was cleared on its second level (index 1), so the check asks for the third: "Whole tune".
+      expect(sungTasks().map((t) => t.title)).toEqual(['Step up and down', 'Hold a note steady', 'Hot Cross Buns (Whole tune)'])
+      for (const t of sungTasks()) expect(t.title).not.toMatch(NOT_A_SINGERS)
+    })
+
+    it('knows every level of a song to sing by the name the song page gives it', () => {
+      const song = VOICE_CHECK_OPTIONS.copy?.song
+      expect(song).toBeDefined()
+      expect(VOICE_LEVELS.map((_, index) => song!('Ode to Joy', index))).toEqual(VOICE_LEVELS.map((level) => `Ode to Joy (${level.name})`))
+      // A level that is no level of a song to sing is still a title, never "undefined".
+      expect(song!('Ode to Joy', 9)).toBe('Ode to Joy')
+      expect(song!('Ode to Joy', -1)).toBe('Ode to Joy')
+    })
+
+    it('reports in plain words: "Check: 2 of 3 done well", and a line for each task', () => {
+      const tasks = sungTasks()
+      const out = applyTestResults(singer(states), 'checkpoint', tasks, outcome(tasks), voice, (s) => s, NOW, VOICE_CHECK_OPTIONS)
+      expect(out.report.headline).toBe('Check: 2 of 3 done well')
+      expect(out.report.lines).toEqual(['Step up and down: done well', 'Hold a note steady: not yet', 'Hot Cross Buns (Whole tune): done well'])
+      for (const text of [out.report.headline, ...out.report.lines]) expect(text).not.toMatch(NOT_A_SINGERS)
+      // One task, and none done well: still a sentence that reads.
+      const one = applyTestResults(singer(states), 'checkpoint', tasks.slice(0, 1), [taskResult(tasks[0].id, true)], voice, (s) => s, NOW, VOICE_CHECK_OPTIONS)
+      expect(one.report.headline).toBe('Check: 1 of 1 done well')
+      const none = applyTestResults(singer(states), 'checkpoint', tasks, tasks.map((t) => taskResult(t.id, false)), voice, (s) => s, NOW, VOICE_CHECK_OPTIONS)
+      expect(none.report.headline).toBe('Check: 0 of 3 done well')
+    })
+
+    it('changes nothing but words: the same tasks, results and ratings as with the guitar\'s words', () => {
+      const plainWords = { ...VOICE_CHECK_OPTIONS, copy: undefined }
+      const unworded = checkpointTasks(singer(states), voice, [tune], NOW, 'voice.pitch.steps', plainWords)
+      const strip = (tasks: { title: string }[]) => tasks.map(({ title: _title, ...rest }) => rest)
+      expect(strip(sungTasks())).toEqual(strip(unworded))
+      const apply = (s: SkillState): SkillState => ({ ...s, rating: s.rating + 2 })
+      const worded = applyTestResults(singer(states), 'checkpoint', sungTasks(), outcome(sungTasks()), voice, apply, NOW, VOICE_CHECK_OPTIONS)
+      const bare = applyTestResults(singer(states), 'checkpoint', unworded, outcome(unworded), voice, apply, NOW)
+      expect(worded.model).toEqual(bare.model)
+      expect(worded.report.ratingDeltas).toEqual(bare.report.ratingDeltas)
+      expect(worded.report.nextFocus).toEqual(bare.report.nextFocus)
+    })
+
+    it('leaves the guitar\'s words letter for letter where no words are given', () => {
+      const tasks = guitarTasks()
+      expect(tasks.map((t) => t.title)).toEqual(['Focus: Step up and down', 'Retention: Hold a note steady', 'Stretch: Hot Cross Buns (Level 3)'])
+      const weekly = applyTestResults(singer(states), 'checkpoint', tasks, outcome(tasks), voice, (s) => s, NOW)
+      expect(weekly.report.headline).toBe('Checkpoint: 2 of 3 passed')
+      expect(weekly.report.lines).toEqual(['Focus: Step up and down: passed', 'Retention: Hold a note steady: not yet', 'Stretch: Hot Cross Buns (Level 3): passed'])
+      expect(applyTestResults(singer(states), 'monthly', tasks, outcome(tasks), voice, (s) => s, NOW).report.headline).toBe('Monthly check: 2 of 3 passed')
+      // Options that say nothing about words, and words given one at a time: what is left out is the guitar's.
+      expect(applyTestResults(singer(states), 'checkpoint', tasks, outcome(tasks), voice, (s) => s, NOW, {}).report).toEqual(weekly.report)
+      const oneWord = checkpointTasks(singer(states), voice, [tune], NOW, 'voice.pitch.steps', { copy: { focus: (name) => `Now: ${name}` } })
+      expect(oneWord.map((t) => t.title)).toEqual(['Now: Step up and down', 'Retention: Hold a note steady', 'Stretch: Hot Cross Buns (Level 3)'])
+    })
   })
 
   it('with no options, or with the built-in ones named, the tasks are the guitar tasks', () => {

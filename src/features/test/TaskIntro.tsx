@@ -122,7 +122,7 @@ export interface TaskResultCardProps {
   last: boolean
   onNext: () => void
   instrument?: InstrumentId
-  /** One tip for a sung task, from what the tracker heard (`voiceResultCopy`); none for the guitar. */
+  /** One tip for a sung task, from what the tracker heard (`sungTaskTip`); none for the guitar. */
   tip?: string | null
 }
 
